@@ -9073,11 +9073,17 @@ class GatewayRunner:
                 else:
                     display_model = short_model
                 
-                header_prefix = f"{display_model} [S]\n====================\n"
+                header_prefix = f"{display_model} [S]\n════════════════════\n"
                 import re as _re
                 clean_response = response.strip()
-                # Cleanly strip off any hallucinated or contaminated prefixes/underlines
-                clean_response = _re.sub(r"^(高度|Gemini 3.5 Flash \[S\]|Gemma 4 \[S\]|Qwen 3.6 35B \[S\]|[═=─-]{10,})\s*", "", clean_response, flags=_re.IGNORECASE)
+                # Cleanly and recursively strip off any hallucinated or contaminated prefixes/underlines in the history
+                while True:
+                    old_len = len(clean_response)
+                    clean_response = _re.sub(r"^(高度|高度)\s*", "", clean_response, flags=_re.IGNORECASE)
+                    clean_response = _re.sub(r"^(Gemini 3.5 Flash \[S\]|Gemma 4 \[S\]|Qwen 3.6 35B \[S\]|Gemini 3.5 Flash|Gemma 4|Qwen 3.6)\s*", "", clean_response, flags=_re.IGNORECASE)
+                    clean_response = _re.sub(r"^([═=─-]{5,})\s*", "", clean_response, flags=_re.IGNORECASE)
+                    if len(clean_response) == old_len:
+                        break
                 response = header_prefix + clean_response
 
             # If the agent's session_id changed during compression, update
