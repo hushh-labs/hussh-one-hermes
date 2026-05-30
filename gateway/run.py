@@ -9060,6 +9060,26 @@ class GatewayRunner:
             )
             response = _sanitize_gateway_final_response(source.platform, response)
 
+            # Programmatically enforce Kushal's WhatsApp layout preference
+            if getattr(source, "platform", None) == Platform.WHATSAPP:
+                model_name = agent_result.get("model") or "gemini-3.5-flash"
+                short_model = model_name.rsplit("/", 1)[-1]
+                if "gemini" in short_model:
+                    display_model = "Gemini 3.5 Flash"
+                elif "gemma" in short_model:
+                    display_model = "Gemma 4"
+                elif "qwen" in short_model:
+                    display_model = "Qwen 3.6 35B"
+                else:
+                    display_model = short_model
+                
+                header_prefix = f"{display_model} [S]\n====================\n"
+                import re as _re
+                clean_response = response.strip()
+                # Cleanly strip off any hallucinated or contaminated prefixes/underlines
+                clean_response = _re.sub(r"^(高度|Gemini 3.5 Flash \[S\]|Gemma 4 \[S\]|Qwen 3.6 35B \[S\]|[═=─-]{10,})\s*", "", clean_response, flags=_re.IGNORECASE)
+                response = header_prefix + clean_response
+
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
