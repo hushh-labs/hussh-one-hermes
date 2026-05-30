@@ -348,6 +348,13 @@ def _compute_grace_seconds(schedule: dict) -> int:
     This ensures daily jobs can catch up if missed by up to 2 hours,
     while frequent jobs (every 5-10 min) still fast-forward quickly.
     """
+    custom_grace = schedule.get("grace_seconds") or schedule.get("grace")
+    if custom_grace is not None:
+        try:
+            return int(custom_grace)
+        except (ValueError, TypeError):
+            pass
+
     MIN_GRACE = 120
     MAX_GRACE = 7200  # 2 hours
 

@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -32,6 +33,54 @@ from agent.gemini_schema import sanitize_gemini_tool_parameters
 logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+_VERTEX_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+_TRUE_ENV_VALUES = {"1", "true", "yes", "y", "on"}
+
+
+def _env_enabled(value: Optional[str]) -> bool:
+    return str(value or "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def _resolve_vertex_project() -> tuple[str, Optional[str]]:
+    for key in (
+        "GOOGLE_CLOUD_PROJECT",
+        "GCP_PROJECT",
+        "GOOGLE_PROJECT",
+        "GCLOUD_PROJECT",
+        "VERTEX_PROJECT_ID",
+    ):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value, key
+
+    try:
+        import google.auth  # type: ignore
+
+        _, project = google.auth.default(scopes=[_VERTEX_SCOPE])
+        if isinstance(project, str) and project.strip():
+            return project.strip(), "google.auth.default()"
+    except Exception as exc:
+        logger.debug("Unable to resolve Vertex project from ADC: %s", exc)
+
+    return "", None
+
+
+def _resolve_vertex_location() -> str:
+    return (
+        os.getenv("GOOGLE_CLOUD_LOCATION")
+        or os.getenv("GCP_LOCATION")
+        or os.getenv("VERTEX_LOCATION")
+        or os.getenv("GOOGLE_CLOUD_REGION")
+        or os.getenv("GCP_REGION")
+        or "global"
+    ).strip()
+
+
+def _vertex_api_base(project: str, location: str) -> str:
+    root = "https://aiplatform.googleapis.com/v1"
+    if location and location != "global":
+        root = f"https://{location}-aiplatform.googleapis.com/v1"
+    return f"{root}/projects/{project}/locations/{location}/publishers/google"
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
@@ -39,6 +88,8 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
         return False
+    if "aiplatform.googleapis.com" in normalized and "/publishers/google" in normalized:
+        return True
     if "generativelanguage.googleapis.com" not in normalized:
         return False
     return not normalized.endswith("/openai")
@@ -288,37 +339,35 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
             continue
 
         if role in {"tool", "function"}:
-            contents.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        _translate_tool_result_to_gemini(
-                            msg,
-                            tool_name_by_call_id=tool_name_by_call_id,
-                        )
-                    ],
-                }
-            )
-            continue
+            gemini_role = "user"
+            parts = [
+                _translate_tool_result_to_gemini(
+                    msg,
+                    tool_name_by_call_id=tool_name_by_call_id,
+                )
+            ]
+        else:
+            gemini_role = "model" if role == "assistant" else "user"
+            parts = []
 
-        gemini_role = "model" if role == "assistant" else "user"
-        parts: List[Dict[str, Any]] = []
+            content_parts = _extract_multimodal_parts(msg.get("content"))
+            parts.extend(content_parts)
 
-        content_parts = _extract_multimodal_parts(msg.get("content"))
-        parts.extend(content_parts)
-
-        tool_calls = msg.get("tool_calls") or []
-        if isinstance(tool_calls, list):
-            for tool_call in tool_calls:
-                if isinstance(tool_call, dict):
-                    tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
-                    tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
-                    if tool_call_id and tool_name:
-                        tool_name_by_call_id[tool_call_id] = tool_name
-                    parts.append(_translate_tool_call_to_gemini(tool_call))
+            tool_calls = msg.get("tool_calls") or []
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, dict):
+                        tool_call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
+                        tool_name = str(((tool_call.get("function") or {}).get("name") or ""))
+                        if tool_call_id and tool_name:
+                            tool_name_by_call_id[tool_call_id] = tool_name
+                        parts.append(_translate_tool_call_to_gemini(tool_call))
 
         if parts:
-            contents.append({"role": gemini_role, "parts": parts})
+            if contents and contents[-1]["role"] == gemini_role:
+                contents[-1]["parts"].extend(parts)
+            else:
+                contents.append({"role": gemini_role, "parts": parts})
 
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
@@ -623,6 +672,8 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     parts = ((cand.get("content") or {}).get("parts") or []) if isinstance(cand, dict) else []
     chunks: List[_GeminiStreamChunk] = []
 
+    finish_reason_raw = str(cand.get("finishReason") or "")
+
     for part_index, part in enumerate(parts):
         if not isinstance(part, dict):
             continue
@@ -655,14 +706,20 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot
-            emitted_arguments = args_str
-            last_arguments = str(slot.get("last_arguments") or "")
-            if last_arguments:
-                if args_str == last_arguments:
-                    emitted_arguments = ""
-                elif args_str.startswith(last_arguments):
-                    emitted_arguments = args_str[len(last_arguments):]
-            slot["last_arguments"] = args_str
+            
+            # Only emit and track arguments on the final chunk (when finishReason is present)
+            # to prevent malformed intermediate JSON structures from crashing the parser.
+            emitted_arguments = ""
+            if finish_reason_raw:
+                emitted_arguments = args_str
+                last_arguments = str(slot.get("last_arguments") or "")
+                if last_arguments:
+                    if args_str == last_arguments:
+                        emitted_arguments = ""
+                    elif args_str.startswith(last_arguments):
+                        emitted_arguments = args_str[len(last_arguments):]
+                slot["last_arguments"] = args_str
+            
             chunks.append(
                 _make_stream_chunk(
                     model=model,
@@ -676,7 +733,6 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 )
             )
 
-    finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
         finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
@@ -815,7 +871,8 @@ class GeminiNativeClient:
         http_client: Optional[httpx.Client] = None,
         **_: Any,
     ) -> None:
-        if not (api_key or "").strip():
+        self._use_vertex = _env_enabled(os.getenv("GOOGLE_GENAI_USE_VERTEXAI"))
+        if not self._use_vertex and not (api_key or "").strip():
             raise RuntimeError(
                 "Gemini native client requires an API key, but none was provided. "
                 "Set GOOGLE_API_KEY or GEMINI_API_KEY in your environment / ~/.hermes/.env "
@@ -827,11 +884,56 @@ class GeminiNativeClient:
         if normalized_base.endswith("/openai"):
             normalized_base = normalized_base[: -len("/openai")]
         self.base_url = normalized_base
+        self._vertex_project = ""
+        self._vertex_project_source: Optional[str] = None
+        self._vertex_location = ""
+        self._vertex_credentials = None
+        if self._use_vertex:
+            self._initialize_vertex_auth()
         self._default_headers = dict(default_headers or {})
         self.chat = _GeminiChatNamespace(self)
         self.is_closed = False
         self._http = http_client or httpx.Client(
             timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
+        )
+
+    def _initialize_vertex_auth(self) -> None:
+        try:
+            import google.auth  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "Gemini Vertex mode requires google-auth. Install Hermes with Google "
+                "auth dependencies or disable GOOGLE_GENAI_USE_VERTEXAI."
+            ) from exc
+
+        project, source = _resolve_vertex_project()
+        if not project:
+            raise RuntimeError(
+                "Gemini Vertex mode requires a GCP project. Set GOOGLE_CLOUD_PROJECT "
+                "or configure application default credentials with a project."
+            )
+
+        location = _resolve_vertex_location()
+        if not location:
+            raise RuntimeError(
+                "Gemini Vertex mode requires a location. Set GOOGLE_CLOUD_LOCATION "
+                "or disable GOOGLE_GENAI_USE_VERTEXAI."
+            )
+
+        credentials, detected_project = google.auth.default(scopes=[_VERTEX_SCOPE])
+        self._vertex_credentials = credentials
+        self._vertex_project = project or (detected_project or "")
+        self._vertex_project_source = source
+        self._vertex_location = location
+        self.base_url = _vertex_api_base(self._vertex_project, self._vertex_location)
+        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", self._vertex_project)
+        os.environ.setdefault("GCP_PROJECT", self._vertex_project)
+        os.environ.setdefault("GOOGLE_CLOUD_LOCATION", self._vertex_location)
+        logger.info(
+            "Gemini Vertex native client initialized (project=%s, location=%s, source=%s)",
+            self._vertex_project,
+            self._vertex_location,
+            self._vertex_project_source or "unknown",
         )
 
     def close(self) -> None:
@@ -851,11 +953,26 @@ class GeminiNativeClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "x-goog-api-key": self.api_key,
             "User-Agent": "hermes-agent (gemini-native)",
         }
+        if self._use_vertex:
+            headers["Authorization"] = f"Bearer {self._vertex_access_token()}"
+        else:
+            headers["x-goog-api-key"] = self.api_key
         headers.update(self._default_headers)
         return headers
+
+    def _vertex_access_token(self) -> str:
+        if self._vertex_credentials is None:
+            raise RuntimeError("Gemini Vertex credentials were not initialized.")
+        if not getattr(self._vertex_credentials, "valid", False):
+            from google.auth.transport.requests import Request  # type: ignore
+
+            self._vertex_credentials.refresh(Request())
+        token = getattr(self._vertex_credentials, "token", None)
+        if not token:
+            raise RuntimeError("Gemini Vertex credentials did not provide an access token.")
+        return token
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

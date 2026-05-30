@@ -85,6 +85,79 @@ def test_build_native_request_uses_original_function_name_for_tool_result():
     assert tool_response["name"] == "get_weather"
 
 
+def test_build_native_request_groups_consecutive_tool_results():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}',
+                        },
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Tokyo"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": '{"forecast": "sunny"}',
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_2",
+                "content": '{"forecast": "cloudy"}',
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    # Should have two turns: assistant (model), then grouped tool results (user)
+    assert len(request["contents"]) == 2
+    user_turn = request["contents"][1]
+    assert user_turn["role"] == "user"
+    assert len(user_turn["parts"]) == 2
+    assert user_turn["parts"][0]["functionResponse"]["name"] == "get_weather"
+    assert user_turn["parts"][0]["functionResponse"]["response"] == {"forecast": "sunny"}
+    assert user_turn["parts"][1]["functionResponse"]["name"] == "get_weather"
+    assert user_turn["parts"][1]["functionResponse"]["response"] == {"forecast": "cloudy"}
+
+
+def test_build_native_request_merges_consecutive_user_turns():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {"role": "user", "content": "Hello"},
+            {"role": "user", "content": "How are you?"},
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    assert len(request["contents"]) == 1
+    user_turn = request["contents"][0]
+    assert user_turn["role"] == "user"
+    assert len(user_turn["parts"]) == 2
+    assert user_turn["parts"][0]["text"] == "Hello"
+    assert user_turn["parts"][1]["text"] == "How are you?"
+
+
 def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
     from agent.gemini_native_adapter import build_gemini_request
 
@@ -195,6 +268,66 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     assert recorded["headers"]["x-goog-api-key"] == "AIza-test"
     assert "Authorization" not in recorded["headers"]
+    assert response.choices[0].message.content == "hello"
+
+
+def test_native_client_uses_vertex_adc_when_enabled(monkeypatch):
+    from agent import gemini_native_adapter
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyCredentials:
+        valid = False
+        token = None
+
+        def refresh(self, request):
+            self.valid = True
+            self.token = "ya29-test-token"
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            recorded["json"] = json
+            recorded["headers"] = headers
+            return DummyResponse(
+                payload={
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "hello"}]},
+                            "finishReason": "STOP",
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                }
+            )
+
+        def close(self):
+            return None
+
+    credentials = DummyCredentials()
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "global")
+    monkeypatch.setattr(gemini_native_adapter, "_resolve_vertex_project", lambda: ("hushh-pda", "test"))
+    monkeypatch.setattr("google.auth.default", lambda scopes=None: (credentials, "ignored"))
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+
+    client = GeminiNativeClient(api_key="", base_url="https://generativelanguage.googleapis.com/v1beta")
+    response = client.chat.completions.create(
+        model="gemini-3.5-flash",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+
+    assert recorded["url"] == (
+        "https://aiplatform.googleapis.com/v1/projects/hushh-pda/locations/global/"
+        "publishers/google/models/gemini-3.5-flash:generateContent"
+    )
+    assert recorded["headers"]["Authorization"] == "Bearer ya29-test-token"
+    assert "x-goog-api-key" not in recorded["headers"]
     assert response.choices[0].message.content == "hello"
 
 
