@@ -283,11 +283,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
         if whatsapp_mode != "self-chat":
             return ""
-        if self._reply_prefix is not None:
-            return self._reply_prefix.replace("\\n", "\n")
         env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
         if env_prefix is not None:
             return env_prefix.replace("\\n", "\n")
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
         return self.DEFAULT_REPLY_PREFIX
 
     def _outgoing_chunk_limit(self) -> int:
@@ -614,7 +614,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
             bridge_env = os.environ.copy()
-            if self._reply_prefix is not None:
+            if "WHATSAPP_REPLY_PREFIX" not in bridge_env and self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
             self._bridge_process = subprocess.Popen(
