@@ -10434,6 +10434,19 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
 
+        if raw_args.lower() in ("auto", "reset", "clear", "default"):
+            source = event.source
+            session_key = self._session_key_for_source(source)
+            override_existed = False
+            if session_key in self._session_model_overrides:
+                self._session_model_overrides.pop(session_key, None)
+                override_existed = True
+            self._evict_cached_agent(session_key)
+            if override_existed:
+                return "✓ Reset session model to config default (Auto-routing / Fallbacks enabled)."
+            else:
+                return "✓ Session is already using the config default model (Auto-routing / Fallbacks active)."
+
         # Parse --provider, --global, and --refresh flags
         model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
 
