@@ -229,6 +229,7 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
 
 
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
     from agent.gemini_native_adapter import GeminiNativeClient
 
     recorded = {}
@@ -367,9 +368,10 @@ def test_native_client_accepts_injected_http_client():
     assert client._http is injected
 
 
-def test_native_client_rejects_empty_api_key_with_actionable_message():
+def test_native_client_rejects_empty_api_key_with_actionable_message(monkeypatch):
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
+    monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
     from agent.gemini_native_adapter import GeminiNativeClient
 
     for bad in ("", "   ", None):
@@ -430,10 +432,13 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     second = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
 
     assert first[0].choices[0].delta.tool_calls[0].index == 0
-    assert second[0].choices[0].delta.tool_calls[0].index == 0
-    assert first[0].choices[0].delta.tool_calls[0].id == second[0].choices[0].delta.tool_calls[0].id
-    assert first[0].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
-    assert second[0].choices[0].delta.tool_calls[0].function.arguments == ""
+    assert first[0].choices[0].delta.tool_calls[0].function.name == "search"
+    assert first[0].choices[0].delta.tool_calls[0].function.arguments == ""  # Declaration chunk
+    
+    # Second chunk in the first event contains the full arguments block
+    assert first[1].choices[0].delta.tool_calls[0].index == 0
+    assert first[1].choices[0].delta.tool_calls[0].id == first[0].choices[0].delta.tool_calls[0].id
+    assert first[1].choices[0].delta.tool_calls[0].function.arguments == '{"q": "abc"}'
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 

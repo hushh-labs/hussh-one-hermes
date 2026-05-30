@@ -706,34 +706,41 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot
-            
-            # Only emit and track arguments on the final chunk (when finishReason is present)
-            # to prevent malformed intermediate JSON structures from crashing the parser.
-            emitted_arguments = ""
-            if finish_reason_raw:
-                emitted_arguments = args_str
-                last_arguments = str(slot.get("last_arguments") or "")
-                if last_arguments:
-                    if args_str == last_arguments:
-                        emitted_arguments = ""
-                    elif args_str.startswith(last_arguments):
-                        emitted_arguments = args_str[len(last_arguments):]
-                slot["last_arguments"] = args_str
-            
-            chunks.append(
-                _make_stream_chunk(
-                    model=model,
-                    tool_call_delta={
-                        "index": slot["index"],
-                        "id": slot["id"],
-                        "name": name,
-                        "arguments": emitted_arguments,
-                        "extra_content": _tool_call_extra_from_part(part),
-                    },
+                
+                # Emit the tool call declaration on its first appearance (with empty arguments)
+                chunks.append(
+                    _make_stream_chunk(
+                        model=model,
+                        tool_call_delta={
+                            "index": slot["index"],
+                            "id": slot["id"],
+                            "name": name,
+                            "arguments": "",
+                            "extra_content": _tool_call_extra_from_part(part),
+                        },
+                    )
                 )
-            )
+            
+            # Continuously track the latest parsed arguments state
+            slot["last_arguments"] = args_str
 
     if finish_reason_raw:
+        # Emit all final tool call JSON bodies as a single complete block
+        for _, slot in tool_call_indices.items():
+            args_to_emit = slot.get("last_arguments", "")
+            if args_to_emit:
+                chunks.append(
+                    _make_stream_chunk(
+                        model=model,
+                        tool_call_delta={
+                            "index": slot["index"],
+                            "id": slot["id"],
+                            "arguments": args_to_emit,
+                        },
+                    )
+                )
+                slot["last_arguments"] = "" # Prevent duplicate emission
+                
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
         finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
         # Attach usage from this event's usageMetadata so the streaming
