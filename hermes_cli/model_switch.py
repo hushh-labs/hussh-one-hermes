@@ -483,8 +483,11 @@ def resolve_alias(
     # yet synced to the registry).
     catalog = list_provider_models(current_provider)
     try:
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_cli.models import _PROVIDER_MODELS, provider_model_ids
         static = _PROVIDER_MODELS.get(current_provider, [])
+        profile_static = provider_model_ids(current_provider)
+        if profile_static:
+            static = list(static) + [m for m in profile_static if m not in static]
         if static:
             seen = {m.lower() for m in catalog}
             for m in static:
@@ -739,8 +742,32 @@ def switch_model(
     # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
+        provider_prefix_resolved = False
+        if "/" in raw_input:
+            left, right = raw_input.split("/", 1)
+            left = left.strip()
+            right = right.strip()
+            if left and right:
+                pdef = resolve_provider_full(
+                    left,
+                    user_providers,
+                    custom_providers,
+                )
+                if (
+                    pdef is not None
+                    and not pdef.is_aggregator
+                    and not is_aggregator(current_provider)
+                ):
+                    target_provider = pdef.id
+                    new_model = right
+                    provider_prefix_resolved = True
+                    logger.debug(
+                        "Provider-qualified model '%s' resolved to %s/%s",
+                        raw_input, target_provider, new_model,
+                    )
+
         # --- Step a: Try alias resolution on current provider ---
-        alias_result = resolve_alias(raw_input, current_provider)
+        alias_result = None if provider_prefix_resolved else resolve_alias(raw_input, current_provider)
 
         if alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
@@ -748,7 +775,7 @@ def switch_model(
                 "Alias '%s' resolved to %s on %s",
                 resolved_alias, new_model, target_provider,
             )
-        else:
+        elif not provider_prefix_resolved:
             # --- Step b: Alias exists but not on current provider -> fallback ---
             key = raw_input.strip().lower()
             if key in MODEL_ALIASES:
@@ -1150,6 +1177,29 @@ def list_authenticated_providers(
         except Exception:
             return False
 
+    def _has_gcp_sdk_creds_for_listing(slug: str) -> bool:
+        """Credential check for GCP SDK providers without slow network probes."""
+        slug_norm = str(slug or "").strip().lower()
+        current_norm = str(current_provider or "").strip().lower()
+        if any(
+            os.environ.get(name, "").strip()
+            for name in (
+                "GOOGLE_CLOUD_PROJECT",
+                "GCP_PROJECT",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+            )
+        ):
+            return True
+        if slug_norm != current_norm:
+            return False
+        try:
+            from agent.gemini_native_adapter import _resolve_vertex_project
+
+            project_id, _ = _resolve_vertex_project()
+            return bool(project_id)
+        except Exception:
+            return False
+
     data = fetch_models_dev()
 
     # Build curated model lists keyed by hermes provider ID
@@ -1294,6 +1344,8 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        elif not has_creds and overlay.auth_type == "gcp_sdk":
+            has_creds = _has_gcp_sdk_creds_for_listing(hermes_slug)
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -1426,6 +1478,8 @@ def list_authenticated_providers(
         # ~/.aws/credentials, instance roles, etc.)
         if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             _cp_has_creds = _has_aws_sdk_creds_for_listing(_cp.slug)
+        elif not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "gcp_sdk":
+            _cp_has_creds = _has_gcp_sdk_creds_for_listing(_cp.slug)
 
         if not _cp_has_creds:
             continue

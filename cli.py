@@ -51,6 +51,7 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 import yaml
 
+from hermes_cli.brand import default_display_skin
 from hermes_cli.fallback_config import get_fallback_chain
 
 # prompt_toolkit for fixed input area TUI
@@ -436,7 +437,7 @@ def load_cli_config() -> Dict[str, Any]:
             "persistent_output": True,
             "persistent_output_max_lines": 200,
 
-            "skin": "default",
+            "skin": default_display_skin(),
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding

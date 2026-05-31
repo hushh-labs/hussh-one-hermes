@@ -98,6 +98,13 @@ class TestAdapterInit:
         adapter = WhatsAppAdapter(config)
         assert adapter._reply_prefix is None
 
+    def test_default_effective_reply_prefix_comes_from_brand(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        config = PlatformConfig(enabled=True)
+        adapter = WhatsAppAdapter(config)
+        with patch.dict("os.environ", {}, clear=True):
+            assert adapter._effective_reply_prefix() == "hussh 🤫 One\n"
+
     def test_reply_prefix_empty_string(self):
         from gateway.platforms.whatsapp import WhatsAppAdapter
         config = PlatformConfig(enabled=True, extra={"reply_prefix": ""})

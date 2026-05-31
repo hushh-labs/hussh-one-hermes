@@ -4175,6 +4175,23 @@ def _discover_user_themes() -> list:
     return result
 
 
+def _discover_repo_themes() -> list:
+    """Scan repo-shipped dashboard theme YAML files."""
+    themes_dir = Path(__file__).resolve().parent / "dashboard_themes"
+    if not themes_dir.is_dir():
+        return []
+    result = []
+    for f in sorted(themes_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        normalised = _normalise_theme_definition(data)
+        if normalised is not None:
+            result.append(normalised)
+    return result
+
+
 @app.get("/api/dashboard/themes")
 async def get_dashboard_themes():
     """Return available themes and the currently active one.
@@ -4185,14 +4202,27 @@ async def get_dashboard_themes():
     normalised definition under `definition`, so the client can apply
     them without a stub.
     """
+    from hermes_cli.brand import default_dashboard_theme
+
     config = load_config()
-    active = cfg_get(config, "dashboard", "theme", default="default")
+    active = cfg_get(config, "dashboard", "theme", default=default_dashboard_theme())
+    repo_themes = _discover_repo_themes()
     user_themes = _discover_user_themes()
     seen = set()
     themes = []
     for t in _BUILTIN_DASHBOARD_THEMES:
         seen.add(t["name"])
         themes.append(t)
+    for t in repo_themes:
+        if t["name"] in seen:
+            continue
+        themes.append({
+            "name": t["name"],
+            "label": t["label"],
+            "description": t["description"],
+            "definition": t,
+        })
+        seen.add(t["name"])
     for t in user_themes:
         if t["name"] in seen:
             continue

@@ -1,0 +1,5 @@
+name: google-vertex-claude-provider
+kind: model-provider
+version: 1.0.0
+description: Google Vertex AI Claude
+author: Hussh

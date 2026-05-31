@@ -967,6 +967,9 @@ _PROVIDER_ALIASES = {
     "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "vertex-claude": "google-vertex-claude",
+    "gcp-claude": "google-vertex-claude",
+    "google-claude": "google-vertex-claude",
     "deep-seek": "deepseek",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
@@ -2025,6 +2028,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 return ids
         except Exception:
             pass
+
+    try:
+        from providers import get_provider_profile
+
+        _profile = get_provider_profile(normalized)
+        if _profile and _profile.auth_type != "api_key" and _profile.fallback_models:
+            return list(_profile.fallback_models)
+    except Exception:
+        pass
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".

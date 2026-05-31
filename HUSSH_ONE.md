@@ -1,6 +1,6 @@
-# 🐶 hussh puppy — Cognitive & Architectural Abstraction Specification
+# hussh 🤫 One — Cognitive & Architectural Abstraction Specification
 ### Machine-Readable System Sync & Integration Specification
-`Version: 1.0.0` | `Target System: hussh-puppy-agents` | `Base: hermes-agent-v0.15.1`
+`Version: 1.0.0` | `Target System: hussh-one-agents` | `Base: hermes-agent-v0.15.1`
 
 ---
 
@@ -8,19 +8,16 @@
 
 ```yaml
 system_identity:
-  name: "hussh puppy"
-  icon: "🐶"
+  name: "hussh 🤫 One"
+  icon: "🤫"
   branding:
-    whatsapp_reply_prefix: "🐶 *hussh puppy*\n────────────\n"
-    cli_branding_skin: "hushh-puppy"
+    whatsapp_reply_prefix: "hussh 🤫 One\n"
+    cli_branding_skin: "hussh-one"
 
 environment_variables:
   WHATSAPP_REPLY_PREFIX:
     type: "string"
-    description: "Forces Baileys Node.js bridge to prepend a custom brand/prefix to outgoing texts."
-    required_locations:
-      - "~/.hermes/.env"
-      - "PROJECT_DIR/.env"
+    description: "Emergency override only. The default reply prefix comes from the brand profile/config."
   WHATSAPP_ALLOWED_GROUPS:
     type: "comma_separated_string"
     description: "JIDs of allowed WhatsApp groups to bypass DM-only/self-chat filters."
@@ -31,7 +28,7 @@ environment_variables:
 
 configuration_schema_mutations:
   ~/.hermes/config.yaml:
-    display.skin: "hushh-puppy"
+    display.skin: "hussh-one"
     cron.wrap_response: false
 ```
 
@@ -141,7 +138,7 @@ Any agent updating or modifying this codebase must preserve these three critical
 
 ## 4. BOOTSTRAPPING A NEW DEVELOPER/MACHINE INSTANCE
 
-When setting up a new fork, a fresh agent, or a collaborator machine (`msainani`), follow this exact protocol to maintain 100% clean abstractions:
+When setting up a new fork, a fresh agent, or a collaborator machine (`msainani`), follow this exact protocol to keep the abstractions clean and verifiable:
 
 ### Step 1: Remote Syncing
 ```bash
@@ -155,7 +152,6 @@ Never commit your personal variables to Git. Write them directly to the local `.
 ```bash
 # /Users/msainani/Documents/GitHub/hermes-agent/.env
 WHATSAPP_ALLOWED_GROUPS="120363040968035480@g.us"
-WHATSAPP_REPLY_PREFIX="🐶 *hussh puppy (msainani)*\n────────────\n"
 ```
 
 Configure the system profile to isolate memory and SQLite states:
@@ -170,7 +166,7 @@ Disable automated cron wrappers to ensure only clean metaphorical summaries are 
 .venv/bin/hermes config set cron.wrap_response false
 
 # Set custom personality skin
-.venv/bin/hermes config set display.skin hushh-puppy
+.venv/bin/hermes config set display.skin hussh-one
 ```
 
 ### Step 4: Standalone Daemon Supervision (macOS launchd)
@@ -196,3 +192,7 @@ Future machines must run these tests to verify the integrity of the abstraction 
 ### Contract B: Zero-Width Unicode Leakage
 *   **Invariant:** Database dumps injected into the assembled cron prompt must contain exactly `0` instances of zero-width unicode characters (`U+200B`, `U+200C`, `U+200D`, `U+FEFF`).
 *   **Verification:** Run `auto_dream.py` and inspect standard output for any hidden sequences that would trigger the prompt-injection scanner gates.
+
+### Contract C: Upstream Update Guard
+*   **Invariant:** Official Hermes and plugin updates must not erase the Hussh One brand profile, skin, dashboard theme, WhatsApp prefix default, or Vertex Claude provider abstraction.
+*   **Verification:** Run `scripts/hussh-one-guard.sh` after every upstream merge, plugin update, or provider-runtime edit. The maintenance procedure is documented in `docs/hussh-one-upstream-maintenance.md`.

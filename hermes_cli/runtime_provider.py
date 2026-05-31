@@ -1602,8 +1602,27 @@ def resolve_runtime_provider(
             runtime["guardrail_config"] = guardrail_config
         return runtime
 
-    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
+    # SDK-backed GCP providers (Vertex AI Claude models)
     pconfig = PROVIDER_REGISTRY.get(provider)
+    if pconfig and pconfig.auth_type == "gcp_sdk":
+        from agent.gemini_native_adapter import _resolve_vertex_project, _resolve_vertex_location
+        _proj, _proj_src = _resolve_vertex_project()
+        _region = _resolve_vertex_location() or "us-east5"
+        if not _region or _region == "global":
+            _region = "us-east5"
+
+        return {
+            "provider": provider,
+            "api_mode": "anthropic_messages",
+            "base_url": f"https://{_region}-aiplatform.googleapis.com",
+            "api_key": "gcp-sdk",
+            "source": _proj_src or "gcp-sdk-default-chain",
+            "region": _region,
+            "project_id": _proj,
+            "requested_provider": requested_provider,
+        }
+
+    # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
         # Honour model.base_url from config.yaml when the configured provider

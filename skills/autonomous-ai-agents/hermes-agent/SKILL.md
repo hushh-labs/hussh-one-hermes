@@ -228,6 +228,44 @@ hermes uninstall            Uninstall Hermes
 
 ---
 
+## Hussh One Fork Maintenance
+
+This fork carries the `hussh 🤫 One` skin and the `google-vertex-claude`
+provider profile on top of official Hermes. When working in this repository,
+do not treat `hermes update`, plugin updates, or upstream merges as complete
+until the Hussh One guard passes.
+
+Use this flow for official upstream checks:
+
+```bash
+git fetch upstream main --tags --prune
+git rev-list --left-right --count HEAD...upstream/main
+```
+
+If the branch has local commits or a dirty worktree, test the merge in an
+isolated worktree before touching the active checkout. After an actual merge,
+provider edit, plugin update, or gateway adapter change, run:
+
+```bash
+scripts/hussh-one-guard.sh
+```
+
+The guard verifies the Hussh One brand profile, repo skin/theme, WhatsApp
+reply-prefix default, Vertex Claude provider abstraction, model switching,
+auxiliary-client routing, and bridge syntax. A failure means the update broke
+the fork contract; fix the abstraction instead of papering over it with `.env`
+or local config.
+
+Keep the boundary clear:
+
+- Hussh identity belongs in `hermes_cli/brand.py`, repo-shipped skins/themes,
+  `HUSSH_ONE.md`, and tests.
+- Vertex Claude belongs in `plugins/model-providers/google-vertex-claude/`
+  plus generic `gcp_sdk` provider plumbing.
+- Core Hermes edits should stay generic enough to survive upstream merges.
+
+---
+
 ## Slash Commands (In-Session)
 
 Type these during an interactive chat session. New commands land fairly

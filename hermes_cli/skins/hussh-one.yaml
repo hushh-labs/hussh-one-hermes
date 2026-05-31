@@ -1,0 +1,52 @@
+name: hussh-one
+description: hussh One — quiet ownership interface
+
+colors:
+  banner_border: "#6EE7B7"
+  banner_title: "#F8FAFC"
+  banner_accent: "#FBBF24"
+  banner_dim: "#64748B"
+  banner_text: "#DDE7EA"
+  ui_accent: "#6EE7B7"
+  ui_label: "#FBBF24"
+  ui_ok: "#22C55E"
+  ui_error: "#F97373"
+  ui_warn: "#F59E0B"
+  prompt: "#F8FAFC"
+  input_rule: "#2DD4BF"
+  response_border: "#6EE7B7"
+  status_bar_bg: "#111827"
+  status_bar_text: "#DDE7EA"
+  status_bar_strong: "#F8FAFC"
+  status_bar_dim: "#6B7280"
+  status_bar_good: "#34D399"
+  status_bar_warn: "#FBBF24"
+  status_bar_bad: "#F97373"
+  status_bar_critical: "#EF4444"
+  session_label: "#FBBF24"
+  session_border: "#334155"
+
+spinner:
+  waiting_faces: ["(🤫)", "(•‿•)", "(·_·)", "(⌁)", "(◡)"]
+  thinking_faces: ["(🤫)", "(•_•)", "(⌁)", "(◠)", "(·‿·)"]
+  thinking_verbs:
+    - listening
+    - routing
+    - reasoning
+    - syncing
+    - checking
+    - shaping
+  wings:
+    - ["‹", "›"]
+    - ["⟨", "⟩"]
+    - ["⌜", "⌟"]
+
+branding:
+  agent_name: "hussh 🤫 One"
+  welcome: "Welcome to hussh 🤫 One. Type your message or /help for commands."
+  goodbye: "Goodbye from hussh 🤫 One."
+  response_label: " 🤫 hussh One "
+  prompt_symbol: "❯"
+  help_header: "hussh 🤫 One commands"
+
+tool_prefix: "┊"

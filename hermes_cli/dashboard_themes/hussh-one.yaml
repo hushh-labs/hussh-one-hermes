@@ -1,0 +1,50 @@
+name: hussh-one
+label: hussh 🤫 One
+description: Quiet ownership dashboard theme.
+
+palette:
+  background:
+    hex: "#071312"
+    alpha: 1
+  midground:
+    hex: "#E6FFF5"
+    alpha: 1
+  foreground:
+    hex: "#FFFFFF"
+    alpha: 0
+  warmGlow: "rgba(251, 191, 36, 0.22)"
+  noiseOpacity: 0.78
+
+typography:
+  fontSans: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif'
+  fontMono: '"SF Mono", "Cascadia Mono", ui-monospace, Menlo, Consolas, monospace'
+  baseSize: "15px"
+  lineHeight: "1.55"
+  letterSpacing: "0"
+
+layout:
+  radius: "0.5rem"
+  density: "comfortable"
+
+colorOverrides:
+  card: "#0D1F1D"
+  cardForeground: "#E6FFF5"
+  popover: "#102A27"
+  popoverForeground: "#E6FFF5"
+  primary: "#6EE7B7"
+  primaryForeground: "#08211C"
+  secondary: "#FBBF24"
+  secondaryForeground: "#1F1500"
+  muted: "#193330"
+  mutedForeground: "#9FB8B2"
+  accent: "#38BDF8"
+  accentForeground: "#04131C"
+  destructive: "#EF4444"
+  destructiveForeground: "#FFFFFF"
+  success: "#34D399"
+  warning: "#F59E0B"
+  border: "#244B45"
+  input: "#17312E"
+  ring: "#6EE7B7"
+
+layoutVariant: standard

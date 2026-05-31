@@ -3011,6 +3011,18 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(main_provider)
+            if (
+                profile
+                and profile.auth_type == "gcp_sdk"
+                and profile.default_aux_model
+            ):
+                main_model = profile.default_aux_model
+        except Exception:
+            pass
         explicit_base_url = None
         explicit_api_key = None
         if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
@@ -3037,6 +3049,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                 explicit_base_url=explicit_base_url,
                 explicit_api_key=explicit_api_key,
                 api_mode=runtime_api_mode or None,
+                main_runtime=runtime,
             )
             if client is not None:
                 logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -3227,7 +3240,7 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
-    if not model:
+    if not model and provider != "auto":
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
@@ -3770,6 +3783,62 @@ def resolve_provider_client(
             base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
         )
         logger.debug("resolve_provider_client: bedrock (%s, %s)", final_model, region)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    elif pconfig.auth_type == "gcp_sdk":
+        # GCP SDK providers (Vertex AI Claude) — use the Anthropic Vertex client via
+        # Google Application Default Credentials or active context.
+        try:
+            from agent.anthropic_adapter import build_anthropic_provider_client
+        except ImportError as exc:
+            logger.warning("resolve_provider_client: GCP Vertex requested but "
+                           "anthropic SDK not installed or incomplete: %s", exc)
+            return None, None
+
+        default_model = _get_aux_model_for_provider(provider) or "claude-sonnet-4-6"
+        final_model = _normalize_resolved_model(model or default_model, provider) or default_model
+
+        _region = None
+        if explicit_base_url and "locations/" in explicit_base_url:
+            import re as _re
+            _loc_match = _re.search(r"locations/([a-z0-9-]+)", explicit_base_url)
+            if _loc_match:
+                _region = _loc_match.group(1)
+        elif main_runtime and main_runtime.get("region"):
+            _region = main_runtime.get("region")
+
+        _project_id = None
+        if main_runtime and main_runtime.get("project_id"):
+            _project_id = main_runtime.get("project_id")
+
+        try:
+            _base_for_vertex = explicit_base_url or (
+                main_runtime.get("base_url") if main_runtime else None
+            )
+            real_client = build_anthropic_provider_client(
+                provider,
+                "gcp-sdk",
+                _base_for_vertex,
+                project_id=_project_id,
+                region=_region,
+            )
+        except Exception as exc:
+            logger.warning("resolve_provider_client: cannot create AnthropicVertex client: %s", exc)
+            return None, None
+
+        _proj = _project_id or getattr(real_client, "project_id", None) or ""
+        _reg = _region or getattr(real_client, "region", None) or "us-east5"
+        if _proj:
+            base_url = f"https://{_reg}-aiplatform.googleapis.com/v1/projects/{_proj}/locations/{_reg}"
+        else:
+            base_url = f"https://{_reg}-aiplatform.googleapis.com"
+
+        client = AnthropicAuxiliaryClient(
+            real_client, final_model, api_key="gcp-sdk",
+            base_url=base_url,
+        )
+        logger.debug("resolve_provider_client: gcp_sdk (%s, %s, %s)", final_model, _proj, _reg)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

@@ -16,6 +16,7 @@ from agent.anthropic_adapter import (
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
+    build_anthropic_vertex_client,
     build_anthropic_bedrock_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
@@ -2017,3 +2018,15 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+class TestBuildAnthropicVertexClient:
+    @patch("agent.anthropic_adapter._get_anthropic_sdk")
+    def test_build_anthropic_vertex_client(self, mock_get_sdk):
+        mock_sdk = MagicMock()
+        mock_get_sdk.return_value = mock_sdk
+        mock_sdk.AnthropicVertex = MagicMock()
+
+        client = build_anthropic_vertex_client(project_id="test-proj", region="us-east5")
+        mock_sdk.AnthropicVertex.assert_called_once()
+        assert client is not None

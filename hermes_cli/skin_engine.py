@@ -117,6 +117,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.brand import default_display_skin
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -650,7 +651,12 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 # =============================================================================
 
 _active_skin: Optional[SkinConfig] = None
-_active_skin_name: str = "default"
+_active_skin_name: str = default_display_skin()
+
+
+def _repo_skins_dir() -> Path:
+    """Repo-shipped data skins directory."""
+    return Path(__file__).resolve().parent / "skins"
 
 
 def _skins_dir() -> Path:
@@ -729,6 +735,20 @@ def list_skins() -> List[Dict[str, str]]:
             "source": "builtin",
         })
 
+    repo_skins_path = _repo_skins_dir()
+    if repo_skins_path.is_dir():
+        for f in sorted(repo_skins_path.glob("*.yaml")):
+            data = _load_skin_from_yaml(f)
+            if data:
+                skin_name = data.get("name", f.stem)
+                if any(s["name"] == skin_name for s in result):
+                    continue
+                result.append({
+                    "name": skin_name,
+                    "description": data.get("description", ""),
+                    "source": "repo",
+                })
+
     skins_path = _skins_dir()
     if skins_path.is_dir():
         for f in sorted(skins_path.glob("*.yaml")):
@@ -748,12 +768,18 @@ def list_skins() -> List[Dict[str, str]]:
 
 
 def load_skin(name: str) -> SkinConfig:
-    """Load a skin by name. Checks user skins first, then built-in."""
+    """Load a skin by name. Checks user skins first, then repo, then built-in."""
     # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"
     if user_file.is_file():
         data = _load_skin_from_yaml(user_file)
+        if data:
+            return _build_skin_config(data)
+
+    repo_file = _repo_skins_dir() / f"{name}.yaml"
+    if repo_file.is_file():
+        data = _load_skin_from_yaml(repo_file)
         if data:
             return _build_skin_config(data)
 
@@ -795,11 +821,11 @@ def init_skin_from_config(config: dict) -> None:
     display = config.get("display") or {}
     if not isinstance(display, dict):
         display = {}
-    skin_name = display.get("skin", "default")
+    skin_name = display.get("skin", default_display_skin())
     if isinstance(skin_name, str) and skin_name.strip():
         set_active_skin(skin_name.strip())
     else:
-        set_active_skin("default")
+        set_active_skin(default_display_skin())
 
 
 # =============================================================================

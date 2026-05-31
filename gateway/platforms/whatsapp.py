@@ -29,6 +29,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from hermes_cli.brand import default_whatsapp_reply_prefix
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
-    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX = default_whatsapp_reply_prefix()
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -614,8 +615,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
             bridge_env = os.environ.copy()
-            if "WHATSAPP_REPLY_PREFIX" not in bridge_env and self._reply_prefix is not None:
-                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            if "WHATSAPP_REPLY_PREFIX" not in bridge_env:
+                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._effective_reply_prefix()
 
             self._bridge_process = subprocess.Popen(
                 [

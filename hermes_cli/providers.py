@@ -37,7 +37,7 @@ class HermesOverlay:
 
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
-    auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
+    auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process | aws_sdk | gcp_sdk
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
@@ -280,6 +280,9 @@ ALIASES: Dict[str, str] = {
     # anthropic
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "vertex-claude": "google-vertex-claude",
+    "gcp-claude": "google-vertex-claude",
+    "google-claude": "google-vertex-claude",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
@@ -378,6 +381,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "google-vertex-claude": "Google Vertex AI Claude",
 }
 
 
@@ -469,6 +473,25 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             auth_type=overlay.auth_type,
             source="hermes",
         )
+
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(canonical)
+        if profile is not None:
+            return ProviderDef(
+                id=profile.name,
+                name=profile.display_name or profile.name,
+                transport=profile.api_mode or "chat_completions",
+                api_key_env_vars=tuple(profile.env_vars or ()),
+                base_url=profile.base_url,
+                is_aggregator=False,
+                auth_type=profile.auth_type,
+                doc=profile.signup_url,
+                source="profile",
+            )
+    except Exception:
+        pass
 
     return None
 

@@ -3284,7 +3284,7 @@ class AIAgent:
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
         if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+            from agent.anthropic_adapter import build_anthropic_provider_client, _is_oauth_token
 
             try:
                 self._anthropic_client.close()
@@ -3293,8 +3293,10 @@ class AIAgent:
 
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base
-            self._anthropic_client = build_anthropic_client(
-                runtime_key, runtime_base,
+            self._anthropic_client = build_anthropic_provider_client(
+                self.provider,
+                runtime_key,
+                runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
@@ -3354,13 +3356,15 @@ class AIAgent:
         rebuilt client carries the reduced beta set.
         """
         _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
-        if getattr(self, "provider", None) == "bedrock":
+        prov = getattr(self, "provider", None)
+        if prov == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             self._anthropic_client = build_anthropic_bedrock_client(region)
         else:
-            from agent.anthropic_adapter import build_anthropic_client
-            self._anthropic_client = build_anthropic_client(
+            from agent.anthropic_adapter import build_anthropic_provider_client
+            self._anthropic_client = build_anthropic_provider_client(
+                prov,
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),

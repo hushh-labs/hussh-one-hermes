@@ -68,6 +68,15 @@ def _ra():
     return run_agent
 
 
+def _provider_uses_anthropic_vertex(provider: str) -> bool:
+    try:
+        from agent.anthropic_adapter import provider_uses_anthropic_vertex
+
+        return provider_uses_anthropic_vertex(provider)
+    except Exception:
+        return False
+
+
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -303,9 +312,10 @@ def init_agent(
     elif (provider_name is None) and agent._base_url_hostname == "api.x.ai":
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
-    elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
+    elif agent.provider == "anthropic" or _provider_uses_anthropic_vertex(agent.provider) or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
-        agent.provider = "anthropic"
+        if not agent.provider:
+            agent.provider = "anthropic"
     elif agent._base_url_lower.rstrip("/").endswith("/anthropic"):
         # Third-party Anthropic-compatible endpoints (e.g. MiniMax, DashScope)
         # use a URL convention ending in /anthropic. Auto-detect these so the
@@ -582,10 +592,16 @@ def init_agent(
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
     if agent.api_mode == "anthropic_messages":
-        from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
+        from agent.anthropic_adapter import (
+            build_anthropic_client,
+            build_anthropic_provider_client,
+            provider_uses_anthropic_vertex,
+            resolve_anthropic_token,
+        )
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
+        _is_vertex_anthropic = provider_uses_anthropic_vertex(agent.provider)
         if _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
@@ -600,6 +616,21 @@ def init_agent(
             agent._client_kwargs = {}
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+        elif _is_vertex_anthropic:
+            agent._anthropic_client = build_anthropic_provider_client(
+                agent.provider,
+                "gcp-sdk",
+                base_url,
+                timeout=_provider_timeout,
+            )
+            agent._anthropic_api_key = "gcp-sdk"
+            agent._anthropic_base_url = base_url
+            agent._is_anthropic_oauth = False
+            agent.api_key = "gcp-sdk"
+            agent.client = None
+            agent._client_kwargs = {}
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {agent.model} (GCP Vertex AI + AnthropicVertex SDK)")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

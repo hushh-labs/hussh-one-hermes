@@ -441,7 +441,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 
-# Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
+# Auto-extend PROVIDER_REGISTRY with any simple provider registered in
 # providers/ that is not already declared above.  New providers only need a
 # plugins/model-providers/<name>/ plugin — no edits to this file required.
 try:
@@ -449,7 +449,9 @@ try:
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
             continue
-        if _pp.auth_type != "api_key" or not _pp.env_vars:
+        if _pp.auth_type == "api_key" and not _pp.env_vars:
+            continue
+        if _pp.auth_type not in {"api_key", "gcp_sdk"}:
             continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
@@ -463,9 +465,9 @@ try:
         PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
             id=_pp.name,
             name=_pp.display_name or _pp.name,
-            auth_type="api_key",
+            auth_type=_pp.auth_type,
             inference_base_url=_pp.base_url,
-            api_key_env_vars=_api_key_vars or _pp.env_vars,
+            api_key_env_vars=(_api_key_vars or _pp.env_vars) if _pp.auth_type == "api_key" else (),
             base_url_env_var=_base_url_var or "",
         )
         # Also register aliases so resolve_provider() resolves them

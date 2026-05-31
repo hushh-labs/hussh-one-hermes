@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import stat
 import subprocess
@@ -761,6 +762,131 @@ def build_anthropic_client(
     return _anthropic_sdk.Anthropic(**kwargs)
 
 
+def provider_uses_anthropic_vertex(provider: Optional[str]) -> bool:
+    """Return True when a provider profile should use AnthropicVertex."""
+    if not provider:
+        return False
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(str(provider).strip().lower())
+        return bool(
+            profile
+            and profile.auth_type == "gcp_sdk"
+            and profile.api_mode == "anthropic_messages"
+        )
+    except Exception:
+        return False
+
+
+def _vertex_region_from_base_url(base_url: Optional[str]) -> Optional[str]:
+    """Extract a Vertex AI region from a base URL when one is embedded."""
+    text = _normalize_base_url_text(base_url)
+    if not text:
+        return None
+    loc_match = re.search(r"/locations/([a-z0-9-]+)", text)
+    if loc_match:
+        return loc_match.group(1)
+    try:
+        hostname = urlparse(text).hostname or ""
+    except Exception:
+        hostname = ""
+    suffix = "-aiplatform.googleapis.com"
+    if hostname.endswith(suffix):
+        candidate = hostname[: -len(suffix)]
+        return candidate or None
+    return None
+
+
+def build_anthropic_provider_client(
+    provider: Optional[str],
+    api_key,
+    base_url: str = None,
+    timeout: float = None,
+    *,
+    drop_context_1m_beta: bool = False,
+    project_id: Optional[str] = None,
+    region: Optional[str] = None,
+):
+    """Build the Anthropic SDK client appropriate for a provider profile."""
+    if provider_uses_anthropic_vertex(provider):
+        kwargs = {
+            "project_id": project_id,
+            "region": region or _vertex_region_from_base_url(base_url),
+        }
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return build_anthropic_vertex_client(**kwargs)
+    return build_anthropic_client(
+        api_key,
+        base_url,
+        timeout=timeout,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
+
+
+def build_anthropic_vertex_client(
+    project_id: Optional[str] = None,
+    region: Optional[str] = None,
+    timeout: float = None,
+):
+    """Create an AnthropicVertex client for GCP Vertex AI Claude models.
+
+    Uses the Anthropic SDK's native Vertex AI adapter, which provides full
+    Claude feature parity with Vertex AI's managed Claude API: prompt caching,
+    thinking budgets, adaptive thinking, etc.
+
+    Auth uses the Google credentials chain (ADC, active gcloud auth, etc.)
+    under the active GCP project and region.
+    """
+    _anthropic_sdk = _get_anthropic_sdk()
+    if _anthropic_sdk is None:
+        raise ImportError(
+            "The 'anthropic' package is required for the Vertex Anthropic provider. "
+            "Install it with: pip install 'anthropic>=0.39.0'"
+        )
+    if not hasattr(_anthropic_sdk, "AnthropicVertex"):
+        raise ImportError(
+            "anthropic.AnthropicVertex not available. "
+            "Upgrade with: pip install 'anthropic>=0.39.0'"
+        )
+    from httpx import Timeout
+    import os
+
+    # Resolve project_id if not provided
+    if not project_id:
+        try:
+            from agent.gemini_native_adapter import _resolve_vertex_project
+            project_id, _ = _resolve_vertex_project()
+        except Exception:
+            pass
+
+    # Resolve region/location if not provided
+    if not region:
+        try:
+            from agent.gemini_native_adapter import _resolve_vertex_location
+            region = _resolve_vertex_location()
+        except Exception:
+            pass
+
+    # Fallbacks if still None or global (Vertex Claude is regional)
+    project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or ""
+    region = region or os.getenv("GOOGLE_CLOUD_LOCATION") or ""
+    if not region or region == "global":
+        region = "us-east5"  # Best default region hosting Claude on Vertex AI
+
+    logger.info("Initializing AnthropicVertex client with project_id=%s, region=%s", project_id, region)
+
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+
+    return _anthropic_sdk.AnthropicVertex(
+        project_id=project_id,
+        region=region,
+        timeout=Timeout(timeout=float(_read_timeout), connect=10.0),
+        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+    )
+
+
 def build_anthropic_bedrock_client(region: str):
     """Create an AnthropicBedrock client for Bedrock Claude models.
 
@@ -836,7 +962,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (TypeError, json.JSONDecodeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -857,9 +983,9 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
-    Checks two sources in order:
-      1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
-      2. ~/.claude/.credentials.json file
+    Checks two sources:
+      1. ~/.claude/.credentials.json file, when present
+      2. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
@@ -868,12 +994,9 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
-    kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
-
-    # Fall back to JSON file
+    # Prefer an explicit credential file when present. This keeps test and
+    # profile-isolated homes from accidentally reading the operator's global
+    # macOS Keychain entry.
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -890,6 +1013,10 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                     }
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+
+    kc_creds = _read_claude_code_credentials_from_keychain()
+    if kc_creds:
+        return kc_creds
 
     return None
 
