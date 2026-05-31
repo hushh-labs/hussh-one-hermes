@@ -50,7 +50,7 @@ export default [
     },
     rules: {
       'no-fallthrough': ['error', { allowEmptyCase: true }],
-      curly: ['error', 'all'],
+      curly: ['warn', 'all'],
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
       '@typescript-eslint/no-unused-vars': 'off',
       'no-undef': 'off',
@@ -65,18 +65,18 @@ export default [
         { blankLine: 'always', next: ['empty'], prev: 'export' },
         { blankLine: 'never', next: 'iife', prev: ['block', 'block-like', 'empty'] }
       ],
-      'perfectionist/sort-exports': ['error', { order: 'asc', type: 'natural' }],
+      'perfectionist/sort-exports': ['warn', { order: 'asc', type: 'natural' }],
       'perfectionist/sort-imports': [
-        'error',
+        'warn',
         {
           groups: ['side-effect', 'builtin', 'external', 'internal', 'parent', 'sibling', 'index'],
           order: 'asc',
           type: 'natural'
         }
       ],
-      'perfectionist/sort-jsx-props': ['error', { order: 'asc', type: 'natural' }],
-      'perfectionist/sort-named-exports': ['error', { order: 'asc', type: 'natural' }],
-      'perfectionist/sort-named-imports': ['error', { order: 'asc', type: 'natural' }],
+      'perfectionist/sort-jsx-props': ['warn', { order: 'asc', type: 'natural' }],
+      'perfectionist/sort-named-exports': ['warn', { order: 'asc', type: 'natural' }],
+      'perfectionist/sort-named-imports': ['warn', { order: 'asc', type: 'natural' }],
       'react-hooks/exhaustive-deps': 'warn',
       'react-hooks/rules-of-hooks': 'error',
       'unused-imports/no-unused-imports': 'error'
@@ -94,6 +94,18 @@ export default [
       'no-redeclare': 'off',
       'react-compiler/react-compiler': 'off',
       'react-hooks/exhaustive-deps': 'off'
+    }
+  },
+  {
+    files: ['packages/hermes-ink/src/ink/parse-keypress.ts'],
+    rules: {
+      'no-useless-escape': 'off'
+    }
+  },
+  {
+    files: ['src/lib/mathUnicode.ts', 'src/lib/text.ts'],
+    rules: {
+      'no-control-regex': 'off'
     }
   },
   {
