@@ -1061,6 +1061,28 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _restart_should_use_service_manager() -> bool:
+    """Return True when the current gateway process is service-supervised.
+
+    Service restarts exit with code 75 and rely on the supervisor to relaunch
+    the gateway. That is correct under systemd/launchd/container supervision,
+    but wrong for manual screen/tmux/nohup runs where no parent will respawn us.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+
+    if sys.platform == "darwin":
+        xpc_service = (os.environ.get("XPC_SERVICE_NAME") or "").strip()
+        if (
+            xpc_service
+            and xpc_service != "0"
+            and xpc_service.startswith("ai.hermes.gateway")
+        ):
+            return True
+
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -10345,12 +10367,10 @@ class GatewayRunner:
         # When running under a service manager (systemd/launchd) or inside a
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        # us. Manual screen/tmux/nohup runs must use the detached restart
+        # helper; otherwise they exit cleanly and no supervisor brings them
+        # back.
+        if _restart_should_use_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -19115,7 +19135,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        if _restart_should_use_service_manager():
+            runner.request_restart(detached=False, via_service=True)
+        else:
+            runner.request_restart(detached=True, via_service=False)
     
     loop = asyncio.get_running_loop()
 
