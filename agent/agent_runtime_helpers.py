@@ -1364,6 +1364,21 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     if not api_mode:
         api_mode = determine_api_mode(new_provider, base_url)
 
+    if api_mode == "anthropic_messages":
+        try:
+            from agent.vertex_claude_runtime import looks_like_vertex_claude_runtime
+
+            if looks_like_vertex_claude_runtime(
+                new_provider,
+                api_key or getattr(agent, "api_key", None),
+                base_url,
+                api_mode=api_mode,
+            ):
+                new_provider = "google-vertex-claude"
+                api_key = "gcp-sdk"
+        except Exception:
+            pass
+
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
     # /v1 into the anthropic_messages client, which would cause the SDK to
     # hit /v1/v1/messages.  `model_switch.switch_model()` already strips
@@ -1583,6 +1598,26 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "anthropic_base_url": agent._anthropic_base_url,
             "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
+        try:
+            from agent.vertex_claude_runtime import looks_like_vertex_claude_runtime
+            from agent.gemini_native_adapter import _resolve_vertex_project
+            from hermes_cli.vertex_ai_locations import infer_vertex_location_from_base_url
+
+            if looks_like_vertex_claude_runtime(
+                agent.provider,
+                agent._anthropic_api_key,
+                agent._anthropic_base_url,
+                api_mode=agent.api_mode,
+            ):
+                _project_id, _ = _resolve_vertex_project()
+                agent._primary_runtime["project_id"] = _project_id
+                agent._primary_runtime["region"] = (
+                    infer_vertex_location_from_base_url(agent._anthropic_base_url)
+                    or infer_vertex_location_from_base_url(agent.base_url)
+                    or "global"
+                )
+        except Exception:
+            pass
 
     # ── Reset fallback state ──
     agent._fallback_activated = False

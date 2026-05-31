@@ -563,6 +563,89 @@ def run_conversation(
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+
+    # Fail fast for Vertex Claude runtimes that look configured but cannot run
+    # a Hermes-shaped request. This protects long-lived TUI sessions that were
+    # switched before the current access preflight existed.
+    try:
+        from agent.vertex_claude_runtime import looks_like_vertex_claude_runtime
+
+        if (
+            looks_like_vertex_claude_runtime(
+                getattr(agent, "provider", None),
+                getattr(agent, "_anthropic_api_key", None) or getattr(agent, "api_key", None),
+                getattr(agent, "_anthropic_base_url", None) or getattr(agent, "base_url", None),
+                api_mode=getattr(agent, "api_mode", None),
+            )
+            and not getattr(agent, "_vertex_claude_runtime_access_ok", False)
+        ):
+            from hermes_cli.vertex_claude_access import check_vertex_claude_model_access
+
+            access = check_vertex_claude_model_access(
+                getattr(agent, "model", "") or "",
+                base_url=getattr(agent, "_anthropic_base_url", None)
+                or getattr(agent, "base_url", None)
+                or "",
+            )
+            if not access.ok:
+                final_response = f"Vertex Claude model access check failed: {access.message}"
+                messages.append({"role": "assistant", "content": final_response})
+                try:
+                    agent._persist_session(messages, conversation_history)
+                except Exception:
+                    pass
+                return {
+                    "final_response": final_response,
+                    "messages": messages,
+                    "api_calls": 0,
+                    "completed": False,
+                    "failed": True,
+                    "error": access.message,
+                }
+            if access.base_url and access.base_url != getattr(agent, "base_url", ""):
+                try:
+                    from agent.anthropic_adapter import build_anthropic_vertex_client
+                    from agent.gemini_native_adapter import _resolve_vertex_project
+                    from hermes_cli.timeouts import get_provider_request_timeout
+                    from hermes_cli.vertex_ai_locations import (
+                        infer_vertex_location_from_base_url,
+                        vertex_aiplatform_base_url,
+                    )
+
+                    _vertex_project, _ = _resolve_vertex_project()
+                    _vertex_location = (
+                        infer_vertex_location_from_base_url(access.base_url)
+                        or access.location
+                        or "global"
+                    )
+                    agent._anthropic_client = build_anthropic_vertex_client(
+                        project_id=_vertex_project,
+                        region=_vertex_location,
+                        base_url=vertex_aiplatform_base_url(
+                            _vertex_location,
+                            with_version=True,
+                        ),
+                        timeout=get_provider_request_timeout(
+                            "google-vertex-claude",
+                            getattr(agent, "model", "") or "",
+                        ),
+                    )
+                    agent.provider = "google-vertex-claude"
+                    agent.api_key = "gcp-sdk"
+                    agent.base_url = access.base_url
+                    agent._anthropic_api_key = "gcp-sdk"
+                    agent._anthropic_base_url = access.base_url
+                    agent._is_anthropic_oauth = False
+                    if hasattr(agent, "_transport_cache"):
+                        agent._transport_cache.clear()
+                except Exception as _vertex_rebuild_exc:
+                    logger.debug(
+                        "Vertex Claude pre-turn rebuild skipped: %s",
+                        _vertex_rebuild_exc,
+                    )
+            agent._vertex_claude_runtime_access_ok = True
+    except Exception as _vertex_access_exc:
+        logger.debug("Vertex Claude pre-turn access check skipped: %s", _vertex_access_exc)
     
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)
@@ -1146,6 +1229,7 @@ def run_conversation(
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
+        vertex_claude_locations_attempted: set[str] = set()
         has_retried_429 = False
         restart_with_compressed_messages = False
         restart_with_length_continuation = False
@@ -2548,6 +2632,32 @@ def run_conversation(
                         "%sllama.cpp grammar error but no pattern/format "
                         "keywords to strip — falling through to normal retry",
                         agent.log_prefix,
+                    )
+
+                # Vertex Claude sometimes returns a model-not-found 404 for one
+                # location while the same model is reachable from another
+                # global/multi-region endpoint. Recover inside the Vertex
+                # provider before falling through to unrelated fallback models.
+                try:
+                    from agent.vertex_claude_runtime import (
+                        try_recover_vertex_claude_location,
+                    )
+
+                    if try_recover_vertex_claude_location(
+                        agent,
+                        api_error,
+                        vertex_claude_locations_attempted,
+                    ):
+                        agent._buffer_status(
+                            "⚠️ Vertex Claude rejected this location — "
+                            "rebuilt the Vertex adapter on another supported "
+                            "location and retrying..."
+                        )
+                        continue
+                except Exception as _vertex_recovery_exc:
+                    logger.debug(
+                        "Vertex Claude location recovery skipped: %s",
+                        _vertex_recovery_exc,
                     )
 
                 retry_count += 1

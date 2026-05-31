@@ -598,10 +598,18 @@ def init_agent(
             provider_uses_anthropic_vertex,
             resolve_anthropic_token,
         )
+        from agent.vertex_claude_runtime import looks_like_vertex_claude_runtime
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
         # (prompt caching, thinking budgets, adaptive thinking).
         _is_bedrock_anthropic = agent.provider == "bedrock"
-        _is_vertex_anthropic = provider_uses_anthropic_vertex(agent.provider)
+        _is_vertex_anthropic = provider_uses_anthropic_vertex(
+            agent.provider
+        ) or looks_like_vertex_claude_runtime(
+            agent.provider,
+            api_key,
+            base_url,
+            api_mode=agent.api_mode,
+        )
         if _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
@@ -617,6 +625,8 @@ def init_agent(
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
         elif _is_vertex_anthropic:
+            agent.provider = "google-vertex-claude"
+            _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
             agent._anthropic_client = build_anthropic_provider_client(
                 agent.provider,
                 "gcp-sdk",

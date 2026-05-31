@@ -41,7 +41,11 @@ class TestAuxiliaryClientVertexClaudeResolution:
         assert client is not None
         assert "europe-west1" in client.base_url
         assert "custom-proj" in client.base_url
-        mock_builder.assert_called_once_with(project_id="custom-proj", region="europe-west1")
+        mock_builder.assert_called_once_with(
+            project_id="custom-proj",
+            region="europe-west1",
+            base_url="https://europe-west1-aiplatform.googleapis.com/v1",
+        )
 
     def test_vertex_claude_auxiliary_uses_global_endpoint(self):
         """Global Vertex Claude runtime should not be rewritten to a regional host."""
@@ -65,7 +69,11 @@ class TestAuxiliaryClientVertexClaudeResolution:
         assert client.base_url == (
             "https://aiplatform.googleapis.com/v1/projects/custom-proj/locations/global"
         )
-        mock_builder.assert_called_once_with(project_id="custom-proj", region="global")
+        mock_builder.assert_called_once_with(
+            project_id="custom-proj",
+            region="global",
+            base_url="https://aiplatform.googleapis.com/v1",
+        )
 
     def test_vertex_claude_auxiliary_uses_multi_region_endpoint(self):
         """US/EU multi-region Vertex Claude hosts use Google's REP endpoint format."""
@@ -88,7 +96,11 @@ class TestAuxiliaryClientVertexClaudeResolution:
         assert client.base_url == (
             "https://aiplatform.us.rep.googleapis.com/v1/projects/custom-proj/locations/us"
         )
-        mock_builder.assert_called_once_with(project_id="custom-proj", region="us")
+        mock_builder.assert_called_once_with(
+            project_id="custom-proj",
+            region="us",
+            base_url="https://aiplatform.us.rep.googleapis.com/v1",
+        )
 
     def test_auto_uses_profile_aux_model_for_vertex_main_runtime(self):
         """Auto side tasks should not inherit an unavailable primary Opus SKU."""
@@ -173,3 +185,93 @@ class TestPrimaryRuntimeVertexClaude:
         assert agent._anthropic_api_key == "gcp-sdk"
         mock_builder.assert_called_once()
         assert mock_builder.call_args.kwargs["region"] == "us-east5"
+
+    def test_agent_init_normalizes_stale_anthropic_vertex_runtime(self):
+        from run_agent import AIAgent
+
+        mock_vertex = MagicMock()
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_native,
+            patch(
+                "agent.anthropic_adapter.build_anthropic_vertex_client",
+                return_value=mock_vertex,
+            ) as mock_vertex_builder,
+        ):
+            agent = AIAgent(
+                api_key="gcp-sdk",
+                base_url="https://aiplatform.googleapis.com",
+                provider="anthropic",
+                api_mode="anthropic_messages",
+                model="claude-opus-4-8",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.provider == "google-vertex-claude"
+        assert agent._anthropic_client is mock_vertex
+        mock_vertex_builder.assert_called_once()
+        mock_native.assert_not_called()
+
+
+class TestVertexClaudeRuntimeRecovery:
+    def test_location_recovery_rebuilds_vertex_client(self, monkeypatch):
+        from agent.vertex_claude_runtime import try_recover_vertex_claude_location
+
+        old_client = MagicMock()
+        new_client = MagicMock()
+        agent = MagicMock()
+        agent.provider = "google-vertex-claude"
+        agent.api_mode = "anthropic_messages"
+        agent.model = "claude-opus-4-8"
+        agent.api_key = "gcp-sdk"
+        agent.base_url = "https://aiplatform.googleapis.com"
+        agent._anthropic_api_key = "gcp-sdk"
+        agent._anthropic_base_url = "https://aiplatform.googleapis.com"
+        agent._anthropic_client = old_client
+        agent._client_kwargs = {"api_key": "stale"}
+        agent._primary_runtime = {
+            "provider": "google-vertex-claude",
+            "api_mode": "anthropic_messages",
+            "api_key": "gcp-sdk",
+            "base_url": "https://aiplatform.googleapis.com",
+            "anthropic_api_key": "gcp-sdk",
+            "anthropic_base_url": "https://aiplatform.googleapis.com",
+            "client_kwargs": {},
+        }
+        agent._transport_cache = {}
+
+        class NotFound(Exception):
+            status_code = 404
+
+        error = NotFound(
+            "Publisher Model projects/example/locations/global/"
+            "publishers/anthropic/models/claude-opus-4-8 was not found"
+        )
+
+        monkeypatch.setattr(
+            "agent.gemini_native_adapter._resolve_vertex_project",
+            lambda: ("test-project", "test"),
+        )
+        mock_builder = MagicMock(return_value=new_client)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.build_anthropic_vertex_client",
+            mock_builder,
+        )
+
+        recovered = try_recover_vertex_claude_location(agent, error, set())
+
+        assert recovered is True
+        old_client.close.assert_called_once()
+        assert agent.provider == "google-vertex-claude"
+        assert agent.base_url == "https://aiplatform.us.rep.googleapis.com"
+        assert agent._anthropic_client is new_client
+        assert agent._primary_runtime["region"] == "us"
+        mock_builder.assert_called_once_with(
+            project_id="test-project",
+            region="us",
+            base_url="https://aiplatform.us.rep.googleapis.com/v1",
+            timeout=None,
+        )

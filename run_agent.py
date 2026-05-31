@@ -3191,6 +3191,18 @@ class AIAgent:
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
+        try:
+            from agent.vertex_claude_runtime import looks_like_vertex_claude_runtime
+
+            if looks_like_vertex_claude_runtime(
+                getattr(self, "provider", None),
+                getattr(self, "_anthropic_api_key", None),
+                getattr(self, "_anthropic_base_url", None) or getattr(self, "base_url", None),
+                api_mode=getattr(self, "api_mode", None),
+            ):
+                return False
+        except Exception:
+            pass
         # Only refresh credentials for the native Anthropic provider.
         # Other anthropic_messages providers (MiniMax, Alibaba, etc.) use their own keys.
         if self.provider != "anthropic":

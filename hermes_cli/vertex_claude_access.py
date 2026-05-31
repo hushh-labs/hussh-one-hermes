@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from hermes_cli.vertex_ai_locations import (
@@ -95,19 +96,31 @@ def check_vertex_claude_model_access(
     for location in candidate_locations_for_vertex_claude(model, preferred):
         tried.append(location)
         try:
-            from agent.anthropic_adapter import build_anthropic_vertex_client
+            from run_agent import AIAgent
 
-            client = build_anthropic_vertex_client(
-                project_id=project_id,
-                region=location,
-                base_url=vertex_aiplatform_base_url(location, with_version=True),
-                timeout=timeout,
-            )
-            client.messages.create(
+            agent = AIAgent(
                 model=model,
-                max_tokens=1,
-                messages=[{"role": "user", "content": "ok"}],
+                provider="google-vertex-claude",
+                base_url=vertex_aiplatform_base_url(location),
+                api_key="gcp-sdk",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                max_iterations=1,
+                max_tokens=4096,
+                enabled_toolsets=[],
+                fallback_model={},
+                skip_context_files=True,
+                skip_memory=True,
+                platform="vertex-preflight",
             )
+            with agent._anthropic_client.messages.stream(
+                model=model,
+                max_tokens=4096,
+                system=agent._build_system_prompt(None),
+                messages=[{"role": "user", "content": "Reply with ok."}],
+            ) as stream:
+                for _ in stream.text_stream:
+                    break
             return VertexClaudeAccessCheck(
                 ok=True,
                 location=location,
@@ -115,8 +128,9 @@ def check_vertex_claude_model_access(
             )
         except Exception as exc:
             raw = str(exc)
-            if project_id:
-                raw = raw.replace(project_id, "<project>")
+            raw = re.sub(r"projects/[^/`'\"\s]+", "projects/<project>", raw)
+            if project_id and len(str(project_id)) > 3:
+                raw = raw.replace(str(project_id), "<project>")
             last_error = f"{type(exc).__name__}: {raw[:240]}"
 
     return VertexClaudeAccessCheck(

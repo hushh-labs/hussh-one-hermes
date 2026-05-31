@@ -2045,3 +2045,25 @@ class TestBuildAnthropicVertexClient:
         assert mock_sdk.AnthropicVertex.call_args.kwargs["base_url"] == (
             "https://aiplatform.us.rep.googleapis.com/v1"
         )
+
+    @patch("agent.anthropic_adapter._get_anthropic_sdk")
+    def test_provider_client_uses_vertex_from_gcp_sdk_runtime_hints(self, mock_get_sdk):
+        from agent.anthropic_adapter import build_anthropic_provider_client
+
+        mock_sdk = MagicMock()
+        mock_get_sdk.return_value = mock_sdk
+        mock_sdk.AnthropicVertex = MagicMock()
+        mock_sdk.Anthropic = MagicMock()
+
+        build_anthropic_provider_client(
+            "anthropic",
+            "gcp-sdk",
+            "https://aiplatform.googleapis.com",
+        )
+
+        mock_sdk.AnthropicVertex.assert_called_once()
+        mock_sdk.Anthropic.assert_not_called()
+        assert mock_sdk.AnthropicVertex.call_args.kwargs["region"] == "global"
+        assert mock_sdk.AnthropicVertex.call_args.kwargs["base_url"] == (
+            "https://aiplatform.googleapis.com/v1"
+        )

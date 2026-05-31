@@ -779,6 +779,34 @@ def provider_uses_anthropic_vertex(provider: Optional[str]) -> bool:
         return False
 
 
+def should_use_anthropic_vertex(
+    provider: Optional[str],
+    api_key=None,
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return True when runtime hints require the AnthropicVertex SDK.
+
+    Provider metadata is the normal path, but long-lived TUI/gateway sessions
+    can restore a runtime from base URL/API-key fields before the provider
+    profile is available or after stale provider metadata was persisted. Treat
+    the Vertex host + `gcp-sdk` key as authoritative so those edge cases never
+    fall back to the native Anthropic client.
+    """
+    if provider_uses_anthropic_vertex(provider):
+        return True
+    try:
+        from agent.vertex_claude_runtime import looks_like_vertex_claude_runtime
+
+        return looks_like_vertex_claude_runtime(
+            provider,
+            api_key,
+            base_url,
+            api_mode="anthropic_messages",
+        )
+    except Exception:
+        return False
+
+
 def _vertex_region_from_base_url(base_url: Optional[str]) -> Optional[str]:
     """Extract a Vertex AI region from a base URL when one is embedded."""
     text = _normalize_base_url_text(base_url)
@@ -817,11 +845,25 @@ def build_anthropic_provider_client(
     region: Optional[str] = None,
 ):
     """Build the Anthropic SDK client appropriate for a provider profile."""
-    if provider_uses_anthropic_vertex(provider):
+    if should_use_anthropic_vertex(provider, api_key, base_url):
+        inferred_region = region or _vertex_region_from_base_url(base_url)
+        vertex_base_url = None
+        if inferred_region:
+            try:
+                from hermes_cli.vertex_ai_locations import vertex_aiplatform_base_url
+
+                vertex_base_url = vertex_aiplatform_base_url(
+                    inferred_region,
+                    with_version=True,
+                )
+            except Exception:
+                vertex_base_url = None
         kwargs = {
             "project_id": project_id,
-            "region": region or _vertex_region_from_base_url(base_url),
+            "region": inferred_region,
         }
+        if vertex_base_url:
+            kwargs["base_url"] = vertex_base_url
         if timeout is not None:
             kwargs["timeout"] = timeout
         return build_anthropic_vertex_client(**kwargs)
