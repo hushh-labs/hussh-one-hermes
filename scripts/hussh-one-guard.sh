@@ -63,4 +63,29 @@ command -v node >/dev/null 2>&1 || {
 }
 node --check scripts/whatsapp-bridge/bridge.js
 
+dashboard_url="${HUSSH_ONE_DASHBOARD_URL:-http://127.0.0.1:9119}"
+if [[ "${HUSSH_ONE_SKIP_DASHBOARD_HEALTH:-0}" != "1" ]]; then
+  if command -v curl >/dev/null 2>&1; then
+    dashboard_html="$(curl -fsS --max-time 2 "$dashboard_url/" 2>/dev/null || true)"
+    if [[ -n "$dashboard_html" ]]; then
+      if [[ "$dashboard_html" != *"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__=true"* ]]; then
+        echo "error: dashboard is reachable at $dashboard_url but embedded chat is not enabled" >&2
+        echo "hint: restart with scripts/hussh-one-restart.sh or hermes dashboard --tui" >&2
+        exit 1
+      fi
+      echo "Hussh One dashboard chat health passed."
+    elif [[ "${HUSSH_ONE_REQUIRE_DASHBOARD_CHAT:-0}" == "1" ]]; then
+      echo "error: dashboard is not reachable at $dashboard_url" >&2
+      exit 1
+    else
+      echo "Hussh One dashboard chat health skipped (dashboard not reachable)."
+    fi
+  elif [[ "${HUSSH_ONE_REQUIRE_DASHBOARD_CHAT:-0}" == "1" ]]; then
+    echo "error: curl is required for dashboard chat health checks" >&2
+    exit 1
+  else
+    echo "Hussh One dashboard chat health skipped (curl not available)."
+  fi
+fi
+
 echo "Hussh One guard passed."

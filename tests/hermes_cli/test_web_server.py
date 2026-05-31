@@ -347,6 +347,32 @@ class TestWebServerEndpoints:
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
 
+    def test_index_injects_embedded_chat_disabled_flag(self, monkeypatch):
+        """Plain dashboard launches keep /api/pty disabled but expose SPA diagnostics."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
+        monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+
+        resp = self.client.get("/")
+
+        assert resp.status_code == 200
+        assert "window.__HERMES_DASHBOARD_EMBEDDED_CHAT__=false" in resp.text
+        assert "window.__HERMES_SESSION_TOKEN__=" in resp.text
+
+    def test_index_injects_embedded_chat_enabled_flag(self, monkeypatch):
+        """`hermes dashboard --tui` advertises embedded chat to the SPA."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+
+        resp = self.client.get("/")
+
+        assert resp.status_code == 200
+        assert "window.__HERMES_DASHBOARD_EMBEDDED_CHAT__=true" in resp.text
+        assert "window.__HERMES_SESSION_TOKEN__=" in resp.text
+
 
 # ---------------------------------------------------------------------------
 # _build_schema_from_config tests
@@ -2445,4 +2471,3 @@ class TestDashboardPluginStaticAssetAllowlist:
         # 403 traversal-blocked OR 404 (depending on URL decode order)
         # — never 200.
         assert resp.status_code in (403, 404)
-

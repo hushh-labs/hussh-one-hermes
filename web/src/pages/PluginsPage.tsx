@@ -58,22 +58,6 @@ export default function PluginsPage() {
     void loadHub().finally(() => setLoading(false));
   }, [loadHub]);
 
-  useEffect(() => {
-    setAfterTitle(
-      <Button
-        ghost
-        size="icon"
-        className="shrink-0 text-muted-foreground hover:text-foreground"
-        disabled={loading || rescanBusy}
-        onClick={() => void onRescan()}
-        aria-label={t.pluginsPage.refreshDashboard}
-      >
-        {rescanBusy ? <Spinner /> : <RefreshCw />}
-      </Button>,
-    );
-    return () => setAfterTitle(null);
-  }, [loading, rescanBusy, setAfterTitle, t.pluginsPage.refreshDashboard]);
-
   const onInstall = async () => {
     const id = installId.trim();
     if (!id) {
@@ -100,7 +84,7 @@ export default function PluginsPage() {
     }
   };
 
-  const onRescan = async () => {
+  const onRescan = useCallback(async () => {
     setRescanBusy(true);
     try {
       const rc = await api.rescanPlugins();
@@ -114,7 +98,23 @@ export default function PluginsPage() {
     } finally {
       setRescanBusy(false);
     }
-  };
+  }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
+
+  useEffect(() => {
+    setAfterTitle(
+      <Button
+        ghost
+        size="icon"
+        className="shrink-0 text-muted-foreground hover:text-foreground"
+        disabled={loading || rescanBusy}
+        onClick={() => void onRescan()}
+        aria-label={t.pluginsPage.refreshDashboard}
+      >
+        {rescanBusy ? <Spinner /> : <RefreshCw />}
+      </Button>,
+    );
+    return () => setAfterTitle(null);
+  }, [loading, onRescan, rescanBusy, setAfterTitle, t.pluginsPage.refreshDashboard]);
 
   const onSaveProviders = async () => {
     setProviderBusy(true);

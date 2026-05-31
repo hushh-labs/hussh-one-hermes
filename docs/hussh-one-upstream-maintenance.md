@@ -68,6 +68,7 @@ The guard checks:
 - the old Vertex provider name did not reappear
 - branding, WhatsApp prefix, model switching, provider discovery, runtime rebuild, and auxiliary-client tests pass
 - the WhatsApp bridge remains syntactically valid
+- if the dashboard is running, it was launched with embedded chat enabled
 
 When credentials are available, also run the live smoke:
 
@@ -77,4 +78,10 @@ When credentials are available, also run the live smoke:
 
 ## Restart After Passing
 
-Only restart the dashboard and gateway after the guard passes. If the guard fails, resolve the merge or plugin contract first; do not paper over it with local config.
+Only restart the dashboard and gateway after the guard passes. For local Hussh One operation, use:
+
+```bash
+scripts/hussh-one-restart.sh
+```
+
+This starts the dashboard with `--tui`, so the browser Chat tab embeds the real Hermes TUI. If the guard fails, resolve the merge or plugin contract first; do not paper over it with local config.

@@ -252,9 +252,17 @@ scripts/hussh-one-guard.sh
 
 The guard verifies the Hussh One brand profile, repo skin/theme, WhatsApp
 reply-prefix default, Vertex Claude provider abstraction, model switching,
-auxiliary-client routing, and bridge syntax. A failure means the update broke
-the fork contract; fix the abstraction instead of papering over it with `.env`
-or local config.
+auxiliary-client routing, dashboard embedded-chat startup, and bridge syntax.
+A failure means the update broke the fork contract; fix the abstraction instead
+of papering over it with `.env` or local config.
+
+For local Hussh One service restarts, prefer:
+
+```bash
+scripts/hussh-one-restart.sh
+```
+
+It starts the dashboard with `--tui` so `/chat` embeds the real Hermes TUI.
 
 Keep the boundary clear:
 

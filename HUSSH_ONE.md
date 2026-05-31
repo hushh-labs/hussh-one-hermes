@@ -179,6 +179,14 @@ kill -9 $(lsof -t -i:3000)
 .venv/bin/hermes gateway restart
 ```
 
+The local browser dashboard must expose the real Hermes TUI chat surface:
+
+```bash
+scripts/hussh-one-restart.sh
+```
+
+This launches `hermes dashboard --tui` on port `9119` and the gateway/WhatsApp bridge on port `3000`.
+
 ---
 
 ## 5. MACHINE-READABLE VERIFICATION CONTRACTS
@@ -196,3 +204,7 @@ Future machines must run these tests to verify the integrity of the abstraction 
 ### Contract C: Upstream Update Guard
 *   **Invariant:** Official Hermes and plugin updates must not erase the Hussh One brand profile, skin, dashboard theme, WhatsApp prefix default, or Vertex Claude provider abstraction.
 *   **Verification:** Run `scripts/hussh-one-guard.sh` after every upstream merge, plugin update, or provider-runtime edit. The maintenance procedure is documented in `docs/hussh-one-upstream-maintenance.md`.
+
+### Contract D: Dashboard Chat Surface
+*   **Invariant:** The Hussh One dashboard must expose embedded chat through the real Hermes TUI, not a forked React chat composer.
+*   **Verification:** Run `scripts/hussh-one-restart.sh`, then `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
