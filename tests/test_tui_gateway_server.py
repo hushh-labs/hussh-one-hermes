@@ -1220,6 +1220,39 @@ def test_prompt_submit_natural_model_switch_intercepts(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_natural_model_switch_failure_stays_in_transcript(monkeypatch):
+    session = _session()
+    server._sessions["sid"] = session
+    events = []
+
+    def fake_apply(_sid, _target, _raw):
+        raise ValueError("no opus access")
+
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: events.append((event, sid, payload)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "switch to opus 4.8"},
+            }
+        )
+
+        assert resp["result"]["status"] == "model_switch_failed"
+        assert events[0] == ("message.start", "sid", {})
+        assert events[1][0:2] == ("message.complete", "sid")
+        assert events[1][2]["text"] == "model switch failed: no opus access"
+        assert session["running"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

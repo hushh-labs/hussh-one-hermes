@@ -3825,6 +3825,10 @@ def resolve_provider_client(
         # Google Application Default Credentials or active context.
         try:
             from agent.anthropic_adapter import build_anthropic_provider_client
+            from hermes_cli.vertex_ai_locations import (
+                infer_vertex_location_from_base_url,
+                vertex_aiplatform_base_url,
+            )
         except ImportError as exc:
             logger.warning("resolve_provider_client: GCP Vertex requested but "
                            "anthropic SDK not installed or incomplete: %s", exc)
@@ -3834,12 +3838,14 @@ def resolve_provider_client(
         final_model = _normalize_resolved_model(model or default_model, provider) or default_model
 
         _region = None
-        if explicit_base_url and "locations/" in explicit_base_url:
+        if explicit_base_url:
+            _region = infer_vertex_location_from_base_url(explicit_base_url)
+        if not _region and explicit_base_url and "locations/" in explicit_base_url:
             import re as _re
             _loc_match = _re.search(r"locations/([a-z0-9-]+)", explicit_base_url)
             if _loc_match:
                 _region = _loc_match.group(1)
-        elif main_runtime and main_runtime.get("region"):
+        if not _region and main_runtime and main_runtime.get("region"):
             _region = main_runtime.get("region")
 
         _project_id = None
@@ -3862,11 +3868,12 @@ def resolve_provider_client(
             return None, None
 
         _proj = _project_id or getattr(real_client, "project_id", None) or ""
-        _reg = _region or getattr(real_client, "region", None) or "us-east5"
+        _reg = _region or getattr(real_client, "region", None) or "global"
+        _base = vertex_aiplatform_base_url(_reg, with_version=bool(_proj))
         if _proj:
-            base_url = f"https://{_reg}-aiplatform.googleapis.com/v1/projects/{_proj}/locations/{_reg}"
+            base_url = f"{_base}/projects/{_proj}/locations/{_reg}"
         else:
-            base_url = f"https://{_reg}-aiplatform.googleapis.com"
+            base_url = _base
 
         client = AnthropicAuxiliaryClient(
             real_client, final_model, api_key="gcp-sdk",

@@ -619,6 +619,7 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    verify_runtime_access: bool = False,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -1012,6 +1013,40 @@ def switch_model(
     # --- Determine api_mode if not already set ---
     if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
+
+    if verify_runtime_access:
+        try:
+            pdef_for_check = resolve_provider_full(
+                target_provider,
+                user_providers,
+                custom_providers,
+            )
+        except Exception:
+            pdef_for_check = None
+        if (
+            pdef_for_check is not None
+            and pdef_for_check.auth_type == "gcp_sdk"
+            and api_mode == "anthropic_messages"
+        ):
+            from hermes_cli.vertex_claude_access import (
+                check_vertex_claude_model_access,
+            )
+
+            access = check_vertex_claude_model_access(
+                new_model,
+                base_url=base_url,
+            )
+            if not access.ok:
+                return ModelSwitchResult(
+                    success=False,
+                    new_model=new_model,
+                    target_provider=target_provider,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=access.message,
+                )
+            if access.base_url:
+                base_url = access.base_url
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the

@@ -212,4 +212,5 @@ Future machines must run these tests to verify the integrity of the abstraction 
 ### Contract E: Natural-Language Model Switching
 *   **Invariant:** The TUI and WhatsApp channel may accept short, direct user text such as `switch to opus 4.8`, `switch to sonnet 4.6`, or `switch back to gemini 3.5 flash` as a session-only `/model` switch. The default config remains Gemini 3.5 Flash unless `/model ... --global` is used.
 *   **Prompt-injection safeguard:** Detection must stay deterministic and reject slash commands, quoted text, URLs, code blocks, lists, long pasted text, help questions, negations, and injection-shaped phrases such as `ignore previous`, `system prompt`, `developer message`, or `webpage says`.
+*   **Vertex safeguard:** Vertex Claude model switches must run a minimal live access check before mutating the session. If the project has not enabled a model such as `claude-opus-4-8`, the switch must fail in-chat instead of leaving the next user turn on an unusable runtime.
 *   **Verification:** Run `tests/hermes_cli/test_natural_model_switch.py`, `tests/gateway/test_natural_model_switch.py`, and the TUI prompt-submit natural switch test.

@@ -43,6 +43,53 @@ class TestAuxiliaryClientVertexClaudeResolution:
         assert "custom-proj" in client.base_url
         mock_builder.assert_called_once_with(project_id="custom-proj", region="europe-west1")
 
+    def test_vertex_claude_auxiliary_uses_global_endpoint(self):
+        """Global Vertex Claude runtime should not be rewritten to a regional host."""
+        mock_anthropic_vertex = MagicMock()
+        mock_anthropic_vertex.project_id = "custom-proj"
+        mock_anthropic_vertex.region = "global"
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_vertex_client",
+            return_value=mock_anthropic_vertex,
+        ) as mock_builder:
+            main_rt = {
+                "project_id": "custom-proj",
+                "region": "global",
+                "base_url": "https://aiplatform.googleapis.com",
+            }
+            client, _ = resolve_provider_client(
+                "google-vertex-claude", "", main_runtime=main_rt
+            )
+
+        assert client.base_url == (
+            "https://aiplatform.googleapis.com/v1/projects/custom-proj/locations/global"
+        )
+        mock_builder.assert_called_once_with(project_id="custom-proj", region="global")
+
+    def test_vertex_claude_auxiliary_uses_multi_region_endpoint(self):
+        """US/EU multi-region Vertex Claude hosts use Google's REP endpoint format."""
+        mock_anthropic_vertex = MagicMock()
+        mock_anthropic_vertex.project_id = "custom-proj"
+        mock_anthropic_vertex.region = "us"
+
+        with patch(
+            "agent.anthropic_adapter.build_anthropic_vertex_client",
+            return_value=mock_anthropic_vertex,
+        ) as mock_builder:
+            main_rt = {
+                "project_id": "custom-proj",
+                "base_url": "https://aiplatform.us.rep.googleapis.com",
+            }
+            client, _ = resolve_provider_client(
+                "google-vertex-claude", "", main_runtime=main_rt
+            )
+
+        assert client.base_url == (
+            "https://aiplatform.us.rep.googleapis.com/v1/projects/custom-proj/locations/us"
+        )
+        mock_builder.assert_called_once_with(project_id="custom-proj", region="us")
+
     def test_auto_uses_profile_aux_model_for_vertex_main_runtime(self):
         """Auto side tasks should not inherit an unavailable primary Opus SKU."""
         from agent.auxiliary_client import _resolve_auto

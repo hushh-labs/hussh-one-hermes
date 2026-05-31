@@ -2,6 +2,11 @@ from unittest.mock import MagicMock
 
 from hermes_cli.model_switch import switch_model
 from hermes_cli.providers import determine_api_mode, resolve_provider_full
+from hermes_cli.vertex_claude_access import VertexClaudeAccessCheck
+from hermes_cli.vertex_ai_locations import (
+    infer_vertex_location_from_base_url,
+    vertex_aiplatform_base_url,
+)
 
 
 def _patch_vertex_runtime(monkeypatch):
@@ -26,6 +31,14 @@ def test_google_vertex_claude_resolves_from_provider_profile():
     assert determine_api_mode("google-vertex-claude") == "anthropic_messages"
 
 
+def test_vertex_location_base_url_mapping():
+    assert vertex_aiplatform_base_url("global") == "https://aiplatform.googleapis.com"
+    assert vertex_aiplatform_base_url("us") == "https://aiplatform.us.rep.googleapis.com"
+    assert vertex_aiplatform_base_url("eu", with_version=True) == "https://aiplatform.eu.rep.googleapis.com/v1"
+    assert infer_vertex_location_from_base_url("https://aiplatform.googleapis.com/v1") == "global"
+    assert infer_vertex_location_from_base_url("https://aiplatform.us.rep.googleapis.com/v1") == "us"
+
+
 def test_switch_model_explicit_google_vertex_claude_provider(monkeypatch):
     _patch_vertex_runtime(monkeypatch)
 
@@ -41,6 +54,48 @@ def test_switch_model_explicit_google_vertex_claude_provider(monkeypatch):
     assert result.new_model == "claude-opus-4-8"
     assert result.api_mode == "anthropic_messages"
     assert result.api_key == "gcp-sdk"
+
+
+def test_switch_model_google_vertex_access_preflight_blocks_unavailable(monkeypatch):
+    _patch_vertex_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.vertex_claude_access.check_vertex_claude_model_access",
+        lambda *a, **k: VertexClaudeAccessCheck(ok=False, message="no opus access"),
+    )
+
+    result = switch_model(
+        "claude-opus-4-8",
+        current_provider="gemini",
+        current_model="gemini-3.5-flash",
+        explicit_provider="google-vertex-claude",
+        verify_runtime_access=True,
+    )
+
+    assert result.success is False
+    assert result.error_message == "no opus access"
+
+
+def test_switch_model_google_vertex_access_preflight_updates_base_url(monkeypatch):
+    _patch_vertex_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.vertex_claude_access.check_vertex_claude_model_access",
+        lambda *a, **k: VertexClaudeAccessCheck(
+            ok=True,
+            location="global",
+            base_url="https://aiplatform.googleapis.com",
+        ),
+    )
+
+    result = switch_model(
+        "claude-sonnet-4-6",
+        current_provider="gemini",
+        current_model="gemini-3.5-flash",
+        explicit_provider="google-vertex-claude",
+        verify_runtime_access=True,
+    )
+
+    assert result.success is True
+    assert result.base_url == "https://aiplatform.googleapis.com"
 
 
 def test_switch_model_provider_qualified_slug_does_not_route_to_gemini(monkeypatch):

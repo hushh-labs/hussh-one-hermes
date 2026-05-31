@@ -10662,6 +10662,7 @@ class GatewayRunner:
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
+                            verify_runtime_access=True,
                         )
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
@@ -10813,6 +10814,7 @@ class GatewayRunner:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            verify_runtime_access=True,
         )
 
         if not result.success:

@@ -784,6 +784,14 @@ def _vertex_region_from_base_url(base_url: Optional[str]) -> Optional[str]:
     text = _normalize_base_url_text(base_url)
     if not text:
         return None
+    try:
+        from hermes_cli.vertex_ai_locations import infer_vertex_location_from_base_url
+
+        inferred = infer_vertex_location_from_base_url(text)
+        if inferred:
+            return inferred
+    except Exception:
+        pass
     loc_match = re.search(r"/locations/([a-z0-9-]+)", text)
     if loc_match:
         return loc_match.group(1)
@@ -828,6 +836,7 @@ def build_anthropic_provider_client(
 def build_anthropic_vertex_client(
     project_id: Optional[str] = None,
     region: Optional[str] = None,
+    base_url: Optional[str] = None,
     timeout: float = None,
 ):
     """Create an AnthropicVertex client for GCP Vertex AI Claude models.
@@ -869,11 +878,20 @@ def build_anthropic_vertex_client(
         except Exception:
             pass
 
-    # Fallbacks if still None or global (Vertex Claude is regional)
+    # Fallbacks if still unset. Global is a valid Claude endpoint; do not
+    # rewrite it to a regional endpoint or Opus multi-region access breaks.
     project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("GCP_PROJECT") or ""
     region = region or os.getenv("GOOGLE_CLOUD_LOCATION") or ""
-    if not region or region == "global":
-        region = "us-east5"  # Best default region hosting Claude on Vertex AI
+    if not region:
+        region = "global"
+
+    if base_url is None:
+        try:
+            from hermes_cli.vertex_ai_locations import vertex_aiplatform_base_url
+
+            base_url = vertex_aiplatform_base_url(region, with_version=True)
+        except Exception:
+            base_url = None
 
     logger.info("Initializing AnthropicVertex client with project_id=%s, region=%s", project_id, region)
 
@@ -882,6 +900,7 @@ def build_anthropic_vertex_client(
     return _anthropic_sdk.AnthropicVertex(
         project_id=project_id,
         region=region,
+        base_url=base_url,
         timeout=Timeout(timeout=float(_read_timeout), connect=10.0),
         default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )

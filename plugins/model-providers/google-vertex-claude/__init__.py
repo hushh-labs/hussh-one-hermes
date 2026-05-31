@@ -29,7 +29,7 @@ google_vertex_claude = GoogleVertexClaudeProfile(
         "GOOGLE_CLOUD_LOCATION",
         "GOOGLE_APPLICATION_CREDENTIALS",
     ),
-    base_url="https://us-east5-aiplatform.googleapis.com",
+    base_url="https://aiplatform.googleapis.com",
     auth_type="gcp_sdk",
     supports_health_check=False,
     default_aux_model="claude-sonnet-4-6",

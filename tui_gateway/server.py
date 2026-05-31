@@ -1161,6 +1161,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         explicit_provider=explicit_provider,
         user_providers=user_provs,
         custom_providers=custom_provs,
+        verify_runtime_access=True,
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
@@ -1221,7 +1222,15 @@ def _maybe_handle_natural_model_switch_submit(
     try:
         result = _apply_model_switch(sid, session, intent.raw_args)
     except Exception as exc:
-        return _err(rid, 5001, str(exc))
+        _emit("message.start", sid, {})
+        _emit("message.complete", sid, {"text": f"model switch failed: {exc}"})
+        return _ok(
+            rid,
+            {
+                "status": "model_switch_failed",
+                "error": str(exc),
+            },
+        )
 
     lines = [f"model -> {result['value']}"]
     if result.get("provider_label"):

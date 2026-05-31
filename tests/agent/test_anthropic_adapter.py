@@ -2029,4 +2029,19 @@ class TestBuildAnthropicVertexClient:
 
         client = build_anthropic_vertex_client(project_id="test-proj", region="us-east5")
         mock_sdk.AnthropicVertex.assert_called_once()
+        assert mock_sdk.AnthropicVertex.call_args.kwargs["base_url"] == (
+            "https://us-east5-aiplatform.googleapis.com/v1"
+        )
         assert client is not None
+
+    @patch("agent.anthropic_adapter._get_anthropic_sdk")
+    def test_build_anthropic_vertex_client_uses_multi_region_host(self, mock_get_sdk):
+        mock_sdk = MagicMock()
+        mock_get_sdk.return_value = mock_sdk
+        mock_sdk.AnthropicVertex = MagicMock()
+
+        build_anthropic_vertex_client(project_id="test-proj", region="us")
+
+        assert mock_sdk.AnthropicVertex.call_args.kwargs["base_url"] == (
+            "https://aiplatform.us.rep.googleapis.com/v1"
+        )

@@ -1606,15 +1606,15 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "gcp_sdk":
         from agent.gemini_native_adapter import _resolve_vertex_project, _resolve_vertex_location
+        from hermes_cli.vertex_ai_locations import vertex_aiplatform_base_url
+
         _proj, _proj_src = _resolve_vertex_project()
-        _region = _resolve_vertex_location() or "us-east5"
-        if not _region or _region == "global":
-            _region = "us-east5"
+        _region = _resolve_vertex_location() or "global"
 
         return {
             "provider": provider,
             "api_mode": "anthropic_messages",
-            "base_url": f"https://{_region}-aiplatform.googleapis.com",
+            "base_url": vertex_aiplatform_base_url(_region),
             "api_key": "gcp-sdk",
             "source": _proj_src or "gcp-sdk-default-chain",
             "region": _region,
