@@ -16,6 +16,19 @@
 
 Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
+## Hussh One Fork
+
+This checkout is the `hussh-one-hermes` fork. Fresh Hussh One deployments should clone the fork branch and run the bootstrap/doctor flow:
+
+```bash
+git clone https://github.com/hushh-labs/hussh-one-hermes.git
+cd hussh-one-hermes
+scripts/hussh-one-bootstrap.sh --manager auto --start
+scripts/hussh-one-doctor.sh --require-services
+```
+
+Keep `upstream` pointed at `https://github.com/NousResearch/hermes-agent.git` and merge official Hermes updates into `hussh-one-hermes`. See `docs/hussh-one-deployment.md` and `docs/hussh-one-upstream-maintenance.md`.
+
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>

@@ -29,6 +29,9 @@ environment_variables:
 configuration_schema_mutations:
   ~/.hermes/config.yaml:
     display.skin: "hussh-one"
+    dashboard.theme: "hussh-one"
+    model.provider: "gemini"
+    model.default: "gemini-3.5-flash"
     cron.wrap_response: false
 ```
 
@@ -142,9 +145,11 @@ When setting up a new fork, a fresh agent, or a collaborator machine (`msainani`
 
 ### Step 1: Remote Syncing
 ```bash
-# Register upstream for official updates & shared repo for customizations
+# Clone the Hussh One fork and register upstream for official updates
+git clone https://github.com/hushh-labs/hussh-one-hermes.git
+cd hussh-one-hermes
 git remote add upstream https://github.com/NousResearch/hermes-agent.git
-git remote add hushh-labs https://github.com/hushh-labs/hushh-agents.git
+git switch hussh-one-hermes
 ```
 
 ### Step 2: Environment Isolation Configuration
@@ -160,32 +165,38 @@ export HERMES_PROFILE="msainani"
 ```
 
 ### Step 3: Global System Preferences
-Disable automated cron wrappers to ensure only clean metaphorical summaries are transmitted to mobile screens:
+Disable automated cron wrappers and set the Hussh One local defaults:
 ```bash
 # Bypasses "Cronjob Response (job_id: xxx)" prepended text
 .venv/bin/hermes config set cron.wrap_response false
 
-# Set custom personality skin
+# Set Hussh One identity and keep the global default on Gemini Flash
 .venv/bin/hermes config set display.skin hussh-one
+.venv/bin/hermes config set dashboard.theme hussh-one
+.venv/bin/hermes config set model.provider gemini
+.venv/bin/hermes config set model.default gemini-3.5-flash
 ```
 
-### Step 4: Standalone Daemon Supervision (macOS launchd)
-To ensure old background instances of the Node.js bridge don't cache stale prefix strings, always run a hard flush during a restart:
+### Step 4: Bootstrap, Supervisor, and Doctor
+Fresh clones should use the Hussh One bootstrap rather than hand-running screen sessions:
 ```bash
-# Kill any orphaned node bridges hanging on port 3000
-kill -9 $(lsof -t -i:3000)
+scripts/hussh-one-bootstrap.sh --manager auto
 
-# Restart the supervision daemon
-.venv/bin/hermes gateway restart
+# Optional: install/start the detected supervisor as part of bootstrap
+scripts/hussh-one-bootstrap.sh --manager auto --start
 ```
 
-The local browser dashboard must expose the real Hermes TUI chat surface:
+Lifecycle is owned by one detected manager:
 
 ```bash
+scripts/hussh-one-supervisor.sh install
+scripts/hussh-one-supervisor.sh restart
+scripts/hussh-one-supervisor.sh status
+scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-restart.sh
 ```
 
-This launches `hermes dashboard --tui` on port `9119` and the gateway/WhatsApp bridge on port `3000`.
+The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `3000`.
 
 ---
 
@@ -207,7 +218,7 @@ Future machines must run these tests to verify the integrity of the abstraction 
 
 ### Contract D: Dashboard Chat Surface
 *   **Invariant:** The Hussh One dashboard must expose embedded chat through the real Hermes TUI, not a forked React chat composer.
-*   **Verification:** Run `scripts/hussh-one-restart.sh`, then `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
+*   **Verification:** Run `scripts/hussh-one-supervisor.sh restart`, then `scripts/hussh-one-doctor.sh --require-services` and `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
 
 ### Contract E: Natural-Language Model Switching
 *   **Invariant:** The TUI and WhatsApp channel may accept short, direct user text such as `switch to opus 4.8`, `switch to sonnet 4.6`, or `switch back to gemini 3.5 flash` as a session-only `/model` switch. The default config remains Gemini 3.5 Flash unless `/model ... --global` is used.
