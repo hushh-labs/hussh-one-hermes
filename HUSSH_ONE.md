@@ -208,3 +208,8 @@ Future machines must run these tests to verify the integrity of the abstraction 
 ### Contract D: Dashboard Chat Surface
 *   **Invariant:** The Hussh One dashboard must expose embedded chat through the real Hermes TUI, not a forked React chat composer.
 *   **Verification:** Run `scripts/hussh-one-restart.sh`, then `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
+
+### Contract E: Natural-Language Model Switching
+*   **Invariant:** The TUI and WhatsApp channel may accept short, direct user text such as `switch to opus 4.8`, `switch to sonnet 4.6`, or `switch back to gemini 3.5 flash` as a session-only `/model` switch. The default config remains Gemini 3.5 Flash unless `/model ... --global` is used.
+*   **Prompt-injection safeguard:** Detection must stay deterministic and reject slash commands, quoted text, URLs, code blocks, lists, long pasted text, help questions, negations, and injection-shaped phrases such as `ignore previous`, `system prompt`, `developer message`, or `webpage says`.
+*   **Verification:** Run `tests/hermes_cli/test_natural_model_switch.py`, `tests/gateway/test_natural_model_switch.py`, and the TUI prompt-submit natural switch test.

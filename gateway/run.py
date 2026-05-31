@@ -7403,6 +7403,8 @@ class GatewayRunner:
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
+            if self._natural_model_switch_args_for_event(event):
+                return "Agent is running — wait or /stop first, then switch models."
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
@@ -8035,6 +8037,13 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        natural_model_switch = await self._maybe_handle_natural_model_switch(
+            event,
+            _quick_key,
+        )
+        if natural_model_switch is not None:
+            return natural_model_switch
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
@@ -10478,6 +10487,55 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    def _natural_model_switch_args_for_event(self, event: MessageEvent) -> str:
+        """Return `/model` args for a safe WhatsApp natural-language switch."""
+        try:
+            if getattr(event, "internal", False):
+                return ""
+            if event.get_command():
+                return ""
+            if getattr(event, "message_type", None) != MessageType.TEXT:
+                return ""
+            source = getattr(event, "source", None)
+            if not source or getattr(source, "platform", None) != Platform.WHATSAPP:
+                return ""
+
+            from hermes_cli.natural_model_switch import parse_natural_model_switch
+
+            intent = parse_natural_model_switch(getattr(event, "text", "") or "")
+            return intent.raw_args if intent else ""
+        except Exception:
+            logger.debug("Natural model switch detection failed", exc_info=True)
+            return ""
+
+    async def _maybe_handle_natural_model_switch(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ) -> Optional[str]:
+        """Dispatch a safe WhatsApp natural-language switch through `/model`."""
+        raw_args = self._natural_model_switch_args_for_event(event)
+        if not raw_args:
+            return None
+
+        from hermes_cli.commands import resolve_command
+
+        cmd_def = resolve_command("model")
+        denied = self._check_slash_access(
+            event.source,
+            cmd_def.name if cmd_def else "model",
+        )
+        if denied is not None:
+            return denied
+
+        synthetic_event = dataclasses.replace(event, text=f"/model {raw_args}")
+        logger.info(
+            "Natural model switch detected on WhatsApp for session %s: %s",
+            session_key,
+            raw_args,
+        )
+        return await self._handle_model_command(synthetic_event)
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

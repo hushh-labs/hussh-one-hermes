@@ -1163,6 +1163,63 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_natural_model_switch_intercepts(monkeypatch):
+    session = _session()
+    server._sessions["sid"] = session
+    events = []
+    calls = []
+
+    def fake_apply(sid, target, raw):
+        calls.append((sid, target["session_key"], raw))
+        return {
+            "value": "claude-opus-4-8",
+            "provider": "google-vertex-claude",
+            "provider_label": "Google Vertex Claude",
+            "warning": "",
+        }
+
+    monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: events.append((event, sid, payload)),
+    )
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("agent should not start for a natural model switch")
+        ),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "switch to opus 4.8"},
+            }
+        )
+
+        assert resp["result"]["status"] == "model_switched"
+        assert resp["result"]["model"] == "claude-opus-4-8"
+        assert resp["result"]["provider"] == "google-vertex-claude"
+        assert calls == [
+            (
+                "sid",
+                "session-key",
+                "claude-opus-4-8 --provider google-vertex-claude",
+            )
+        ]
+        assert events[0] == ("message.start", "sid", {})
+        assert events[1][0:2] == ("message.complete", "sid")
+        assert "model -> claude-opus-4-8" in events[1][2]["text"]
+        assert "provider -> Google Vertex Claude" in events[1][2]["text"]
+        assert session["running"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

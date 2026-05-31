@@ -1193,7 +1193,53 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
-    return {"value": result.new_model, "warning": result.warning_message or ""}
+    return {
+        "value": result.new_model,
+        "provider": result.target_provider,
+        "provider_label": result.provider_label or result.target_provider,
+        "warning": result.warning_message or "",
+    }
+
+
+def _maybe_handle_natural_model_switch_submit(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+) -> dict | None:
+    """Intercept clear natural-language model switches before agent execution."""
+    try:
+        from hermes_cli.natural_model_switch import parse_natural_model_switch
+
+        intent = parse_natural_model_switch(text if isinstance(text, str) else "")
+    except Exception:
+        intent = None
+
+    if intent is None:
+        return None
+
+    try:
+        result = _apply_model_switch(sid, session, intent.raw_args)
+    except Exception as exc:
+        return _err(rid, 5001, str(exc))
+
+    lines = [f"model -> {result['value']}"]
+    if result.get("provider_label"):
+        lines.append(f"provider -> {result['provider_label']}")
+    lines.append("session only; default config unchanged")
+    if result.get("warning"):
+        lines.append(f"warning: {result['warning']}")
+
+    _emit("message.start", sid, {})
+    _emit("message.complete", sid, {"text": "\n".join(lines)})
+    return _ok(
+        rid,
+        {
+            "status": "model_switched",
+            "model": result["value"],
+            "provider": result.get("provider", ""),
+        },
+    )
 
 
 def _compress_session_history(
@@ -3357,6 +3403,14 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
+        natural_switch = _maybe_handle_natural_model_switch_submit(
+            rid,
+            sid,
+            session,
+            text,
+        )
+        if natural_switch is not None:
+            return natural_switch
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
