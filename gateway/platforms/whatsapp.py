@@ -649,11 +649,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._bridge_log_fh = bridge_log_fh
 
             # Build bridge subprocess environment.
-            # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
-            # can use it without the user needing to set a separate env var.
+            # hussh 🤫 One: the gateway (run.py) is the SINGLE composer of the
+            # canonical stacked header (brand + model + [S]/[A] mode + divider)
+            # because only it knows the active model and select/auto mode. The
+            # operator's WHATSAPP_REPLY_PREFIX / config reply_prefix override is
+            # also applied inside run.py (hermes_cli.hussh_one_header). To
+            # guarantee exactly one header and never a double prefix, the Node
+            # bridge is always neutralised here (empty prefix) — it must not add
+            # its own prefix on top of what the gateway already composed.
             bridge_env = os.environ.copy()
-            if "WHATSAPP_REPLY_PREFIX" not in bridge_env:
-                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._effective_reply_prefix()
+            bridge_env["WHATSAPP_REPLY_PREFIX"] = ""
 
             self._bridge_process = subprocess.Popen(
                 [

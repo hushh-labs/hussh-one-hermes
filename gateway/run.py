@@ -9130,31 +9130,32 @@ class GatewayRunner:
             )
             response = _sanitize_gateway_final_response(source.platform, response)
 
-            # Programmatically enforce Kushal's WhatsApp layout preference
+            # hussh 🤫 One — canonical stacked WhatsApp header.
+            # Logic lives in hermes_cli.hussh_one_header so it stays
+            # upgrade-safe and unit-testable instead of hardcoded here.
+            # Mode token: [S] Select = user manually pinned the model this
+            # session (session model override present); [A] Auto = running the
+            # configured default. Env/config WHATSAPP_REPLY_PREFIX still wins.
             if getattr(source, "platform", None) == Platform.WHATSAPP:
+                from hermes_cli.hussh_one_header import apply_whatsapp_header
+
                 model_name = agent_result.get("model") or "gemini-3.5-flash"
-                short_model = model_name.rsplit("/", 1)[-1]
-                if "gemini" in short_model:
-                    display_model = "Gemini 3.5 Flash"
-                elif "gemma" in short_model:
-                    display_model = "Gemma 4"
-                elif "qwen" in short_model:
-                    display_model = "Qwen 3.6 35B"
-                else:
-                    display_model = short_model
-                
-                header_prefix = f"{display_model} [S]\n════════════════════\n"
-                import re as _re
-                clean_response = response.strip()
-                # Cleanly and recursively strip off any hallucinated or contaminated prefixes/underlines in the history
-                while True:
-                    old_len = len(clean_response)
-                    clean_response = _re.sub(r"^(高度|高度)\s*", "", clean_response, flags=_re.IGNORECASE)
-                    clean_response = _re.sub(r"^(Gemini 3.5 Flash \[S\]|Gemma 4 \[S\]|Qwen 3.6 35B \[S\]|Gemini 3.5 Flash|Gemma 4|Qwen 3.6)\s*", "", clean_response, flags=_re.IGNORECASE)
-                    clean_response = _re.sub(r"^([═=─-]{5,})\s*", "", clean_response, flags=_re.IGNORECASE)
-                    if len(clean_response) == old_len:
-                        break
-                response = header_prefix + clean_response
+                is_select_mode = bool(
+                    session_key
+                    and session_key in self._session_model_overrides
+                )
+                wa_cfg = self.config.platforms.get(Platform.WHATSAPP)
+                config_prefix = (
+                    wa_cfg.extra.get("reply_prefix")
+                    if wa_cfg and getattr(wa_cfg, "extra", None)
+                    else None
+                )
+                response = apply_whatsapp_header(
+                    response,
+                    model_name,
+                    is_select_mode=is_select_mode,
+                    config_prefix=config_prefix,
+                )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.

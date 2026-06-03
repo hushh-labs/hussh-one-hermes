@@ -160,7 +160,7 @@ check_legacy_branding() {
   if rg -n "$legacy_pattern" --glob '!tests/hermes_cli/test_hussh_one_branding.py' >/tmp/hussh-one-branding.$$ 2>/dev/null; then
     cat /tmp/hussh-one-branding.$$
     rm -f /tmp/hussh-one-branding.$$
-    fail "legacy Hussh puppy branding text remains in tracked files"
+    fail "legacy ""Hussh ""puppy branding text remains in tracked files"
   else
     rm -f /tmp/hussh-one-branding.$$
     pass "legacy puppy branding strings are absent"
