@@ -183,6 +183,8 @@ set_config_defaults() {
   run_cmd "$hermes" config set dashboard.theme hussh-one
   run_cmd "$hermes" config set model.provider gemini
   run_cmd "$hermes" config set model.default gemini-3.5-flash
+  run_cmd "$hermes" config set agent.reasoning_effort high
+  run_cmd "$hermes" config set display.show_reasoning true
 }
 
 env_value() {

@@ -209,6 +209,12 @@ if not provider:
 if not default_model:
     warnings.append("model.default is unset; bootstrap will set it to gemini-3.5-flash")
 
+reasoning_effort = cfg.get("agent", {}).get("reasoning_effort")
+if reasoning_effort != "high":
+    warnings.append(f"agent.reasoning_effort is {reasoning_effort}, expected high")
+if not cfg.get("display", {}).get("show_reasoning"):
+    warnings.append("display.show_reasoning is False, expected True")
+
 for line in errors:
     print(f"ERROR:{line}")
 for line in warnings:
