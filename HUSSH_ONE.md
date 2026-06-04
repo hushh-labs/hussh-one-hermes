@@ -33,6 +33,11 @@ configuration_schema_mutations:
     model.provider: "gemini"
     model.default: "gemini-3.5-flash"
     cron.wrap_response: false
+    whatsapp.require_mention_on_replies: true
+    display.tool_progress: false
+    display.interim_assistant_messages: false
+    display.show_reasoning: false
+    approvals.mode: false
 ```
 
 ---
@@ -175,6 +180,13 @@ Disable automated cron wrappers and set the Hussh One local defaults:
 .venv/bin/hermes config set dashboard.theme hussh-one
 .venv/bin/hermes config set model.provider gemini
 .venv/bin/hermes config set model.default gemini-3.5-flash
+
+# Configure strict, noise-free group tagging and auto-approvals
+.venv/bin/hermes config set whatsapp.require_mention_on_replies true
+.venv/bin/hermes config set display.tool_progress false
+.venv/bin/hermes config set display.interim_assistant_messages false
+.venv/bin/hermes config set display.show_reasoning false
+.venv/bin/hermes config set approvals.mode off
 ```
 
 ### Step 4: Bootstrap, Supervisor, and Doctor

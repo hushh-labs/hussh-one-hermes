@@ -296,23 +296,44 @@ async function startSocket() {
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
-        if ((isGroup && !ALLOWED_GROUPS.includes(chatId)) || chatId.includes('status')) continue;
+        if (chatId.includes('status')) continue;
 
         if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
           continue;
         }
 
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        if (!ALLOWED_GROUPS.includes(chatId)) {
+        // Check if the group is allowlisted or if it's the self-chat JID.
+        // If not, we only allow it if it's a group message explicitly triggered by the user (the owner)
+        // using @One, @husshOne, or @hussh-one, or starts with a slash.
+        const isAllowlisted = ALLOWED_GROUPS.includes(chatId);
+        let isSelfChat = false;
+        if (!isAllowlisted && !isGroup) {
           const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-          if (!isSelfChat) continue;
+          isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+        }
+
+        if (!isAllowlisted && !isSelfChat) {
+          // We only allow messages sent by "me" (whether group or private DM with someone else)
+          // if they contain an explicit trigger.
+          const tempContent = getMessageContent(msg);
+          let tempBody = '';
+          if (tempContent.conversation) {
+            tempBody = tempContent.conversation;
+          } else if (tempContent.extendedTextMessage?.text) {
+            tempBody = tempContent.extendedTextMessage.text;
+          } else if (tempContent.imageMessage) {
+            tempBody = tempContent.imageMessage.caption || '';
+          } else if (tempContent.videoMessage) {
+            tempBody = tempContent.videoMessage.caption || '';
+          }
+          const cleanBody = tempBody.trim();
+          const hasTrigger = cleanBody.startsWith('/') || /@One\b|@husshOne\b|@hussh-one\b/i.test(cleanBody);
+          if (!hasTrigger) {
+            continue;
+          }
         }
       }
 
