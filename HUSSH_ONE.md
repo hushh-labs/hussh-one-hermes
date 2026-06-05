@@ -2,6 +2,11 @@
 ### Machine-Readable System Sync & Integration Specification
 `Version: 1.0.0` | `Target System: hussh-one-agents` | `Base: hermes-agent-v0.15.1`
 
+> 📖 **Human-readable companion:** the nested, advertisable product & architecture
+> docs live in [`docs/hussh-one/`](./docs/hussh-one/README.md) — overview, brand,
+> architecture, per-feature pages, operations runbooks, contracts, and roadmap.
+> This file remains the dense machine-readable spec.
+
 ---
 
 ## ⚕ SYSTEM SUMMARY & METADATA
