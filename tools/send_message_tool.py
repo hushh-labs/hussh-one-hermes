@@ -18,6 +18,37 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Capsule outbound-send guard (hussh-one). A sandboxed group session sets a
+# context-local flag so send_message can ONLY reply into the capsule's own
+# chat, never laterally to another chat/contact. Defense-in-depth: the
+# capsule already strips the "messaging" toolset, but if some path still
+# reaches this tool we hard-refuse a non-capsule target here.
+# ---------------------------------------------------------------------------
+import contextvars as _contextvars
+from typing import Optional as _Optional
+
+_OUTBOUND_SEND_LOCK: "_contextvars.ContextVar[_Optional[str]]" = _contextvars.ContextVar(
+    "hermes_outbound_send_lock", default=None
+)
+
+
+def set_outbound_send_lock(allowed_chat_id):
+    """Restrict send_message to ``allowed_chat_id`` only; returns reset token.
+
+    Pass the capsule's chat_id (the only target the agent may send to). Pass
+    None/'' to clear. Always reset in a finally block.
+    """
+    return _OUTBOUND_SEND_LOCK.set(str(allowed_chat_id) if allowed_chat_id else None)
+
+
+def reset_outbound_send_lock(token) -> None:
+    try:
+        _OUTBOUND_SEND_LOCK.reset(token)
+    except Exception:
+        pass
+
+
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
@@ -186,6 +217,22 @@ def _handle_send(args):
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
+
+    # Capsule outbound-send guard (early): a sandboxed group session may only
+    # reply into its own chat. Refuse any target that isn't the locked chat
+    # BEFORE name-resolution / network so lateral leaks can't slip through.
+    _locked_chat = _OUTBOUND_SEND_LOCK.get()
+    if _locked_chat:
+        _raw = (target_ref or "").split(":", 1)[0].strip()
+        if _raw != str(_locked_chat):
+            logger.warning(
+                "Capsule guard: blocked send_message target=%r (locked to %s)",
+                target, _locked_chat,
+            )
+            return tool_error(
+                "Blocked: this sandboxed group session can only reply in its "
+                "own chat. Sending to other chats/contacts is disabled."
+            )
 
     if target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)

@@ -17042,6 +17042,7 @@ class GatewayRunner:
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
+            nonlocal enabled_toolsets, disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -17062,6 +17063,58 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+
+            # ----------------------------------------------------------------
+            # Capsule sandbox (hussh-one): if this WhatsApp chat is a
+            # configured capsule, lock the session down for that turn:
+            #   * read-only toolset (strip terminal/file/MCP/messaging/etc.)
+            #   * skip the owner's global MEMORY.md/USER.md
+            #   * route memory reads/writes into an isolated capsule dir
+            #   * block lateral send_message to any other chat
+            #   * inject the capsule guardrail system prompt
+            # See HUSSH_ONE.md §6.
+            _capsule = None
+            try:
+                if source.platform == Platform.WHATSAPP:
+                    from gateway.whatsapp_capsule import resolve_capsule
+                    _capsule = resolve_capsule(user_config, source.chat_id)
+            except Exception:
+                logger.debug("capsule resolution failed", exc_info=True)
+                _capsule = None
+
+            if _capsule is not None:
+                logger.info(
+                    "Capsule session active: jid=%s name=%s (isolated memory + read-only tools)",
+                    _capsule.jid, _capsule.name,
+                )
+                enabled_toolsets = list(_capsule.enabled_toolsets)
+                _cap_disabled = set(disabled_toolsets or []) | set(_capsule.disabled_toolsets)
+                disabled_toolsets = sorted(_cap_disabled)
+                if _capsule.system_prompt:
+                    combined_ephemeral = (
+                        (combined_ephemeral + "\n\n" + _capsule.system_prompt).strip()
+                        if combined_ephemeral else _capsule.system_prompt
+                    )
+
+            # Activate capsule isolation overrides (context-local). These must
+            # be live during BOTH agent construction (memory loads from disk
+            # there) and run_conversation (memory writes + send guard). They
+            # are reset in the run_conversation finally block below.
+            _capsule_mem_token = None
+            _capsule_send_token = None
+            if _capsule is not None:
+                try:
+                    from tools.memory_tool import set_memory_dir_override
+                    if _capsule.skip_global_memory or _capsule.skip_global_user_profile:
+                        _capsule_mem_token = set_memory_dir_override(_capsule.memory_dir)
+                except Exception:
+                    logger.debug("capsule memory override failed", exc_info=True)
+                if _capsule.block_outbound_send:
+                    try:
+                        from tools.send_message_tool import set_outbound_send_lock
+                        _capsule_send_token = set_outbound_send_lock(source.chat_id)
+                    except Exception:
+                        logger.debug("capsule send lock failed", exc_info=True)
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for
@@ -17674,6 +17727,20 @@ class GatewayRunner:
                     _conversation_kwargs["persist_user_message"] = message
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
+                # Reset capsule isolation overrides (memory dir + send lock)
+                # so the next turn / session on this thread is unaffected.
+                try:
+                    if _capsule_mem_token is not None:
+                        from tools.memory_tool import reset_memory_dir_override
+                        reset_memory_dir_override(_capsule_mem_token)
+                except Exception:
+                    pass
+                try:
+                    if _capsule_send_token is not None:
+                        from tools.send_message_tool import reset_outbound_send_lock
+                        reset_outbound_send_lock(_capsule_send_token)
+                except Exception:
+                    pass
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,

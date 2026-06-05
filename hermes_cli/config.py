@@ -1660,6 +1660,12 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        #
+        # Capsule mode (hussh-one): per-group sandboxes. Maps a group JID to
+        # an isolated memory dir + read-only toolset so a social group can be
+        # opened to the agent without leaking the owner's private memory,
+        # user profile, credentials, or mutation tools. See HUSSH_ONE.md §6.
+        "capsules": {},
     },
 
     # Telegram platform settings (gateway mode)
