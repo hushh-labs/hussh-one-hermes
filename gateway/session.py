@@ -490,6 +490,7 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    model_override: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -521,6 +522,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "model_override": self.model_override,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -573,6 +575,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            model_override=data.get("model_override"),
         )
 
 

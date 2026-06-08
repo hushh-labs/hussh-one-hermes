@@ -242,3 +242,79 @@ class TestIsIntentionalModelSwitch:
         }
 
         assert runner._is_intentional_model_switch(sk, "gpt-5.4") is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: Session Entry Persistence
+# ---------------------------------------------------------------------------
+
+
+class TestModelOverrideSessionPersistence:
+    """Verify that model overrides persist to SessionEntry and load correctly."""
+
+    def test_set_session_model_override_persists(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        override = {
+            "model": "gpt-5.4",
+            "provider": "openai",
+            "api_key": "key",
+            "base_url": "",
+            "api_mode": "chat_completions",
+        }
+
+        runner._set_session_model_override(sk, override)
+
+        # Check in-memory dict
+        assert runner._session_model_overrides[sk] == override
+
+        # Check SessionEntry persistence
+        session_entry = runner.session_store._entries[sk]
+        assert session_entry.model_override == override
+        save_mock = getattr(runner.session_store, "_save")
+        assert save_mock.call_count == 1
+
+    def test_ensure_session_model_override_loaded_loads(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        override = {
+            "model": "claude-opus-4-8",
+            "provider": "google-vertex-claude",
+            "api_key": "vertex-key",
+            "base_url": "",
+            "api_mode": "vertex",
+        }
+
+        # Simulate restored session state on disk
+        session_entry = runner.session_store._entries[sk]
+        session_entry.model_override = override
+
+        # Clear in-memory dict to simulate restart
+        runner._session_model_overrides.clear()
+
+        # Try to load
+        runner._ensure_session_model_override_loaded(sk)
+
+        # Verify it lazy-loaded from SessionEntry
+        assert runner._session_model_overrides[sk] == override
+
+    def test_clear_session_model_override_clears_persisted(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        override = {
+            "model": "gpt-5.4",
+            "provider": "openai",
+            "api_key": "key",
+            "base_url": "",
+            "api_mode": "chat_completions",
+        }
+
+        # Initialize with override
+        runner._set_session_model_override(sk, override)
+
+        # Now clear it
+        runner._set_session_model_override(sk, None)
+
+        assert sk not in runner._session_model_overrides
+        session_entry = runner.session_store._entries[sk]
+        assert session_entry.model_override is None

@@ -2688,6 +2688,8 @@ class GatewayRunner:
             except Exception:
                 resolved_session_key = None
 
+        if resolved_session_key:
+            self._ensure_session_model_override_loaded(resolved_session_key)
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
@@ -8979,6 +8981,7 @@ class GatewayRunner:
 
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        self._ensure_session_model_override_loaded(session_key)
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
             try:
@@ -9041,7 +9044,7 @@ class GatewayRunner:
             # session-scoped transient state so the fresh session does not
             # inherit the previous conversation's model/reasoning overrides
             # or a queued "/model switched" note.
-            self._session_model_overrides.pop(session_key, None)
+            self._set_session_model_override(session_key, None)
             self._set_session_reasoning_override(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
@@ -9892,7 +9895,7 @@ class GatewayRunner:
                 )
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
-                self._session_model_overrides.pop(session_key, None)
+                self._set_session_model_override(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
@@ -10305,7 +10308,7 @@ class GatewayRunner:
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
-        self._session_model_overrides.pop(session_key, None)
+        self._set_session_model_override(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -11275,9 +11278,10 @@ class GatewayRunner:
         if raw_args.lower() in ("auto", "reset", "clear", "default"):
             source = event.source
             session_key = self._session_key_for_source(source)
+            self._ensure_session_model_override_loaded(session_key)
             override_existed = False
             if session_key in self._session_model_overrides:
-                self._session_model_overrides.pop(session_key, None)
+                self._set_session_model_override(session_key, None)
                 override_existed = True
             self._evict_cached_agent(session_key)
             if override_existed:
@@ -11430,13 +11434,13 @@ class GatewayRunner:
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
-                        _self._session_model_overrides[_session_key] = {
+                        _self._set_session_model_override(_session_key, {
                             "model": result.new_model,
                             "provider": result.target_provider,
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
-                        }
+                        })
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -11585,13 +11589,13 @@ class GatewayRunner:
         )
 
         # Store session override so next agent creation uses the new model
-        self._session_model_overrides[session_key] = {
+        self._set_session_model_override(session_key, {
             "model": result.new_model,
             "provider": result.target_provider,
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
-        }
+        })
 
         # Evict cached agent so the next turn creates a fresh agent from the
         # override rather than relying on cache signature mismatch detection.
@@ -16586,6 +16590,43 @@ class GatewayRunner:
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
+    def _ensure_session_model_override_loaded(self, session_key: str) -> None:
+        """Load session-scoped model override from SessionEntry if present."""
+        if not session_key:
+            return
+        if session_key not in self._session_model_overrides:
+            try:
+                store = getattr(self, "session_store", None)
+                if store is not None:
+                    entries = getattr(store, "_entries", {})
+                    entry = entries.get(session_key)
+                    if entry and getattr(entry, "model_override", None):
+                        self._session_model_overrides[session_key] = entry.model_override
+            except Exception:
+                pass
+
+    def _set_session_model_override(self, session_key: str, override: Optional[dict]) -> None:
+        """Set or clear a session-scoped model override, and persist it to the session store."""
+        if not session_key:
+            return
+        if override:
+            self._session_model_overrides[session_key] = override
+        else:
+            self._session_model_overrides.pop(session_key, None)
+
+        try:
+            store = getattr(self, "session_store", None)
+            if store is not None:
+                entries = getattr(store, "_entries", {})
+                entry = entries.get(session_key)
+                if entry:
+                    entry.model_override = override
+                    save_fn = getattr(store, "_save", None)
+                    if save_fn is not None:
+                        save_fn()
+        except Exception as exc:
+            logger.debug("Failed to persist model override to session entry: %s", exc)
+
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
     ) -> tuple:
@@ -16597,6 +16638,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
+        self._ensure_session_model_override_loaded(session_key)
         override = self._session_model_overrides.get(session_key)
         if not override:
             return model, runtime_kwargs
@@ -16609,6 +16651,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
+        self._ensure_session_model_override_loaded(session_key)
         override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
 
