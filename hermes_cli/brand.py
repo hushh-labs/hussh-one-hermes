@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 BRAND_SLUG = "hussh-one"
-BRAND_DISPLAY_NAME = "hussh 🤫 One"
+BRAND_DISPLAY_NAME = "🤫 Hussh One"
 BRAND_WHATSAPP_REPLY_PREFIX = f"{BRAND_DISPLAY_NAME}\n"
 
 

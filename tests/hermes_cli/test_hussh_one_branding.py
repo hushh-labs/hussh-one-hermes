@@ -9,7 +9,7 @@ def test_fresh_config_defaults_to_hussh_one(monkeypatch, tmp_path):
 
     cfg = load_config()
 
-    assert cfg["brand"]["display_name"] == "hussh 🤫 One"
+    assert cfg["brand"]["display_name"] == "🤫 Hussh One"
     assert cfg["display"]["skin"] == "hussh-one"
     assert cfg["dashboard"]["theme"] == "hussh-one"
 
@@ -20,7 +20,7 @@ def test_repo_shipped_hussh_one_skin_loads():
     skin = load_skin("hussh-one")
 
     assert skin.name == "hussh-one"
-    assert skin.get_branding("agent_name") == "hussh 🤫 One"
+    assert skin.get_branding("agent_name") == "🤫 Hussh One"
 
 
 def test_repo_shipped_hussh_one_dashboard_theme_is_discovered():
@@ -29,7 +29,7 @@ def test_repo_shipped_hussh_one_dashboard_theme_is_discovered():
     themes = {theme["name"]: theme for theme in _discover_repo_themes()}
 
     assert "hussh-one" in themes
-    assert themes["hussh-one"]["label"] == "hussh 🤫 One"
+    assert themes["hussh-one"]["label"] == "🤫 Hussh One"
 
 
 def test_tracked_files_do_not_reference_old_puppy_brand():

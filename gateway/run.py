@@ -9685,15 +9685,29 @@ class GatewayRunner:
                     display_model = "Qwen 3.6 35B"
                 else:
                     display_model = short_model
-                
-                header_prefix = f"{display_model} [S]\n════════════════════\n"
+
+                # hussh 🤫 One canonical stacked header: emoji-first brand line,
+                # then model + dynamic mode token, then divider. [S] when the user
+                # pinned a model this session (select mode), [A] for the configured
+                # default (auto mode). Brand string is the single source of truth
+                # in hermes_cli.brand (emoji-first "🤫 Hussh One").
+                from hermes_cli.brand import BRAND_DISPLAY_NAME
+                _is_select = bool(session_key and session_key in self._session_model_overrides)
+                _mode_token = "[S]" if _is_select else "[A]"
+                header_prefix = (
+                    f"{BRAND_DISPLAY_NAME}\n"
+                    f"{display_model} {_mode_token}\n"
+                    f"════════════════════\n"
+                )
                 import re as _re
                 clean_response = response.strip()
                 # Cleanly and recursively strip off any hallucinated or contaminated prefixes/underlines in the history
                 while True:
                     old_len = len(clean_response)
                     clean_response = _re.sub(r"^(高度|高度)\s*", "", clean_response, flags=_re.IGNORECASE)
-                    clean_response = _re.sub(r"^(Gemini 3.5 Flash \[S\]|Gemma 4 \[S\]|Qwen 3.6 35B \[S\]|Gemini 3.5 Flash|Gemma 4|Qwen 3.6)\s*", "", clean_response, flags=_re.IGNORECASE)
+                    # Strip any self-echoed brand line (emoji-first or legacy emoji-middle, case-insensitive)
+                    clean_response = _re.sub(r"^(?:🤫\s*Hussh One|hussh\s*🤫?\s*One)\s*\n?", "", clean_response, flags=_re.IGNORECASE)
+                    clean_response = _re.sub(r"^(Gemini 3.5 Flash \[[SA]\]|Gemma 4 \[[SA]\]|Qwen 3.6 35B \[[SA]\]|Gemini 3.5 Flash|Gemma 4|Qwen 3.6)\s*", "", clean_response, flags=_re.IGNORECASE)
                     clean_response = _re.sub(r"^([═=─-]{5,})\s*", "", clean_response, flags=_re.IGNORECASE)
                     if len(clean_response) == old_len:
                         break

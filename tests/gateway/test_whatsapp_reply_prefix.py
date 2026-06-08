@@ -103,7 +103,7 @@ class TestAdapterInit:
         config = PlatformConfig(enabled=True)
         adapter = WhatsAppAdapter(config)
         with patch.dict("os.environ", {}, clear=True):
-            assert adapter._effective_reply_prefix() == "hussh 🤫 One\n"
+            assert adapter._effective_reply_prefix() == "🤫 Hussh One\n"
 
     def test_reply_prefix_empty_string(self):
         from gateway.platforms.whatsapp import WhatsAppAdapter

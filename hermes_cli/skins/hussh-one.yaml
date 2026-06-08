@@ -42,11 +42,11 @@ spinner:
     - ["⌜", "⌟"]
 
 branding:
-  agent_name: "hussh 🤫 One"
-  welcome: "Welcome to hussh 🤫 One. Type your message or /help for commands."
-  goodbye: "Goodbye from hussh 🤫 One."
-  response_label: " 🤫 hussh One "
+  agent_name: "🤫 Hussh One"
+  welcome: "Welcome to 🤫 Hussh One. Type your message or /help for commands."
+  goodbye: "Goodbye from 🤫 Hussh One."
+  response_label: " 🤫 Hussh One "
   prompt_symbol: "❯"
-  help_header: "hussh 🤫 One commands"
+  help_header: "🤫 Hussh One commands"
 
 tool_prefix: "┊"
