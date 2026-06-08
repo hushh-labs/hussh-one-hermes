@@ -243,6 +243,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
+    supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
+    # hussh 🤫 One brand prefix (emoji-first "🤫 Hussh One") — NOT upstream's
+    # "⚕ Hermes Agent". Sourced from hermes_cli.brand so it stays the single
+    # source of truth across CLI/skin/header.
     DEFAULT_REPLY_PREFIX = default_whatsapp_reply_prefix()
     
     # Default bridge location relative to the hermes-agent install
