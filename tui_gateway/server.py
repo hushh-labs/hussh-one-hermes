@@ -1548,7 +1548,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     return {
         "value": result.new_model,
         "provider": result.target_provider,
-        "provider_label": result.provider_label or result.target_provider,
+        "provider_label": getattr(result, "provider_label", "") or result.target_provider,
         "warning": result.warning_message or "",
     }
 

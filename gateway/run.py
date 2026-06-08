@@ -18258,6 +18258,9 @@ class GatewayRunner:
             def _bg_review_send(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
+                if source.chat_type != "dm":
+                    logger.debug("Suppressing background review message in non-DM chat: %s", message)
+                    return
                 if not _bg_review_release.is_set():
                     with _bg_review_pending_lock:
                         if not _bg_review_release.is_set():

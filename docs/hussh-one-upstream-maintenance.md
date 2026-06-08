@@ -85,3 +85,23 @@ scripts/hussh-one-restart.sh
 ```
 
 This starts the dashboard with `--tui`, so the browser Chat tab embeds the real Hermes TUI. If the guard fails, resolve the merge or plugin contract first; do not paper over it with local config.
+
+## Post-Merge Display / TUI Sanity Checks
+
+The guard covers brand/provider integrity but does NOT catch config-driven UX regressions. After a merge, also confirm two things that have bitten us before:
+
+1. **Conflict markers resolved cleanly in merged Python.** Merges that touch `tui_gateway/server.py` (model switching, prompt-submit) or `tests/hermes_cli/test_web_server.py` can leave subtle resolution gaps. Run the TUI gateway suite directly:
+   ```bash
+   python -m pytest tests/test_tui_gateway_server.py -q
+   ```
+   A `result.provider_label`-style `AttributeError` in `_apply_model_switch` will surface here — guard against it with `getattr(result, "provider_label", "")`, never bare attribute access on the `switch_model` result.
+
+2. **The TUI / dashboard tool-call panel still populates.** The right-hand tool feed (and the dashboard `/api/events` sidebar) is gated on the GLOBAL `display.tool_progress` key, read by `tui_gateway/server.py::_load_tool_progress_mode()`. If that global is set to `false`/`off` to keep a messaging channel quiet, the TUI panel goes blank too. **Never silence tool progress globally for one channel.** Keep the global default at `all` and scope the mute per-platform:
+   ```yaml
+   display:
+     tool_progress: all          # TUI/dashboard tool panel works everywhere
+     platforms:
+       whatsapp:
+         tool_progress: 'off'    # WhatsApp groups stay clean
+   ```
+   The gateway resolves this through `gateway/display_config.py::resolve_display_setting()` (per-platform override beats global), so quiet WhatsApp output and a live TUI tool panel coexist.

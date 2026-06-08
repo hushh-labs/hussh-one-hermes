@@ -4838,6 +4838,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
