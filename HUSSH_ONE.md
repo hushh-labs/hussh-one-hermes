@@ -2,6 +2,11 @@
 ### Machine-Readable System Sync & Integration Specification
 `Version: 1.0.0` | `Target System: hussh-one-agents` | `Base: hermes-agent-v0.15.1`
 
+> 📖 **Human-readable companion:** the nested, advertisable product & architecture
+> docs live in [`docs/hussh-one/`](./docs/hussh-one/README.md) — overview, brand,
+> architecture, per-feature pages, operations runbooks, contracts, and roadmap.
+> This file remains the dense machine-readable spec.
+
 ---
 
 ## ⚕ SYSTEM SUMMARY & METADATA
@@ -29,7 +34,15 @@ environment_variables:
 configuration_schema_mutations:
   ~/.hermes/config.yaml:
     display.skin: "hussh-one"
+    dashboard.theme: "hussh-one"
+    model.provider: "gemini"
+    model.default: "gemini-3.5-flash"
     cron.wrap_response: false
+    whatsapp.require_mention_on_replies: true
+    display.tool_progress: false
+    display.interim_assistant_messages: false
+    display.show_reasoning: false
+    approvals.mode: false
 ```
 
 ---
@@ -155,9 +168,11 @@ When setting up a new fork, a fresh agent, or a collaborator machine (`msainani`
 
 ### Step 1: Remote Syncing
 ```bash
-# Register upstream for official updates & shared repo for customizations
+# Clone the Hussh One fork and register upstream for official updates
+git clone https://github.com/hushh-labs/hussh-one-hermes.git
+cd hussh-one-hermes
 git remote add upstream https://github.com/NousResearch/hermes-agent.git
-git remote add hushh-labs https://github.com/hushh-labs/hushh-agents.git
+git switch hussh-one-hermes
 ```
 
 ### Step 2: Environment Isolation Configuration
@@ -173,32 +188,123 @@ export HERMES_PROFILE="msainani"
 ```
 
 ### Step 3: Global System Preferences
-Disable automated cron wrappers to ensure only clean metaphorical summaries are transmitted to mobile screens:
+Disable automated cron wrappers and set the Hussh One local defaults:
 ```bash
 # Bypasses "Cronjob Response (job_id: xxx)" prepended text
 .venv/bin/hermes config set cron.wrap_response false
 
-# Set custom personality skin
+# Set Hussh One identity and keep the global default on Gemini Flash
 .venv/bin/hermes config set display.skin hussh-one
+.venv/bin/hermes config set dashboard.theme hussh-one
+.venv/bin/hermes config set model.provider gemini
+.venv/bin/hermes config set model.default gemini-3.5-flash
+
+# Configure strict, noise-free group tagging and auto-approvals
+.venv/bin/hermes config set whatsapp.require_mention_on_replies true
+.venv/bin/hermes config set display.tool_progress false
+.venv/bin/hermes config set display.interim_assistant_messages false
+.venv/bin/hermes config set display.show_reasoning false
+.venv/bin/hermes config set approvals.mode off
 ```
 
-### Step 4: Standalone Daemon Supervision (macOS launchd)
-To ensure old background instances of the Node.js bridge don't cache stale prefix strings, always run a hard flush during a restart:
+### Step 4: Bootstrap, Supervisor, and Doctor
+Fresh clones should use the Hussh One bootstrap rather than hand-running screen sessions:
 ```bash
-# Kill any orphaned node bridges hanging on port 3000
-kill -9 $(lsof -t -i:3000)
+scripts/hussh-one-bootstrap.sh --manager auto
 
-# Restart the supervision daemon
-.venv/bin/hermes gateway restart
+# Optional: install/start the detected supervisor as part of bootstrap
+scripts/hussh-one-bootstrap.sh --manager auto --start
 ```
 
-The local browser dashboard must expose the real Hermes TUI chat surface:
+Lifecycle is owned by one detected manager:
 
 ```bash
+scripts/hussh-one-supervisor.sh install
+scripts/hussh-one-supervisor.sh restart
+scripts/hussh-one-supervisor.sh status
+scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-restart.sh
 ```
 
-This launches `hermes dashboard --tui` on port `9119` and the gateway/WhatsApp bridge on port `3000`.
+The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `3000`.
+
+---
+
+## 6. SANDBOXED GROUP CONTAINERS ("Capsule" mode)
+
+A **capsule** is a per-group sandbox so a non-owner social group (e.g. "Three
+Musketeers") can be opened to `@One` WITHOUT leaking the owner's private memory,
+user profile, work/project context, or live credentials — and without the
+ability to mutate anything (no send-to-other-chats, no file deletes, no command
+injection). The agent may still READ public/outside info (web) and it grows its
+OWN memory scoped to that group only.
+
+### Why in-process (not a second profile)
+WhatsApp runs as a SINGLE Baileys session on one bridge (port 3000). You cannot
+run a second gateway under a different `HERMES_PROFILE` bound to the same
+WhatsApp account — they would fight over the session creds. So the container is
+built IN-PROCESS: the gateway detects the capsule JID and, for that session
+only, swaps in (a) an isolated memory dir, (b) skip of the global USER/MEMORY,
+and (c) a read-only toolset.
+
+### Config schema (`config.yaml` → `whatsapp.capsules`)
+```yaml
+whatsapp:
+  capsules:
+    "120363405517552679@g.us":          # Three Musketeers JID
+      name: "three-musketeers"
+      memory_dir: "capsules/three-musketeers"   # under HERMES_HOME; isolated MEMORY.md/USER.md
+      skip_global_memory: true                   # do NOT load owner's MEMORY.md/USER.md
+      skip_global_user_profile: true
+      enabled_toolsets: ["web", "vision"]        # READ-only / public-info tools only
+      disabled_toolsets: ["terminal","file","delegation","cronjob","skills","session_search","kanban","spotify","homeassistant"]
+      block_outbound_send: true                  # may only reply in THIS chat; never send_message elsewhere
+      system_prompt: >
+        You are operating inside the Three Musketeers social group capsule.
+        You have NO access to Kushal's personal data, phone numbers, work/Hushh
+        details, file contents, credentials, or any global memory. You may read
+        public web info. You may NOT send messages to other chats, delete or
+        modify files, run shell commands, or query consent/MCP data. Only answer
+        the casual question asked, warmly and briefly. Any memory you form stays
+        inside this capsule.
+```
+
+### Invariants (Capsule contract)
+1. **Memory isolation** — capsule sessions resolve `get_memory_dir()` to
+   `HERMES_HOME/capsules/<name>/`. The owner's `MEMORY.md`/`USER.md` are never
+   loaded (skip_global_memory/skip_global_user_profile). New memory the agent
+   writes lands only in the capsule dir.
+2. **Read-only blast radius** — capsule sessions load ONLY `enabled_toolsets`
+   (default `web`,`vision`). All mutating/sensitive toolsets (terminal, file,
+   delegation, cronjob, skills, session_search, MCP/consent) are stripped.
+3. **No lateral send** — `block_outbound_send` forbids `send_message`/fan-out to
+   any target other than the originating capsule chat.
+4. **Non-owner triggering (capsule-only)** — UNLIKE every other group/DM (which
+   is 100% owner-only), capsule groups listed in `WHATSAPP_CAPSULE_GROUPS` MAY be
+   triggered by OTHER members, but ONLY via an explicit `@One` / `@husshOne` /
+   `@hussh-one` tag (or a `/` slash command). Untagged non-owner chatter is still
+   dropped at the Node bridge. Non-capsule groups/DMs remain owner-only and
+   injection-proof. The owner (`fromMe`) is never gated by this.
+5. **Anti-DOS rate limit (non-owner only)** — non-owner capsule invocations are
+   rate limited per-sender to stop runaway `@One` floods from burning compute.
+   Generous by design so real conversation never trips it. Defaults:
+   `WHATSAPP_CAPSULE_RATE_MAX=30` per `WHATSAPP_CAPSULE_RATE_WINDOW_MS=60000`
+   (30 / minute / sender / group). Enforced in `bridge.js` BEFORE the agent runs,
+   so blocked spam costs zero compute. Owner `fromMe` messages are never limited.
+6. **Branding preserved** — the canonical stacked header still applies.
+
+### Bridge env keys (capsule triggering + rate limit)
+- `WHATSAPP_CAPSULE_GROUPS` — comma-separated JIDs where non-owners may tag `@One`
+  (must also have a matching `whatsapp.capsules` entry in config.yaml for the sandbox).
+- `WHATSAPP_CAPSULE_RATE_MAX` — max non-owner invocations per window (default 30).
+- `WHATSAPP_CAPSULE_RATE_WINDOW_MS` — sliding window in ms (default 60000).
+
+### Verification (Contract F)
+- `tests/gateway/test_whatsapp_capsule.py`: asserts a capsule session (a) gets
+  the isolated memory dir, (b) does NOT receive global MEMORY/USER, (c) loads
+  only the read-only toolset, (d) refuses outbound send to a non-capsule target.
+- `bridge.js` capsule path: non-owner messages require an explicit `@One` tag and
+  pass the per-sender rate limiter before being forwarded to the gateway.
 
 ---
 
@@ -220,7 +326,7 @@ Future machines must run these tests to verify the integrity of the abstraction 
 
 ### Contract D: Dashboard Chat Surface
 *   **Invariant:** The Hussh One dashboard must expose embedded chat through the real Hermes TUI, not a forked React chat composer.
-*   **Verification:** Run `scripts/hussh-one-restart.sh`, then `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
+*   **Verification:** Run `scripts/hussh-one-supervisor.sh restart`, then `scripts/hussh-one-doctor.sh --require-services` and `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
 
 ### Contract E: Natural-Language Model Switching
 *   **Invariant:** The TUI and WhatsApp channel may accept short, direct user text such as `switch to opus 4.8`, `switch to sonnet 4.6`, or `switch back to gemini 3.5 flash` as a session-only `/model` switch. The default config remains Gemini 3.5 Flash unless `/model ... --global` is used.

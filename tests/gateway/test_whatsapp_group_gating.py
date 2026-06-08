@@ -90,6 +90,29 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status")) is True
 
 
+def test_group_messages_with_require_mention_on_replies():
+    adapter = _make_adapter(require_mention=True)
+    adapter.config.extra["require_mention_on_replies"] = True
+
+    # Reply WITHOUT a tag/mention -> should be False
+    assert adapter._should_process_message(
+        _group_message(
+            "hello",
+            quotedParticipant="15551230000@lid",
+        )
+    ) is False
+
+    # Reply WITH a tag/mention -> should be True
+    adapter.config.extra["mention_patterns"] = [r"(?<![\w@])@One(?![\w-])"]
+    adapter._mention_patterns = adapter._compile_mention_patterns()
+    assert adapter._should_process_message(
+        _group_message(
+            "@One hello",
+            quotedParticipant="15551230000@lid",
+        )
+    ) is True
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 

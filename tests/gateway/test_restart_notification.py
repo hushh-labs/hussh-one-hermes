@@ -45,6 +45,43 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     assert gateway_run._planned_restart_notification_pending() is False
 
 
+def test_restart_service_manager_detection_for_manual_run(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setattr(gateway_run.os.path, "exists", lambda _path: False)
+
+    assert gateway_run._restart_should_use_service_manager() is False
+
+
+def test_restart_service_manager_detection_for_launchd(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+    monkeypatch.setattr(gateway_run.os.path, "exists", lambda _path: False)
+
+    assert gateway_run._restart_should_use_service_manager() is True
+
+
+def test_restart_service_manager_detection_for_systemd(monkeypatch):
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    monkeypatch.setattr(gateway_run.os.path, "exists", lambda _path: False)
+
+    assert gateway_run._restart_should_use_service_manager() is True
+
+
+def test_restart_service_manager_detection_for_container(monkeypatch):
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(
+        gateway_run.os.path,
+        "exists",
+        lambda path: path == "/.dockerenv",
+    )
+
+    assert gateway_run._restart_should_use_service_manager() is True
+
+
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 

@@ -291,6 +291,12 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
+    # GCP / Google GenAI Vertex AI keys to ensure they are loaded in all environments (GUI/Desktop App)
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_CLOUD_PROJECT",
+    "GCP_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
 })
 import yaml
 
@@ -1887,6 +1893,12 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        #
+        # Capsule mode (hussh-one): per-group sandboxes. Maps a group JID to
+        # an isolated memory dir + read-only toolset so a social group can be
+        # opened to the agent without leaking the owner's private memory,
+        # user profile, credentials, or mutation tools. See HUSSH_ONE.md §6.
+        "capsules": {},
     },
 
     # Telegram platform settings (gateway mode)

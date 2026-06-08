@@ -20,6 +20,10 @@ require_file "hermes_cli/brand.py"
 require_file "hermes_cli/skins/hussh-one.yaml"
 require_file "hermes_cli/dashboard_themes/hussh-one.yaml"
 require_file "plugins/model-providers/google-vertex-claude/__init__.py"
+require_file "scripts/hussh-one-bootstrap.sh"
+require_file "scripts/hussh-one-supervisor.sh"
+require_file "scripts/hussh-one-doctor.sh"
+require_file "scripts/hussh-one-restart.sh"
 
 legacy_brand_pattern='hushh''-puppy|hussh ''puppy|HUSSH''_PUPPY'
 if rg -n "$legacy_brand_pattern" --glob '!tests/hermes_cli/test_hussh_one_branding.py'; then
@@ -29,7 +33,7 @@ fi
 
 legacy_provider_pattern='anthropic''-vertex'
 if rg -n "$legacy_provider_pattern" \
-  hermes_cli agent providers plugins gateway scripts tests run_agent.py cli.py HUSSH_ONE.md; then
+  hermes_cli agent providers plugins gateway scripts tests tools run_agent.py cli.py HUSSH_ONE.md; then
   echo "error: legacy Vertex Claude provider name found" >&2
   exit 1
 fi
@@ -62,6 +66,11 @@ command -v node >/dev/null 2>&1 || {
   exit 1
 }
 node --check scripts/whatsapp-bridge/bridge.js
+bash -n \
+  scripts/hussh-one-bootstrap.sh \
+  scripts/hussh-one-supervisor.sh \
+  scripts/hussh-one-doctor.sh \
+  scripts/hussh-one-restart.sh
 
 dashboard_url="${HUSSH_ONE_DASHBOARD_URL:-http://127.0.0.1:9119}"
 if [[ "${HUSSH_ONE_SKIP_DASHBOARD_HEALTH:-0}" != "1" ]]; then

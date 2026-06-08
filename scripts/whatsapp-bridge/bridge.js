@@ -52,6 +52,43 @@ const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const ALLOWED_GROUPS = (process.env.WHATSAPP_ALLOWED_GROUPS || '120363040968035480@g.us,120363427884298513@g.us').split(',').map(g => g.trim()).filter(Boolean);
+// Capsule groups: sandboxed groups (see config.yaml whatsapp.capsules) where
+// OTHER members may invoke the agent — but ONLY via an explicit @One tag, and
+// the Python side runs them under a restricted capsule (no personal data, no
+// outbound send, limited toolsets). Non-capsule groups stay 100% owner-only.
+const CAPSULE_GROUPS = (process.env.WHATSAPP_CAPSULE_GROUPS || '120363405517552679@g.us').split(',').map(g => g.trim()).filter(Boolean);
+// Rate limiting for non-owner (capsule) invocations — purely an anti-DOS / anti-spam
+// safeguard so a runaway loop of @One mentions can't burn compute/cost. Generous by
+// design: real back-and-forth conversation should never hit it. Owner messages are
+// NEVER rate limited. Per-sender sliding window: at most CAPSULE_RATE_MAX triggers
+// per CAPSULE_RATE_WINDOW_MS.
+const CAPSULE_RATE_MAX = parseInt(process.env.WHATSAPP_CAPSULE_RATE_MAX || '30', 10);          // 30 invocations
+const CAPSULE_RATE_WINDOW_MS = parseInt(process.env.WHATSAPP_CAPSULE_RATE_WINDOW_MS || '60000', 10); // per 1 minute
+const _capsuleRateLog = new Map(); // key: `${chatId}|${senderId}` -> number[] (timestamps ms)
+
+function capsuleRateLimited(chatId, senderId) {
+  const key = `${chatId}|${senderId}`;
+  const now = Date.now();
+  const arr = (_capsuleRateLog.get(key) || []).filter(ts => now - ts < CAPSULE_RATE_WINDOW_MS);
+  if (arr.length >= CAPSULE_RATE_MAX) {
+    _capsuleRateLog.set(key, arr); // keep pruned window
+    return true;
+  }
+  arr.push(now);
+  _capsuleRateLog.set(key, arr);
+  // Opportunistic cleanup to bound memory if many distinct senders appear.
+  if (_capsuleRateLog.size > 500) {
+    for (const [k, v] of _capsuleRateLog) {
+      const pruned = v.filter(ts => now - ts < CAPSULE_RATE_WINDOW_MS);
+      if (pruned.length === 0) _capsuleRateLog.delete(k);
+      else _capsuleRateLog.set(k, pruned);
+    }
+  }
+  return false;
+}
+// Emoji-first canonical brand (matches hermes_cli.brand.BRAND_DISPLAY_NAME).
+// NB: gateway forces WHATSAPP_REPLY_PREFIX="" so this is only a fallback when
+// the bridge runs standalone; the Python gateway is the real header composer.
 const DEFAULT_REPLY_PREFIX = '🤫 Hussh One\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -296,23 +333,44 @@ async function startSocket() {
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
-        if ((isGroup && !ALLOWED_GROUPS.includes(chatId)) || chatId.includes('status')) continue;
+        if (chatId.includes('status')) continue;
 
         if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
           continue;
         }
 
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        if (!ALLOWED_GROUPS.includes(chatId)) {
+        // Check if the group is allowlisted or if it's the self-chat JID.
+        // If not, we only allow it if it's a group message explicitly triggered by the user (the owner)
+        // using @One, @husshOne, or @hussh-one, or starts with a slash.
+        const isAllowlisted = ALLOWED_GROUPS.includes(chatId);
+        let isSelfChat = false;
+        if (!isAllowlisted && !isGroup) {
           const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-          if (!isSelfChat) continue;
+          isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+        }
+
+        if (!isAllowlisted && !isSelfChat) {
+          // We only allow messages sent by "me" (whether group or private DM with someone else)
+          // if they contain an explicit trigger.
+          const tempContent = getMessageContent(msg);
+          let tempBody = '';
+          if (tempContent.conversation) {
+            tempBody = tempContent.conversation;
+          } else if (tempContent.extendedTextMessage?.text) {
+            tempBody = tempContent.extendedTextMessage.text;
+          } else if (tempContent.imageMessage) {
+            tempBody = tempContent.imageMessage.caption || '';
+          } else if (tempContent.videoMessage) {
+            tempBody = tempContent.videoMessage.caption || '';
+          }
+          const cleanBody = tempBody.trim();
+          const hasTrigger = cleanBody.startsWith('/') || /@One\b|@husshOne\b|@hussh-one\b/i.test(cleanBody);
+          if (!hasTrigger) {
+            continue;
+          }
         }
       }
 
@@ -321,28 +379,77 @@ async function startSocket() {
       // themselves — stranger DMs / group pings must never reach the
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
+      //
+      // EXCEPTION (capsule groups): For groups explicitly listed in
+      // ALLOWED_GROUPS (e.g. sandboxed capsule groups like Three Musketeers),
+      // we DO allow other members to invoke the agent — but ONLY when they
+      // explicitly tag @One / @husshOne / @hussh-one (or use a slash command).
+      // Everything else from others is still dropped, and non-allowlisted
+      // groups/DMs remain 100% owner-only (injection-proof).
       if (!msg.key.fromMe) {
-        if (WHATSAPP_MODE === 'self-chat' && !ALLOWED_GROUPS.includes(chatId)) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
-        }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
+        const isCapsuleGroup = isGroup && CAPSULE_GROUPS.includes(chatId);
+        if (isCapsuleGroup) {
+          // Require an explicit trigger from the other member.
+          const tempContent = getMessageContent(msg);
+          let tempBody = '';
+          if (tempContent.conversation) {
+            tempBody = tempContent.conversation;
+          } else if (tempContent.extendedTextMessage?.text) {
+            tempBody = tempContent.extendedTextMessage.text;
+          } else if (tempContent.imageMessage) {
+            tempBody = tempContent.imageMessage.caption || '';
+          } else if (tempContent.videoMessage) {
+            tempBody = tempContent.videoMessage.caption || '';
+          }
+          const cleanBody = tempBody.trim();
+          const hasTrigger = cleanBody.startsWith('/') || /@One\b|@husshOne\b|@hussh-one\b/i.test(cleanBody);
+          if (!hasTrigger) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'capsule_group_requires_tag',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+          // Rate-limit non-owner invocations to prevent spam / runaway compute.
+          if (capsuleRateLimited(chatId, senderId)) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'capsule_rate_limited',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+          // Tagged by another member in an allowlisted capsule group — allow through.
+        } else {
+          if (WHATSAPP_MODE === 'self-chat' && !ALLOWED_GROUPS.includes(chatId)) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'self_chat_mode_rejects_non_self',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+          if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'allowlist_mismatch',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
         }
       }
 

@@ -11,6 +11,9 @@ Fork-owned data and identity should stay in these surfaces:
 - `hermes_cli/skins/hussh-one.yaml`
 - `hermes_cli/dashboard_themes/hussh-one.yaml`
 - `plugins/model-providers/google-vertex-claude/`
+- `scripts/hussh-one-bootstrap.sh`
+- `scripts/hussh-one-supervisor.sh`
+- `scripts/hussh-one-doctor.sh`
 - Hussh One regression tests under `tests/`
 - `scripts/hussh-one-guard.sh`
 
@@ -34,13 +37,13 @@ Before pulling official Hermes changes, commit or stash local work. Then use an 
 ```bash
 git status --short
 git fetch upstream main --tags
-git switch main
+git switch hussh-one-hermes
 git branch "backup/hussh-one-before-upstream-$(date +%Y%m%d-%H%M%S)"
 git merge --no-ff upstream/main
 scripts/hussh-one-guard.sh
 ```
 
-`hermes update` already knows how to fetch the official repository through the `upstream` remote. For this fork, prefer the explicit flow above when Hussh One has carried commits, because it leaves merge conflicts visible and makes the guard mandatory before restart.
+`hussh-one-hermes` is the default branch for `hushh-labs/hussh-one-hermes`. `hermes update` already knows how to fetch the official repository through the `upstream` remote. For this fork, prefer the explicit flow above when Hussh One has carried commits, because it leaves merge conflicts visible and makes the guard mandatory before restart.
 
 ## Plugin Updates
 
@@ -69,6 +72,7 @@ The guard checks:
 - branding, WhatsApp prefix, model switching, provider discovery, runtime rebuild, and auxiliary-client tests pass
 - the WhatsApp bridge remains syntactically valid
 - if the dashboard is running, it was launched with embedded chat enabled
+- the bootstrap, supervisor, doctor, and restart shell entry points remain syntactically valid
 
 When credentials are available, also run the live smoke:
 
@@ -81,10 +85,11 @@ When credentials are available, also run the live smoke:
 Only restart the dashboard and gateway after the guard passes. For local Hussh One operation, use:
 
 ```bash
-scripts/hussh-one-restart.sh
+scripts/hussh-one-supervisor.sh restart
+scripts/hussh-one-doctor.sh --require-services
 ```
 
-This starts the dashboard with `--tui`, so the browser Chat tab embeds the real Hermes TUI. If the guard fails, resolve the merge or plugin contract first; do not paper over it with local config.
+`scripts/hussh-one-restart.sh` remains as a compatibility wrapper around the supervisor restart command. The supervisor starts the dashboard with `--tui`, so the browser Chat tab embeds the real Hermes TUI. If the guard fails, resolve the merge or plugin contract first; do not paper over it with local config.
 
 ## Post-Merge Display / TUI Sanity Checks
 

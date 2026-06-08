@@ -52,8 +52,46 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
+#
+# Capsule isolation (hussh-one): a context-local override lets a single
+# in-process session (e.g. a sandboxed WhatsApp group) route ALL memory
+# reads/writes into an isolated directory under HERMES_HOME, so the owner's
+# global MEMORY.md/USER.md are never touched and any memory the capsule forms
+# stays contained. The override is contextvar-based so concurrent sessions on
+# the same gateway process never bleed into each other.
+import contextvars as _contextvars
+
+_MEMORY_DIR_OVERRIDE: "_contextvars.ContextVar[Optional[str]]" = _contextvars.ContextVar(
+    "hermes_memory_dir_override", default=None
+)
+
+
+def set_memory_dir_override(path: "Optional[str | Path]") -> "_contextvars.Token":
+    """Set a context-local memory directory override; returns a reset token.
+
+    Pass an absolute or HERMES_HOME-relative path. Pass None to clear.
+    Always pair with reset_memory_dir_override(token) in a finally block.
+    """
+    value = str(path) if path else None
+    return _MEMORY_DIR_OVERRIDE.set(value)
+
+
+def reset_memory_dir_override(token: "_contextvars.Token") -> None:
+    """Restore the previous memory-dir override using the token from set_."""
+    try:
+        _MEMORY_DIR_OVERRIDE.reset(token)
+    except Exception:
+        pass
+
+
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
+    """Return the memories directory (capsule override > profile-scoped default)."""
+    override = _MEMORY_DIR_OVERRIDE.get()
+    if override:
+        p = Path(override)
+        if not p.is_absolute():
+            p = get_hermes_home() / p
+        return p
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"

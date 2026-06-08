@@ -30,6 +30,15 @@ import httpx
 
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 
+# Load ~/.hermes/.env to ensure Google GenAI / Vertex AI environment variables
+# are present, even when launched from a GUI shell (issue #88229)
+try:
+    from dotenv import load_dotenv
+    from hermes_constants import get_hermes_home
+    load_dotenv(get_hermes_home() / ".env")
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"

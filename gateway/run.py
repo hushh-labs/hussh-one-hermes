@@ -9673,45 +9673,32 @@ class GatewayRunner:
             )
             response = _sanitize_gateway_final_response(source.platform, response)
 
-            # Programmatically enforce Kushal's WhatsApp layout preference
+            # hussh 🤫 One — canonical stacked WhatsApp header.
+            # Logic lives in hermes_cli.hussh_one_header so it stays
+            # upgrade-safe and unit-testable instead of hardcoded here.
+            # Mode token: [S] Select = user manually pinned the model this
+            # session (session model override present); [A] Auto = running the
+            # configured default. Env/config WHATSAPP_REPLY_PREFIX still wins.
             if getattr(source, "platform", None) == Platform.WHATSAPP:
-                model_name = agent_result.get("model") or "gemini-3.5-flash"
-                short_model = model_name.rsplit("/", 1)[-1]
-                if "gemini" in short_model:
-                    display_model = "Gemini 3.5 Flash"
-                elif "gemma" in short_model:
-                    display_model = "Gemma 4"
-                elif "qwen" in short_model:
-                    display_model = "Qwen 3.6 35B"
-                else:
-                    display_model = short_model
+                from hermes_cli.hussh_one_header import apply_whatsapp_header
 
-                # hussh 🤫 One canonical stacked header: emoji-first brand line,
-                # then model + dynamic mode token, then divider. [S] when the user
-                # pinned a model this session (select mode), [A] for the configured
-                # default (auto mode). Brand string is the single source of truth
-                # in hermes_cli.brand (emoji-first "🤫 Hussh One").
-                from hermes_cli.brand import BRAND_DISPLAY_NAME
-                _is_select = bool(session_key and session_key in self._session_model_overrides)
-                _mode_token = "[S]" if _is_select else "[A]"
-                header_prefix = (
-                    f"{BRAND_DISPLAY_NAME}\n"
-                    f"{display_model} {_mode_token}\n"
-                    f"════════════════════\n"
+                model_name = agent_result.get("model") or "gemini-3.5-flash"
+                is_select_mode = bool(
+                    session_key
+                    and session_key in self._session_model_overrides
                 )
-                import re as _re
-                clean_response = response.strip()
-                # Cleanly and recursively strip off any hallucinated or contaminated prefixes/underlines in the history
-                while True:
-                    old_len = len(clean_response)
-                    clean_response = _re.sub(r"^(高度|高度)\s*", "", clean_response, flags=_re.IGNORECASE)
-                    # Strip any self-echoed brand line (emoji-first or legacy emoji-middle, case-insensitive)
-                    clean_response = _re.sub(r"^(?:🤫\s*Hussh One|hussh\s*🤫?\s*One)\s*\n?", "", clean_response, flags=_re.IGNORECASE)
-                    clean_response = _re.sub(r"^(Gemini 3.5 Flash \[[SA]\]|Gemma 4 \[[SA]\]|Qwen 3.6 35B \[[SA]\]|Gemini 3.5 Flash|Gemma 4|Qwen 3.6)\s*", "", clean_response, flags=_re.IGNORECASE)
-                    clean_response = _re.sub(r"^([═=─-]{5,})\s*", "", clean_response, flags=_re.IGNORECASE)
-                    if len(clean_response) == old_len:
-                        break
-                response = header_prefix + clean_response
+                wa_cfg = self.config.platforms.get(Platform.WHATSAPP)
+                config_prefix = (
+                    wa_cfg.extra.get("reply_prefix")
+                    if wa_cfg and getattr(wa_cfg, "extra", None)
+                    else None
+                )
+                response = apply_whatsapp_header(
+                    response,
+                    model_name,
+                    is_select_mode=is_select_mode,
+                    config_prefix=config_prefix,
+                )
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -17967,6 +17954,7 @@ class GatewayRunner:
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
+            nonlocal enabled_toolsets, disabled_toolsets
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -17987,6 +17975,58 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+
+            # ----------------------------------------------------------------
+            # Capsule sandbox (hussh-one): if this WhatsApp chat is a
+            # configured capsule, lock the session down for that turn:
+            #   * read-only toolset (strip terminal/file/MCP/messaging/etc.)
+            #   * skip the owner's global MEMORY.md/USER.md
+            #   * route memory reads/writes into an isolated capsule dir
+            #   * block lateral send_message to any other chat
+            #   * inject the capsule guardrail system prompt
+            # See HUSSH_ONE.md §6.
+            _capsule = None
+            try:
+                if source.platform == Platform.WHATSAPP:
+                    from gateway.whatsapp_capsule import resolve_capsule
+                    _capsule = resolve_capsule(user_config, source.chat_id)
+            except Exception:
+                logger.debug("capsule resolution failed", exc_info=True)
+                _capsule = None
+
+            if _capsule is not None:
+                logger.info(
+                    "Capsule session active: jid=%s name=%s (isolated memory + read-only tools)",
+                    _capsule.jid, _capsule.name,
+                )
+                enabled_toolsets = list(_capsule.enabled_toolsets)
+                _cap_disabled = set(disabled_toolsets or []) | set(_capsule.disabled_toolsets)
+                disabled_toolsets = sorted(_cap_disabled)
+                if _capsule.system_prompt:
+                    combined_ephemeral = (
+                        (combined_ephemeral + "\n\n" + _capsule.system_prompt).strip()
+                        if combined_ephemeral else _capsule.system_prompt
+                    )
+
+            # Activate capsule isolation overrides (context-local). These must
+            # be live during BOTH agent construction (memory loads from disk
+            # there) and run_conversation (memory writes + send guard). They
+            # are reset in the run_conversation finally block below.
+            _capsule_mem_token = None
+            _capsule_send_token = None
+            if _capsule is not None:
+                try:
+                    from tools.memory_tool import set_memory_dir_override
+                    if _capsule.skip_global_memory or _capsule.skip_global_user_profile:
+                        _capsule_mem_token = set_memory_dir_override(_capsule.memory_dir)
+                except Exception:
+                    logger.debug("capsule memory override failed", exc_info=True)
+                if _capsule.block_outbound_send:
+                    try:
+                        from tools.send_message_tool import set_outbound_send_lock
+                        _capsule_send_token = set_outbound_send_lock(source.chat_id)
+                    except Exception:
+                        logger.debug("capsule send lock failed", exc_info=True)
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart). Keep config.yaml authoritative for
@@ -18639,6 +18679,20 @@ class GatewayRunner:
                     _conversation_kwargs["persist_user_message"] = message
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
+                # Reset capsule isolation overrides (memory dir + send lock)
+                # so the next turn / session on this thread is unaffected.
+                try:
+                    if _capsule_mem_token is not None:
+                        from tools.memory_tool import reset_memory_dir_override
+                        reset_memory_dir_override(_capsule_mem_token)
+                except Exception:
+                    pass
+                try:
+                    if _capsule_send_token is not None:
+                        from tools.send_message_tool import reset_outbound_send_lock
+                        reset_outbound_send_lock(_capsule_send_token)
+                except Exception:
+                    pass
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,

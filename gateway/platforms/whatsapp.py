@@ -343,6 +343,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _whatsapp_require_mention_on_replies(self) -> bool:
+        configured = self.config.extra.get("require_mention_on_replies")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("WHATSAPP_REQUIRE_MENTION_ON_REPLIES", "false").lower() in {"true", "1", "yes", "on"}
+
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -523,7 +531,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if body.startswith("/"):
             return True
         if self._message_is_reply_to_bot(data):
-            return True
+            if not self._whatsapp_require_mention_on_replies():
+                return True
         if self._message_mentions_bot(data):
             return True
         return self._message_matches_mention_patterns(data)
