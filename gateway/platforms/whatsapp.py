@@ -29,7 +29,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_cli.brand import default_whatsapp_reply_prefix
+from hermes_cli.brand import BRAND_DISPLAY_NAME, default_whatsapp_reply_prefix
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -918,6 +918,37 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         return result
 
+    def _ensure_brand_floor(self, content: str) -> str:
+        """Guarantee every outbound WhatsApp message carries the hussh 🤫 One brand.
+
+        The inbound agent-reply path (gateway/run.py) composes the full stacked
+        header (brand line + model + divider) before calling ``send()``. But
+        PROACTIVE sends — the ``send_message`` tool triggered from a session,
+        cron auto-delivery, restart/shutdown notices — call ``adapter.send()``
+        directly and would otherwise go out unbranded, because the Node bridge
+        prefix is forced empty (gateway is the sole composer).
+
+        This method is the brand FLOOR: it prepends the emoji-first brand line
+        ``🤫 Hussh One`` only when the message does not already start with it
+        (case-insensitive, tolerant of the legacy emoji-middle form), so it
+        never double-stamps a reply that already carries the full header.
+        Honours operator overrides: if WHATSAPP_REPLY_PREFIX / config
+        reply_prefix is set to empty, branding is disabled entirely.
+        """
+        body = content or ""
+        if not body.strip():
+            return body
+        # Respect explicit operator override that disables the header.
+        prefix = self._effective_reply_prefix()
+        if prefix == "":
+            return body
+        # Already branded? Detect emoji-first or legacy emoji-middle brand line
+        # at the very start (allowing leading whitespace the formatter may add).
+        stripped = body.lstrip()
+        if re.match(r"^(?:🤫\s*Hussh One|hussh\s*🤫?\s*One)", stripped, re.IGNORECASE):
+            return body
+        return f"{BRAND_DISPLAY_NAME}\n{body}"
+
     async def send(
         self,
         chat_id: str,
@@ -938,6 +969,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        # Brand floor: ensure proactive/direct sends (send_message tool, cron
+        # auto-delivery, restart notices) carry the hussh 🤫 One brand line.
+        # Idempotent — no-op when the inbound-reply path already stamped the
+        # full header. See _ensure_brand_floor for precedence/override rules.
+        content = self._ensure_brand_floor(content)
 
         try:
             import aiohttp
@@ -1038,7 +1075,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 "mediaType": media_type,
             }
             if caption:
-                payload["caption"] = caption
+                # Brand floor for media captions (idempotent). Only when a
+                # caption is already present — never turn a bare media send
+                # into a brand-only caption.
+                payload["caption"] = self._ensure_brand_floor(caption)
             if file_name:
                 payload["fileName"] = file_name
 

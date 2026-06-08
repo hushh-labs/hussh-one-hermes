@@ -241,10 +241,12 @@ class TestSendChunking:
 
         await adapter.send("chat1", "**bold text**")
 
-        # Check the payload sent to the bridge
+        # Check the payload sent to the bridge. The brand floor prepends the
+        # hussh 🤫 One line to proactive sends; the markdown body must still be
+        # converted (**bold** -> *bold*) and appear after the brand line.
         call_args = adapter._http_session.post.call_args
         payload = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert payload["message"] == "*bold text*"
+        assert payload["message"] == "🤫 Hussh One\n*bold text*"
 
     @pytest.mark.asyncio
     async def test_reply_to_only_on_first_chunk(self):
