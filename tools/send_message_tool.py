@@ -456,6 +456,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+        if platform_name == "whatsapp" and ("@g.us" in target_ref or "@lid" in target_ref or "@s.whatsapp.net" in target_ref):
+            return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

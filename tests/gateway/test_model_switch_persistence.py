@@ -298,6 +298,49 @@ class TestModelOverrideSessionPersistence:
         # Verify it lazy-loaded from SessionEntry
         assert runner._session_model_overrides[sk] == override
 
+    def test_cold_restart_triggers_store_load_before_lookup(self):
+        """On a cold restart the store is lazily loaded — the override loader
+        must call ``_ensure_loaded()`` so ``_entries`` is populated from
+        sessions.json BEFORE looking up the entry. Without this the persisted
+        override is silently missed and the session forgets its model."""
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        override = {
+            "model": "claude-opus-4-8",
+            "provider": "google-vertex-claude",
+            "api_key": "vertex-key",
+            "base_url": "",
+            "api_mode": "vertex",
+        }
+
+        # Build the entry that "exists on disk" but is NOT yet in _entries
+        # (simulating a freshly restarted, not-yet-loaded store).
+        disk_entry = SessionEntry(
+            session_key=sk,
+            session_id="sess-restored",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            model_override=override,
+        )
+
+        # Store starts with empty in-memory entries; _ensure_loaded() populates
+        # them (the real lazy-load behaviour from disk).
+        runner.session_store._entries = {}
+
+        def _fake_ensure_loaded():
+            runner.session_store._entries = {sk: disk_entry}
+
+        runner.session_store._ensure_loaded = MagicMock(side_effect=_fake_ensure_loaded)
+        runner._session_model_overrides.clear()
+
+        runner._ensure_session_model_override_loaded(sk)
+
+        # The loader must have triggered the disk load and then found the override.
+        runner.session_store._ensure_loaded.assert_called_once()
+        assert runner._session_model_overrides[sk] == override
+
     def test_clear_session_model_override_clears_persisted(self):
         runner = _make_runner()
         sk = build_session_key(_make_source())

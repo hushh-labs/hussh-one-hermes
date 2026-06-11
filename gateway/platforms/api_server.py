@@ -1037,6 +1037,70 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
+        # Restore the per-session model chosen via a prior /model switch.
+        # The dashboard ("restore from session tab") rebuilds the agent purely
+        # from config.yaml's model.default, ignoring the model the user last
+        # selected for *this* session. The session's chosen model is persisted
+        # in sessions.model (state.db) by update_session_model(); rehydrate it
+        # here so a restored session keeps the model it was last using instead
+        # of silently reverting to the global default. (#hussh-one session-model)
+        if session_id:
+            try:
+                _db = self._ensure_session_db()
+                _row = _db.get_session(session_id) if _db is not None else None
+                _stored_model = (_row or {}).get("model")
+                if _stored_model and _stored_model != model:
+                    from hermes_cli.model_switch import switch_model as _switch_model
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _user_provs = (user_config or {}).get("providers")
+                    try:
+                        _custom_provs = get_compatible_custom_providers(user_config)
+                    except Exception:
+                        _custom_provs = (user_config or {}).get("custom_providers")
+                    _sw = _switch_model(
+                        raw_input=_stored_model,
+                        current_provider=runtime_kwargs.get("provider") or "openrouter",
+                        current_model=model or "",
+                        current_base_url=runtime_kwargs.get("base_url") or "",
+                        current_api_key=runtime_kwargs.get("api_key") or "",
+                        user_providers=_user_provs,
+                        custom_providers=_custom_provs,
+                    )
+                    if _sw.success and _sw.new_model:
+                        model = _sw.new_model
+                        # Only override credential fields the switch actually
+                        # resolved; otherwise keep the runtime defaults so we
+                        # never blank out a working api_key/base_url.
+                        if _sw.target_provider:
+                            runtime_kwargs["provider"] = _sw.target_provider
+                        if _sw.api_key:
+                            runtime_kwargs["api_key"] = _sw.api_key
+                        if _sw.base_url:
+                            runtime_kwargs["base_url"] = _sw.base_url
+                        if _sw.api_mode:
+                            runtime_kwargs["api_mode"] = _sw.api_mode
+                        logger.info(
+                            "Restored per-session model for %s: %s (provider=%s)",
+                            session_id, model, _sw.target_provider or runtime_kwargs.get("provider"),
+                        )
+                    else:
+                        # Resolver couldn't rebuild a provider bundle — still
+                        # honor the stored model name so the session doesn't
+                        # silently fall back to the global default.
+                        model = _stored_model
+                        logger.warning(
+                            "Per-session model %s for %s could not be fully "
+                            "resolved (%s); using stored model name with "
+                            "default runtime.",
+                            _stored_model, session_id,
+                            _sw.error_message or "no provider match",
+                        )
+            except Exception as _exc:
+                logger.debug(
+                    "Failed to restore per-session model for %s: %s",
+                    session_id, _exc,
+                )
+
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
         # Load fallback provider chain so the API server platform has the

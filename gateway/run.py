@@ -16598,6 +16598,15 @@ class GatewayRunner:
             try:
                 store = getattr(self, "session_store", None)
                 if store is not None:
+                    # Ensure the on-disk sessions index is loaded into
+                    # ``_entries`` first. On a cold gateway restart the store is
+                    # lazily loaded, and model resolution can run before any
+                    # ``get_or_create_session`` call has populated ``_entries`` —
+                    # without this the persisted override is silently missed and
+                    # the session "forgets" its last-used model.
+                    ensure_loaded = getattr(store, "_ensure_loaded", None)
+                    if callable(ensure_loaded):
+                        ensure_loaded()
                     entries = getattr(store, "_entries", {})
                     entry = entries.get(session_key)
                     if entry and getattr(entry, "model_override", None):
