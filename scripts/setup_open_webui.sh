@@ -18,6 +18,9 @@ set -euo pipefail
 #   OPEN_WEBUI_NAME='Johnny Hermes'
 #   OPEN_WEBUI_ENABLE_SIGNUP=true
 #   OPEN_WEBUI_ENABLE_SERVICE=auto   # auto|true|false
+#   OPEN_WEBUI_ENABLE_TITLE_GENERATION=False  # True = LLM auto-titles (extra agent call/msg)
+#   OPEN_WEBUI_ENABLE_TAGS_GENERATION=False   # True = LLM auto-tags (extra agent call/msg)
+#   OPEN_WEBUI_AUTH=*** False = open access, no login (fresh DB only)
 #   OPEN_WEBUI_VENV=~/.local/open-webui-venv
 #   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
 #   HERMES_API_PORT=8642
@@ -29,6 +32,14 @@ OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-127.0.0.1}"
 OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Hermes Agent WebUI}"
 OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
+# Hussh One performance defaults: keep Open WebUI at 1 Hermes agent call per
+# message. Override to True only if you want LLM-generated chat titles/tags
+# (each costs a full extra server-side agent run on the heavy engine).
+OPEN_WEBUI_ENABLE_TITLE_GENERATION="${OPEN_WEBUI_ENABLE_TITLE_GENERATION:-False}"
+OPEN_WEBUI_ENABLE_TAGS_GENERATION="${OPEN_WEBUI_ENABLE_TAGS_GENERATION:-False}"
+# Open-access (no login) toggle. Only engages on a fresh database with zero
+# users; if a user already exists, Open WebUI keeps the login form regardless.
+OPEN_WEBUI_AUTH="${OPEN_WEBUI_AUTH:-True}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
@@ -208,10 +219,26 @@ export RAG_RERANKING_MODEL_AUTO_UPDATE=False
 export SCARF_NO_ANALYTICS=true
 export DO_NOT_TRACK=true
 export ANONYMIZED_TELEMETRY=false
+# --- Hussh One performance: keep Open WebUI at 1 Hermes agent call per message ---
+# Each background auto-task otherwise spins up a FULL server-side Hermes AIAgent
+# (same heavy context: system prompt + memory + MCP tool schemas) just to name a
+# chat or suggest follow-ups. Disabling them gives genuine TUI-parity efficiency.
+export ENABLE_TITLE_GENERATION=${OPEN_WEBUI_ENABLE_TITLE_GENERATION}
+export ENABLE_TAGS_GENERATION=${OPEN_WEBUI_ENABLE_TAGS_GENERATION}
+export ENABLE_AUTOCOMPLETE_GENERATION=False
+export ENABLE_FOLLOW_UP_GENERATION=False
+export ENABLE_RETRIEVAL_QUERY_GENERATION=False
+export ENABLE_SEARCH_QUERY_GENERATION=False
+# --- Hussh One: silence single-user noise (no arena/eval/community calls) ---
+export ENABLE_EVALUATION_ARENA_MODELS=False
+export ENABLE_MESSAGE_RATING=False
+export ENABLE_COMMUNITY_SHARING=False
+# Optional open-access mode (no login). Only engages on a fresh DB with zero users.
+export WEBUI_AUTH=${OPEN_WEBUI_AUTH}
 export HOST=${quoted_host}
 export PORT=${quoted_port}
 source ${quoted_venv}/bin/activate
-exec open-webui serve
+exec open-webui serve --host "\$HOST" --port "\$PORT"
 EOF
 
   chmod +x "$LAUNCHER_PATH"
