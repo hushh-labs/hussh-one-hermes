@@ -683,6 +683,83 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bridge_env = os.environ.copy()
             bridge_env["WHATSAPP_REPLY_PREFIX"] = ""
 
+            # hussh 🤫 One: per-container invocation handle(s). Lets multiple
+            # people's Hussh One instances coexist in one group without clashing
+            # — each owner sets a UNIQUE @-handle (e.g. "@OneTeam"). Sourced from
+            # config whatsapp.trigger_tokens (list or comma string); falls back
+            # to the historic shared tokens so an unconfigured container still
+            # works. A leading "/" slash command always triggers regardless.
+            _trigger_tokens = self.config.extra.get("trigger_tokens")
+            if isinstance(_trigger_tokens, (list, tuple)):
+                _trigger_tokens = ",".join(str(t).strip() for t in _trigger_tokens if str(t).strip())
+            if isinstance(_trigger_tokens, str) and _trigger_tokens.strip():
+                bridge_env["WHATSAPP_TRIGGER_TOKENS"] = _trigger_tokens.strip()
+
+            # hussh 🤫 One: forward configured capsule group JIDs to the bridge.
+            # The Python side defines capsules in whatsapp.capsules, but the Node
+            # bridge gates non-owner invocations on WHATSAPP_CAPSULE_GROUPS and
+            # owner-in-group sends on WHATSAPP_ALLOWED_GROUPS. Without this, a
+            # configured capsule (e.g. "One Team") would still be treated as a
+            # plain owner-only group and other members' @-handle invocations
+            # would be silently dropped. We merge capsule JIDs into BOTH env
+            # lists so: (a) the owner can invoke from inside the group, and
+            # (b) other members can invoke via the explicit trigger handle.
+            try:
+                from gateway.whatsapp_capsule import _capsules_block
+
+                _capsules_cfg = _capsules_block(self.config) or {}
+                _capsule_jids = [
+                    str(j).strip()
+                    for j in _capsules_cfg.keys()
+                    if str(j).strip()
+                ]
+            except Exception:
+                _capsules_cfg = {}
+                _capsule_jids = []
+            if _capsule_jids:
+                def _merge_jid_env(var_name: str, defaults: str) -> None:
+                    existing = bridge_env.get(var_name)
+                    base = existing if existing is not None else defaults
+                    current = [g.strip() for g in base.split(",") if g.strip()]
+                    for jid in _capsule_jids:
+                        if jid not in current:
+                            current.append(jid)
+                    bridge_env[var_name] = ",".join(current)
+
+                # Defaults here MUST mirror the bridge's own hardcoded fallbacks
+                # so we extend rather than shrink the allow/capsule lists.
+                _merge_jid_env(
+                    "WHATSAPP_ALLOWED_GROUPS",
+                    "120363040968035480@g.us,120363427884298513@g.us",
+                )
+                _merge_jid_env(
+                    "WHATSAPP_CAPSULE_GROUPS",
+                    "120363405517552679@g.us",
+                )
+
+                # Per-capsule trigger-token overrides. A capsule may declare its
+                # own dedicated @-handle(s) (e.g. "@OneTeam" for the One Team
+                # group) so a bare @One — which other members' Hussh One
+                # containers may also answer — never clashes there. Forwarded as
+                # a JSON {jid: [tokens]} map; the bridge uses these tokens ONLY
+                # for that group, falling back to the global handles elsewhere.
+                _group_tokens: dict = {}
+                for _jid, _raw in _capsules_cfg.items():
+                    if not isinstance(_raw, dict):
+                        continue
+                    _ct = _raw.get("trigger_tokens")
+                    if isinstance(_ct, (list, tuple)):
+                        _ct_list = [str(t).strip() for t in _ct if str(t).strip()]
+                    elif isinstance(_ct, str):
+                        _ct_list = [t.strip() for t in _ct.split(",") if t.strip()]
+                    else:
+                        _ct_list = []
+                    if _ct_list:
+                        _group_tokens[str(_jid).strip()] = _ct_list
+                if _group_tokens:
+                    import json as _json
+                    bridge_env["WHATSAPP_GROUP_TRIGGER_TOKENS"] = _json.dumps(_group_tokens)
+
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
@@ -1227,6 +1304,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
+        import time
+
+        last_health_check = time.time()
+        health_check_interval = 120  # check every 2 minutes
 
         while self._running:
             if not self._http_session:
@@ -1235,6 +1316,31 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if bridge_exit:
                 print(f"[{self.name}] {bridge_exit}")
                 break
+
+            # Run periodic health check / self-healing watchdog
+            now = time.time()
+            if now - last_health_check > health_check_interval:
+                last_health_check = now
+                try:
+                    async with self._http_session.get(
+                        f"http://127.0.0.1:{self._bridge_port}/health",
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as hresp:
+                        if hresp.status == 200:
+                            hdata = await hresp.json()
+                            if hdata.get("status") != "connected":
+                                print(f"[{self.name}] ⚠️ Bridge reported unhealthy status: {hdata.get('status')}. Killing zombie bridge.")
+                                if self._bridge_process and self._bridge_process.poll() is None:
+                                    self._bridge_process.kill()
+                        else:
+                            print(f"[{self.name}] ⚠️ Bridge health endpoint returned status {hresp.status}. Killing unresponsive bridge.")
+                            if self._bridge_process and self._bridge_process.poll() is None:
+                                self._bridge_process.kill()
+                except Exception as he:
+                    print(f"[{self.name}] ⚠️ Bridge health check failed: {he}. Killing unresponsive bridge.")
+                    if self._bridge_process and self._bridge_process.poll() is None:
+                        self._bridge_process.kill()
+
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",
