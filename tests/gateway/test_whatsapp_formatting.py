@@ -246,7 +246,7 @@ class TestSendChunking:
         # converted (**bold** -> *bold*) and appear after the brand line.
         call_args = adapter._http_session.post.call_args
         payload = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert payload["message"] == "🤫 Hussh One\n*bold text*"
+        assert payload["message"] == "🤫 Hussh One\nGemini 3.5 Flash [A]\n════════════════════\n*bold text*"
 
     @pytest.mark.asyncio
     async def test_reply_to_only_on_first_chunk(self):

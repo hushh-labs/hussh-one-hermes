@@ -172,7 +172,7 @@ When setting up a new fork, a fresh agent, or a collaborator machine (`msainani`
 git clone https://github.com/hushh-labs/hussh-one-hermes.git
 cd hussh-one-hermes
 git remote add upstream https://github.com/NousResearch/hermes-agent.git
-git switch hussh-one-hermes
+git switch main
 ```
 
 ### Step 2: Environment Isolation Configuration

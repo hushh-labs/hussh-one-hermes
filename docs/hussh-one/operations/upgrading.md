@@ -6,7 +6,7 @@ provided you follow this loop.
 ## The upgrade loop
 ```bash
 git fetch upstream
-git switch hussh-one-hermes
+git switch main
 git merge upstream/main        # resolve conflicts favoring overlay modules
 # run the guard — this is the contract that proves the overlay survived
 scripts/hussh-one-guard.sh

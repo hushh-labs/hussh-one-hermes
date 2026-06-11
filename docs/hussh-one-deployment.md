@@ -37,7 +37,7 @@ Before merging official Hermes updates:
 
 ```bash
 git fetch upstream main --tags
-git switch hussh-one-hermes
+git switch main
 git branch "backup/hussh-one-before-upstream-$(date +%Y%m%d-%H%M%S)"
 git merge --no-ff upstream/main
 scripts/hussh-one-guard.sh

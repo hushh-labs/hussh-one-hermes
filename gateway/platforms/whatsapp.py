@@ -1018,12 +1018,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         directly and would otherwise go out unbranded, because the Node bridge
         prefix is forced empty (gateway is the sole composer).
 
-        This method is the brand FLOOR: it prepends the emoji-first brand line
-        ``🤫 Hussh One`` only when the message does not already start with it
-        (case-insensitive, tolerant of the legacy emoji-middle form), so it
-        never double-stamps a reply that already carries the full header.
-        Honours operator overrides: if WHATSAPP_REPLY_PREFIX / config
-        reply_prefix is set to empty, branding is disabled entirely.
+        This method is the brand FLOOR: it prepends the canonical 3-line header
+        stack (brand line + model + divider) dynamically to ensure all direct
+        and proactive sends are perfectly formatted under the hussh-one standard.
         """
         body = content or ""
         if not body.strip():
@@ -1032,12 +1029,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
         prefix = self._effective_reply_prefix()
         if prefix == "":
             return body
-        # Already branded? Detect emoji-first or legacy emoji-middle brand line
-        # at the very start (allowing leading whitespace the formatter may add).
-        stripped = body.lstrip()
-        if re.match(r"^(?:🤫\s*Hussh One|hussh\s*🤫?\s*One)", stripped, re.IGNORECASE):
-            return body
-        return f"{BRAND_DISPLAY_NAME}\n{body}"
+
+        try:
+            from hermes_cli.hussh_one_header import apply_whatsapp_header
+            # Let the single source of truth handle strip-then-prepend idempotently.
+            # Default to gemini-3.5-flash, auto mode [A], since this is a proactive send.
+            config_prefix = self.config.extra.get("reply_prefix") if self.config and self.config.extra else None
+            return apply_whatsapp_header(body, None, is_select_mode=False, config_prefix=config_prefix)
+        except Exception as e:
+            logger.warning("Failed to apply brand floor header: %s", e)
+            return f"{BRAND_DISPLAY_NAME}\n{body}"
 
     async def send(
         self,

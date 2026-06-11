@@ -17,7 +17,7 @@ under `scripts/hussh-one-*`.
 git clone https://github.com/hushh-labs/hussh-one-hermes.git
 cd hussh-one-hermes
 git remote add upstream https://github.com/NousResearch/hermes-agent.git
-git switch hussh-one-hermes
+git switch main
 
 # Hussh One defaults
 .venv/bin/hermes config set display.skin hussh-one

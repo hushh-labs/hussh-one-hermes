@@ -19,7 +19,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ## Hussh One Fork
 
-This checkout is the `hussh-one-hermes` fork. Fresh Hussh One deployments should clone the fork branch and run the bootstrap/doctor flow:
+This checkout is the Hussh One fork (`hushh-labs/hussh-one-hermes`, default branch `main`). Fresh Hussh One deployments should clone `main` and run the bootstrap/doctor flow:
 
 ```bash
 git clone https://github.com/hushh-labs/hussh-one-hermes.git

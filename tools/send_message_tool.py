@@ -1142,6 +1142,14 @@ async def _send_whatsapp(extra, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
+        from hermes_cli.hussh_one_header import apply_whatsapp_header
+        config_prefix = extra.get("reply_prefix") if extra else None
+        # Always apply the canonical 3-line header stack (idempotently)
+        message = apply_whatsapp_header(message, None, is_select_mode=False, config_prefix=config_prefix)
+    except Exception as e:
+        logger.warning("Failed to apply WhatsApp header in send_message_tool (non-fatal): %s", e)
+
+    try:
         bridge_port = extra.get("bridge_port", 3000)
         async with aiohttp.ClientSession() as session:
             async with session.post(

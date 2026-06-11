@@ -30,20 +30,111 @@ Generic Hermes changes should stay upstreamable:
 
 The rule is: keep brand content in data/config/plugin files, and keep core edits generic enough that Hermes could accept them without Hussh-specific naming.
 
-## Update Flow
+## Canonical Branch Model (READ THIS FIRST)
 
-Before pulling official Hermes changes, commit or stash local work. Then use an explicit merge branch so conflicts are reviewable:
+There is exactly **ONE** long-lived branch for this fork:
+
+- **`main`** on `hushh-labs/hussh-one-hermes` (a PRIVATE repo) is the single
+  canonical trunk **and** the GitHub default branch. Everything ships from here:
+  the Hussh One identity, the Vertex Claude capability, the WhatsApp gateway
+  customizations, and every merge of official upstream Hermes.
+
+History note (why this matters): there used to be a second branch,
+`hussh-one-hermes`, that was the GitHub default. The two drifted apart — `main`
+carried the upstream merges + recent work while `hussh-one-hermes` carried 9
+unique Hussh One features (capsules, the upgrade-safe header module, the
+bootstrap/doctor/supervisor scripts). On 2026-06-07 they were reconciled: all
+9 features were merged into `main`, the GitHub default was repointed to `main`,
+and `hussh-one-hermes` was **deleted** (local + remote). Its content is
+preserved forever in the tag `safety/hussh-one-hermes-20260607-232148`.
+
+**Hard rules to never repeat the drift:**
+
+1. **Never create a second long-lived "trunk-like" branch.** Feature work goes
+   on short-lived `feat/*` / `fix/*` branches that merge into `main` and are
+   then deleted. `main` is the only place that accumulates Hussh One identity.
+2. **Always commit/push to `main`.** Before starting work, confirm you're on it:
+   `git branch --show-current` must print `main`.
+3. **The running gateway uses THIS checkout's venv** (`.venv`), so whatever is on
+   `main` here is what actually runs after a restart. There is no separate
+   "runtime" branch to keep in sync.
+4. The remotes are fixed: `origin` → `hushh-labs/hussh-one-hermes` (our private
+   canonical repo), `upstream` → `NousResearch/hermes-agent` (official Hermes).
+   Verify with `git remote -v` before any destructive action.
+
+## Remotes & Sync State (quick check)
 
 ```bash
-git status --short
-git fetch upstream main --tags
-git switch hussh-one-hermes
-git branch "backup/hussh-one-before-upstream-$(date +%Y%m%d-%H%M%S)"
-git merge --no-ff upstream/main
-scripts/hussh-one-guard.sh
+git remote -v                                   # origin = hushh-labs, upstream = NousResearch
+git branch --show-current                       # must be: main
+git fetch upstream --quiet && git fetch origin --quiet
+git rev-list --left-right --count upstream/main...HEAD
+#   left  = commits we are BEHIND upstream (need to merge)
+#   right = our Hussh One commits AHEAD of upstream (expected, large)
+git log origin/main..HEAD --oneline             # unpushed local commits (should be empty after a push)
 ```
 
-`hussh-one-hermes` is the default branch for `hushh-labs/hussh-one-hermes`. `hermes update` already knows how to fetch the official repository through the `upstream` remote. For this fork, prefer the explicit flow above when Hussh One has carried commits, because it leaves merge conflicts visible and makes the guard mandatory before restart.
+## Update Flow (pulling latest official Hermes)
+
+Always merge `upstream/main` directly into `main`. Tag a safety snapshot first
+so any merge can be undone with one command.
+
+```bash
+git switch main
+git status --short                              # working tree must be clean (stash if not)
+git fetch upstream --tags --quiet
+
+# 1. Safety net — immutable, survives even a botched merge. Push it offsite too.
+TS=$(date +%Y%m%d-%H%M%S)
+git tag "safety/main-$TS" main
+git push origin "safety/main-$TS"
+
+# 2. Merge official Hermes into main.
+git merge --no-ff upstream/main
+
+# 3. Resolve conflicts (see "Conflict-Resolution Playbook" below), then guard.
+scripts/hussh-one-guard.sh
+
+# 4. Push and restart.
+git push origin main
+scripts/hussh-one-restart.sh        # or: hermes gateway restart
+```
+
+To abort a merge that has gone wrong before committing: `git merge --abort`.
+To roll back a bad merge that was already committed but not pushed:
+`git reset --hard safety/main-<TS>`.
+
+## Conflict-Resolution Playbook
+
+Conflicts almost always land in the same files. Resolve by intent, not by
+blindly picking a side:
+
+| File | What to keep |
+|------|--------------|
+| `hermes_cli/brand.py` | OUR emoji-first `BRAND_DISPLAY_NAME = "🤫 Hussh One"`. Never let upstream's generic Hermes branding win. |
+| `hermes_cli/skins/hussh-one.yaml`, `dashboard_themes/hussh-one.yaml` | OUR `🤫 Hussh One` branding strings. |
+| `gateway/run.py` (WhatsApp header block) | OUR `apply_whatsapp_header(...)` call (the upgrade-safe module). Take upstream's surrounding changes, keep our block. |
+| `hermes_cli/hussh_one_header.py` | OURS entirely. If `_BRAND_LINE_RE` needs to strip new self-echo forms, extend it (it already covers emoji-first + legacy emoji-middle). |
+| `gateway/platforms/whatsapp.py` | KEEP BOTH: upstream's new attrs (e.g. `supports_code_blocks`) AND our `DEFAULT_REPLY_PREFIX = default_whatsapp_reply_prefix()` + `_ensure_brand_floor()`. Never accept upstream's `⚕ Hermes Agent` prefix. |
+| `scripts/whatsapp-bridge/bridge.js` | KEEP BOTH: capsule sandbox + rate-limit code AND emoji-first `DEFAULT_REPLY_PREFIX`. Run `node --check` after. |
+| `agent/conversation_loop.py` | Adopt upstream refactors (e.g. `turn_context.py`, `TurnRetryState`) but RE-PORT our Vertex Claude pre-turn access check and `vertex_claude_locations_attempted` location recovery on top. |
+| `scripts/install.sh`, `install.ps1` | `BRANCH="main"` and `origin` pointing at `hushh-labs/hussh-one-hermes`. |
+
+After resolving, ALWAYS:
+
+```bash
+# 0 conflict markers anywhere:
+grep -rnE '^(<<<<<<< |>>>>>>> |=======$)' --include="*.py" --include="*.js" .
+# Python still parses:
+python -c "import agent.conversation_loop, gateway.run, gateway.platforms.whatsapp, hermes_cli.hussh_one_header"
+# JS still parses:
+node --check scripts/whatsapp-bridge/bridge.js
+```
+
+`hermes update` knows how to fetch official Hermes through the `upstream` remote,
+but prefer the explicit flow above whenever Hussh One has carried commits,
+because it leaves merge conflicts visible and makes the guard mandatory before
+restart.
 
 ## Plugin Updates
 
