@@ -2799,23 +2799,23 @@ class GatewayRunner:
         # and the resolved model matches the standard default (Gemini 3.5 Flash)
         if not has_override and model == "gemini-3.5-flash":
             try:
-                from hermes_cli.hussh_one_router import route_workload
-                import asyncio
-                
-                # Run the async router synchronously in the gateway thread
-                routed_model, routed_runtime = asyncio.run(
-                    route_workload(user_message, {})
-                )
-                if routed_model != model:
+                from hermes_cli.hussh_one_router import classify_complexity, _vertex_claude_runtime, MODEL_HIGH
+
+                # Pure-synchronous, zero-I/O classification (no extra LLM call,
+                # no event-loop juggling). Escalates to Vertex Claude only when
+                # the confidence-scored rule engine clears the generous bar.
+                complexity, confidence, _signals = classify_complexity(user_message)
+                if complexity == "high":
+                    routed_runtime = _vertex_claude_runtime(MODEL_HIGH)
                     logger.info(
-                        "[hussh-one-router] Routing turn to heavy model: %s -> %s",
-                        model, routed_model
+                        "[hussh-one-router] Routing turn to heavy model: %s -> %s (conf=%.2f)",
+                        model, MODEL_HIGH, confidence,
                     )
-                    model = routed_model
-                    # Update runtime config for the escalated model
+                    model = MODEL_HIGH
+                    # Overwrite runtime so a stale Gemini base_url/provider can't
+                    # leak into the Claude call (the prior 404 root cause).
                     for k, v in routed_runtime.items():
-                        if v is not None:
-                            runtime_kwargs[k] = v
+                        runtime_kwargs[k] = v
             except Exception as _r_err:
                 logger.debug("Workload routing failed, falling back to Gemini: %s", _r_err)
 
