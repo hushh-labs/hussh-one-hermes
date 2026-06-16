@@ -81,7 +81,7 @@ def _resolve_vertex_location() -> str:
         or os.getenv("VERTEX_LOCATION")
         or os.getenv("GOOGLE_CLOUD_REGION")
         or os.getenv("GCP_REGION")
-        or "global"
+        or "us-central1"
     ).strip()
 
 
