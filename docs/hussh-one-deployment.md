@@ -44,3 +44,26 @@ scripts/hussh-one-guard.sh
 ```
 
 Keep secrets in `$HERMES_HOME/.env` or your shell. `.env.example` only documents non-secret Vertex selectors such as `GOOGLE_CLOUD_PROJECT`, `GCP_PROJECT`, and `GOOGLE_CLOUD_LOCATION`.
+
+---
+
+## Developer Onboarding & Multi-Agent Integration Reference
+
+To ensure that other developers and automated agents (such as Salesforce or MuleSoft integrations) can configure and query Gemini models (`gemini-3.5-flash` / `gemini-2.5-flash`) out-of-the-box, developers must understand the boundary and endpoint routing for Google's dual-platform architecture:
+
+### 1. Developer Platform (Google AI Studio)
+*   **Platform / Provider:** `gemini`
+*   **Model ID:** `gemini-3.5-flash` (or `gemini-1.5-flash`)
+*   **Canonical Endpoint Base URL:** `https://generativelanguage.googleapis.com/v1beta`
+*   **Authentication:** Single, static API key (`AIzaSy...`). Passed as the query parameter `?key=...` or in request headers.
+*   **Best For:** Fast local prototyping, standalone agent scripts, and lightweight third-party connectors.
+
+### 2. Enterprise Cloud Platform (Google Cloud Vertex AI)
+*   **Platform / Provider:** `google-vertex` (Gemini) / `google-vertex-claude` (Claude)
+*   **Model ID:** `publishers/google/models/gemini-3.5-flash`
+*   **Canonical Endpoint Base URL:**
+    `https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/publishers/google`
+*   **Authentication:** GCP OAuth 2.0 Bearer tokens generated dynamically via **Application Default Credentials (ADC)** or GCP Service Account JSON keys.
+*   **Best For:** Enterprise-grade security, production deployment pipelines, corporate auditing, VPC network constraints, and robust multi-agent platforms.
+
+*Note: By setting `GOOGLE_GENAI_USE_VERTEXAI=true` and configuring your active project ID, our system's built-in adapters dynamically map all internal requests to the Vertex AI enterprise API, ensuring other downstream agents can boot and authenticate seamlessly.*

@@ -2787,6 +2787,38 @@ class GatewayRunner:
         mode, attach `request_overrides` so the API call is marked
         accordingly.
         """
+        # ------------------------------------------------------------
+        # Intelligent Workload & Intent Router (hussh-one overlay):
+        # If the session is in Auto Mode (no manual model override),
+        # analyze the prompt complexity and route accordingly.
+        # ------------------------------------------------------------
+        session_key = os.getenv("HERMES_SESSION_KEY")
+        has_override = bool(session_key and session_key in self._session_model_overrides)
+        
+        # We only route if we are in Auto mode (no manual model pin/override present)
+        # and the resolved model matches the standard default (Gemini 3.5 Flash)
+        if not has_override and model == "gemini-3.5-flash":
+            try:
+                from hermes_cli.hussh_one_router import route_workload
+                import asyncio
+                
+                # Run the async router synchronously in the gateway thread
+                routed_model, routed_runtime = asyncio.run(
+                    route_workload(user_message, {})
+                )
+                if routed_model != model:
+                    logger.info(
+                        "[hussh-one-router] Routing turn to heavy model: %s -> %s",
+                        model, routed_model
+                    )
+                    model = routed_model
+                    # Update runtime config for the escalated model
+                    for k, v in routed_runtime.items():
+                        if v is not None:
+                            runtime_kwargs[k] = v
+            except Exception as _r_err:
+                logger.debug("Workload routing failed, falling back to Gemini: %s", _r_err)
+
         from hermes_cli.models import resolve_fast_mode_overrides
 
         runtime = {
@@ -18103,11 +18135,35 @@ class GatewayRunner:
             #   * block lateral send_message to any other chat
             #   * inject the capsule guardrail system prompt
             # See HUSSH_ONE.md §6.
+            #
+            # Owner Bypass Guard: if the owner (listed in WHATSAPP_ALLOWED_USERS)
+            # invokes the agent inside a capsule group using an owner trigger
+            # (like @One, @husshOne, @hussh-one) rather than the capsule-specific
+            # trigger (like @OneTeam), we bypass the capsule sandbox to run the
+            # full-power main agent.
             _capsule = None
             try:
                 if source.platform == Platform.WHATSAPP:
-                    from gateway.whatsapp_capsule import resolve_capsule
-                    _capsule = resolve_capsule(user_config, source.chat_id)
+                    has_owner_trigger = bool(
+                        message and re.search(r"(?<![\w@])@(One|husshOne|hussh-one)(?![\w-])", message, re.IGNORECASE)
+                    )
+                    if has_owner_trigger and "@oneteam" in message.lower():
+                        has_owner_trigger = False
+
+                    allowed_users_env = os.getenv("WHATSAPP_ALLOWED_USERS", "")
+                    allowed_users = [u.strip() for u in allowed_users_env.split(",") if u.strip()]
+                    sender = (getattr(source, "user_id_alt", None) or getattr(source, "user_id", None) or "").strip()
+                    is_owner = any(sender.startswith(u) or u.startswith(sender) for u in allowed_users) if sender and allowed_users else True
+
+                    if has_owner_trigger and is_owner:
+                        logger.info(
+                            "Capsule bypass triggered: owner '%s' invoked main agent via owner tag in chat %s.",
+                            sender, source.chat_id
+                        )
+                        _capsule = None
+                    else:
+                        from gateway.whatsapp_capsule import resolve_capsule
+                        _capsule = resolve_capsule(user_config, source.chat_id)
             except Exception:
                 logger.debug("capsule resolution failed", exc_info=True)
                 _capsule = None

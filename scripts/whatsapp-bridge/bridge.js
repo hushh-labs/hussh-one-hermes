@@ -628,6 +628,20 @@ app.get('/messages', (req, res) => {
   res.json(msgs);
 });
 
+function extractMentions(text) {
+  const mentions = [];
+  const regex = /@(\d+(@lid|@s\.whatsapp\.net)?)/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    let jid = match[1];
+    if (!jid.includes('@')) {
+      jid = `${jid}@s.whatsapp.net`;
+    }
+    mentions.push(jid);
+  }
+  return mentions.length > 0 ? mentions : undefined;
+}
+
 // Send a message
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -640,10 +654,13 @@ app.post('/send', async (req, res) => {
   }
 
   try {
+    const mentions = extractMentions(message);
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+      const payload = { text: chunks[i] };
+      if (mentions) payload.mentions = mentions;
+      const sent = await sendWithTimeout(chatId, payload);
       trackSentMessageId(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
@@ -674,13 +691,18 @@ app.post('/edit', async (req, res) => {
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
+    const mentions = extractMentions(message);
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    const payload = { text: chunks[0], edit: key };
+    if (mentions) payload.mentions = mentions;
+    await sendWithTimeout(chatId, payload);
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+        const p = { text: chunks[i] };
+        if (mentions) p.mentions = mentions;
+        const sent = await sendWithTimeout(chatId, p);
         trackSentMessageId(sent);
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {

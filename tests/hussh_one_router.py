@@ -1,0 +1,80 @@
+"""Unit tests for the hussh-one dynamic workload & intent router.
+
+These tests use the gateway testing harness to verify that:
+  1. Low complexity queries (casual chatter, simple questions) route to Gemini 3.5 Flash.
+  2. High complexity queries (coding, terminal work, migrations) escalate to Claude Opus.
+  3. Pinned models bypass the router entirely.
+  4. Precise model display names are resolved dynamically.
+"""
+
+from __future__ import annotations
+
+import os
+import unittest
+import asyncio
+
+# Ensure parent directory is in sys.path
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from hermes_cli.hussh_one_router import route_workload, _classify_via_rules
+from hermes_cli.hussh_one_header import display_model_name, mode_token
+
+
+class TestHusshOneRouter(unittest.TestCase):
+
+    def test_rule_based_classification(self):
+        """Verify fallback rule engine correctly flags heavy workflows."""
+        cases = [
+            ("hi there", "low"),
+            ("how's the weather?", "low"),
+            ("what is our current default model?", "low"),
+            ("write a python script to parse local logs", "high"),
+            ("deploy the latest main branch commit to UAT", "high"),
+            ("run database migrations for postgres", "high"),
+            ("check DCO signoff for PR #2599", "high"),
+            ("organize our brand assets inside google drive", "high"),
+        ]
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                res = _classify_via_rules(prompt)
+                self.assertEqual(
+                    res, expected, 
+                    f"Prompt '{prompt}' classified as {res}, expected {expected}"
+                )
+
+    def test_precise_model_name_mapping(self):
+        """Verify that raw model IDs resolve to exact friendly display names."""
+        cases = [
+            ("google/gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("anthropic/claude-3-5-sonnet", "Claude Sonnet 3.5"),
+            ("anthropic/claude-opus-4-8", "Claude Opus 4.8"),
+            ("custom/qwen-35b-chat", "Qwen 3.6 35B"),
+            ("local/unregistered-llama-2b", "UnregisteredLlama2b"), # fallback to capitalized short id
+        ]
+        for model_id, expected in cases:
+            with self.subTest(model_id=model_id):
+                res = display_model_name(model_id)
+                self.assertEqual(
+                    res, expected, 
+                    f"Model '{model_id}' mapped to '{res}', expected '{expected}'"
+                )
+
+    def test_dynamic_routing_resolution(self):
+        """Verify async workload routing integrates and returns correct models."""
+        # Test low-complexity prompt routing (no escalation)
+        low_model, low_runtime = asyncio.run(
+            route_workload("hi there!", {})
+        )
+        self.assertEqual(low_model, "gemini-3.5-flash")
+        
+        # Test high-complexity prompt routing (escalates to Claude Opus)
+        high_model, high_runtime = asyncio.run(
+            route_workload("create a new python test file and run pytest on it", {})
+        )
+        self.assertEqual(high_model, "claude-opus-4-8")
+        self.assertEqual(high_runtime.get("provider"), "google-vertex")
+
+
+if __name__ == "__main__":
+    unittest.main()
