@@ -1033,9 +1033,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.hussh_one_header import apply_whatsapp_header
             # Let the single source of truth handle strip-then-prepend idempotently.
-            # Default to gemini-3.5-flash, auto mode [A], since this is a proactive send.
+            # Resolve the REAL configured default model rather than hardcoding
+            # Gemini — a proactive send (cron, send_message tool, restart notice)
+            # must not claim "Gemini 3.5 Flash" when the gateway default is, say,
+            # Claude Opus. The proactive path has no per-turn routed model, so the
+            # configured default (Auto mode [A]) is the honest label.
             config_prefix = self.config.extra.get("reply_prefix") if self.config and self.config.extra else None
-            return apply_whatsapp_header(body, None, is_select_mode=False, config_prefix=config_prefix)
+            proactive_model = None
+            try:
+                from gateway.run import _resolve_gateway_model
+                proactive_model = _resolve_gateway_model() or None
+            except Exception:
+                proactive_model = None  # display_model_name() falls back to gemini default
+            return apply_whatsapp_header(body, proactive_model, is_select_mode=False, config_prefix=config_prefix)
         except Exception as e:
             logger.warning("Failed to apply brand floor header: %s", e)
             return f"{BRAND_DISPLAY_NAME}\n{body}"

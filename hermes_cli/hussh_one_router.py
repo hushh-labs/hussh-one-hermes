@@ -110,7 +110,13 @@ User request: "{clean_message}"
         )
 
         logger.debug("[hussh-one-router] Dispatched LLM classification turn...")
-        result = await classifier.run_conversation(prompt)
+        # AIAgent.run_conversation is a SYNCHRONOUS method that returns a dict.
+        # Awaiting it raised "object dict can't be used in 'await' expression"
+        # on every turn, silently killing LLM routing and forcing the crude
+        # keyword fallback. Run it off-thread so we never block the event loop.
+        import asyncio as _asyncio
+
+        result = await _asyncio.to_thread(classifier.run_conversation, prompt)
         response_text = str(result.get("final_response") or "").strip()
         logger.debug("[hussh-one-router] Raw classifier response: %s", response_text)
 

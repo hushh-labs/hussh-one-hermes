@@ -50,7 +50,7 @@ class TestHusshOneRouter(unittest.TestCase):
             ("anthropic/claude-3-5-sonnet", "Claude Sonnet 3.5"),
             ("anthropic/claude-opus-4-8", "Claude Opus 4.8"),
             ("custom/qwen-35b-chat", "Qwen 3.6 35B"),
-            ("local/unregistered-llama-2b", "UnregisteredLlama2b"), # fallback to capitalized short id
+            ("local/unregistered-llama-2b", "unregistered-llama-2b"), # honest raw short-id fallback
         ]
         for model_id, expected in cases:
             with self.subTest(model_id=model_id):
@@ -74,6 +74,42 @@ class TestHusshOneRouter(unittest.TestCase):
         )
         self.assertEqual(high_model, "claude-opus-4-8")
         self.assertEqual(high_runtime.get("provider"), "google-vertex")
+
+    def test_llm_classifier_is_not_awaited_as_coroutine(self):
+        """Regression: run_conversation is SYNC; awaiting it killed LLM routing.
+
+        Previously the router did ``await classifier.run_conversation(prompt)``,
+        but that method returns a plain dict, raising
+        "object dict can't be used in 'await' expression" on EVERY turn and
+        silently degrading to the keyword fallback. We patch AIAgent so its
+        run_conversation returns a high-complexity verdict and assert the
+        router honours the LLM decision (escalates) without raising.
+        """
+        import run_agent
+
+        class _FakeAgent:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run_conversation(self, prompt, *a, **kw):
+                # Synchronous dict return — exactly like the real method.
+                return {"final_response": '{"complexity": "high", "reason": "code task"}'}
+
+        original = run_agent.AIAgent
+        run_agent.AIAgent = _FakeAgent
+        try:
+            # A prompt with NO high-complexity keywords, so a "high" result can
+            # only come from the LLM path actually running (not the rule engine).
+            model, runtime = asyncio.run(
+                route_workload("tell me a story about the ocean", {})
+            )
+        finally:
+            run_agent.AIAgent = original
+
+        self.assertEqual(
+            model, "claude-opus-4-8",
+            "LLM classifier path must run and escalate; await-on-dict bug regressed",
+        )
 
 
 if __name__ == "__main__":

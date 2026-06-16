@@ -111,9 +111,11 @@ def display_model_name(model: Optional[str]) -> str:
         var = variant_match.group(1) if variant_match else ""
         return f"Qwen {v} {size} {var}".replace("  ", " ").strip()
 
-    # Fallback to normalized short id with capitalized tokens
-    tokens = [t.capitalize() for t in short.replace("-", " ").split() if t]
-    return "".join(tokens)
+    # Fallback for unrecognized families: preserve the RAW short id verbatim
+    # (e.g. "whizbang-7b"). Mangling it into "Whizbang7b" would drop the
+    # hyphen and size readability — the opposite of the precise-naming goal.
+    # Keeping the real identifier is the most honest thing we can show.
+    return short
 
 
 def mode_token(is_select_mode: bool) -> str:

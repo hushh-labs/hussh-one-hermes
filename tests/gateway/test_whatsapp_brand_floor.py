@@ -58,3 +58,20 @@ def test_empty_content_passthrough():
     a = _adapter()
     with patch.dict(os.environ, {}, clear=True):
         assert a._ensure_brand_floor("") == ""
+
+
+def test_proactive_floor_reflects_configured_default_model():
+    """Regression (Bug 3): proactive sends must NOT hardcode Gemini.
+
+    Previously _ensure_brand_floor passed model=None to apply_whatsapp_header,
+    so every cron / send_message / restart notice claimed "Gemini 3.5 Flash [A]"
+    even when the gateway default was Claude Opus. The floor now resolves the
+    real configured default via _resolve_gateway_model().
+    """
+    a = _adapter()
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("gateway.run._resolve_gateway_model", return_value="claude-opus-4-8"):
+            out = a._ensure_brand_floor("Heartbeat from Opus turn")
+    assert out == (
+        "🤫 Hussh One\nClaude Opus 4.8 [A]\n════════════════════\nHeartbeat from Opus turn"
+    )

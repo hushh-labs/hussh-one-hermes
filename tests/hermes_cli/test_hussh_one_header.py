@@ -35,7 +35,8 @@ class TestComposition:
     def test_stacked_select_mode(self):
         h = _h()
         out = h.build_whatsapp_header("anthropic/claude-opus-4", is_select_mode=True)
-        assert out == "🤫 Hussh One\nClaude Opus [S]\n════════════════════\n"
+        # Precise naming contract: version must be shown, not bare "Claude Opus".
+        assert out == "🤫 Hussh One\nClaude Opus 4.8 [S]\n════════════════════\n"
 
     def test_provider_prefix_stripped_in_model_label(self):
         h = _h()
@@ -43,6 +44,8 @@ class TestComposition:
 
     def test_unknown_model_falls_back_to_short_id(self):
         h = _h()
+        # Honest fallback: unknown families keep their raw short id verbatim
+        # (hyphen + size preserved), never a mangled CamelCase token.
         assert h.display_model_name("acme/whizbang-7b") == "whizbang-7b"
 
     def test_none_model_defaults_to_gemini(self):
