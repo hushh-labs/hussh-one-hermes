@@ -180,8 +180,8 @@ _BRAND_LINE_RE = re.compile(
     r"^(?:🤫\s*Hussh One|hussh\s*🤫?\s*One|hussh One)\s*\n?", re.IGNORECASE
 )
 _MODEL_LINE_RE = re.compile(
-    r"^(?:Gemini 3\.5 Flash|Gemma 4|Qwen 3\.6 35B|Claude (?:Opus|Sonnet|Haiku))"
-    r"(?:\s*\[[SA]\])?\s*\n?",
+    r"^(?:Gemini|Gemma|Qwen|Claude|Anthropic|Llama|Mistral|OpenRouter|Whizbang|DeepSeek)"
+    r"[^\n]*?(?:\s*\[[SA]\])?\s*\n?",
     re.IGNORECASE,
 )
 _DIVIDER_RE = re.compile(r"^[═=─-]{5,}\s*\n?")

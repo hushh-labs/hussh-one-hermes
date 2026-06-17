@@ -835,6 +835,7 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        agent._last_request_approx_tokens = approx_request_tokens
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
@@ -2861,6 +2862,12 @@ def run_conversation(
                         # loop forever if the error keeps recurring.
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
+                            if agent._has_pending_fallback() and agent._try_activate_fallback():
+                                agent._buffer_status(
+                                    "⚠️ Context compression exhausted — switching to next fallback..."
+                                )
+                                _retry.restart_with_compressed_messages = True
+                                break
                             agent._flush_status_buffer()
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
@@ -2930,6 +2937,12 @@ def run_conversation(
 
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
+                        if agent._has_pending_fallback() and agent._try_activate_fallback():
+                            agent._buffer_status(
+                                "⚠️ Context compression exhausted — switching to next fallback..."
+                            )
+                            _retry.restart_with_compressed_messages = True
+                            break
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
@@ -2963,6 +2976,12 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
+                        if agent._has_pending_fallback() and agent._try_activate_fallback():
+                            agent._buffer_status(
+                                "⚠️ Context compression made no progress — switching to next fallback..."
+                            )
+                            _retry.restart_with_compressed_messages = True
+                            break
                         # Can't compress further and already at minimum tier
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)

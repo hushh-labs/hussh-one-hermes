@@ -2700,8 +2700,24 @@ class GatewayRunner:
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
+                "_session_model_override": True,
             }
             if override_runtime.get("api_key"):
+                try:
+                    from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+                    normalized_runtime = normalize_google_model_runtime(
+                        model=override_model,
+                        provider=override_runtime.get("provider"),
+                        api_key=override_runtime.get("api_key"),
+                        base_url=override_runtime.get("base_url"),
+                        api_mode=override_runtime.get("api_mode"),
+                    )
+                    override_model = normalized_runtime.get("model") or override_model
+                    for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+                        override_runtime[key] = normalized_runtime.get(key)
+                except Exception as exc:
+                    logger.debug("Session override runtime normalization skipped: %s", exc)
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
                     resolved_session_key or "", model, override_model,
@@ -2734,6 +2750,7 @@ class GatewayRunner:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+            runtime_kwargs["_session_model_override"] = True
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -2793,7 +2810,10 @@ class GatewayRunner:
         # analyze the prompt complexity and route accordingly.
         # ------------------------------------------------------------
         session_key = os.getenv("HERMES_SESSION_KEY")
-        has_override = bool(session_key and session_key in self._session_model_overrides)
+        has_override = bool(
+            runtime_kwargs.pop("_session_model_override", False)
+            or (session_key and session_key in self._session_model_overrides)
+        )
         
         # We only route if we are in Auto mode (no manual model pin/override present)
         # and the resolved model matches the standard default (Gemini 3.5 Flash)
@@ -2818,6 +2838,23 @@ class GatewayRunner:
                         runtime_kwargs[k] = v
             except Exception as _r_err:
                 logger.debug("Workload routing failed, falling back to Gemini: %s", _r_err)
+
+        try:
+            from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+            normalized_runtime = normalize_google_model_runtime(
+                model=model,
+                provider=runtime_kwargs.get("provider"),
+                api_key=runtime_kwargs.get("api_key"),
+                base_url=runtime_kwargs.get("base_url"),
+                api_mode=runtime_kwargs.get("api_mode"),
+                credential_pool=runtime_kwargs.get("credential_pool"),
+            )
+            model = normalized_runtime.get("model") or model
+            for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+                runtime_kwargs[key] = normalized_runtime.get(key)
+        except Exception as _norm_err:
+            logger.debug("Google model runtime normalization skipped: %s", _norm_err)
 
         from hermes_cli.models import resolve_fast_mode_overrides
 

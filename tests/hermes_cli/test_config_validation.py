@@ -169,6 +169,51 @@ class TestFallbackModelValidation:
         })
         assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
 
+    def test_warns_when_legacy_and_canonical_fallbacks_both_configured(self):
+        issues = validate_config_structure({
+            "fallback_providers": [
+                {"provider": "custom:lmstudio", "model": "google/gemma-4-e2b"},
+            ],
+            "fallback_model": {"provider": "gemini", "model": "gemini-3.5-flash"},
+        })
+        assert any("Both fallback_providers and legacy fallback_model" in i.message for i in issues)
+
+    def test_warns_when_first_fallback_is_local_without_context_length(self):
+        issues = validate_config_structure({
+            "providers": {
+                "custom:lmstudio": {
+                    "base_url": "http://localhost:1234/v1",
+                    "is_local": True,
+                },
+            },
+            "fallback_providers": [
+                {"provider": "custom:lmstudio", "model": "google/gemma-4-e2b"},
+            ],
+        })
+        assert any("First fallback provider appears to be local" in i.message for i in issues)
+
+
+class TestModelRuntimeValidation:
+    def test_warns_claude_model_on_gemini_runtime(self):
+        issues = validate_config_structure({
+            "model": {
+                "default": "claude-opus-4-8",
+                "provider": "gemini",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            },
+        })
+        assert any("Claude model is configured with a Gemini" in i.message for i in issues)
+
+    def test_warns_gemini_model_on_vertex_claude_runtime(self):
+        issues = validate_config_structure({
+            "model": {
+                "default": "gemini-3.5-flash",
+                "provider": "google-vertex-claude",
+                "api_mode": "anthropic_messages",
+            },
+        })
+        assert any("Gemini model is configured with a Vertex Claude" in i.message for i in issues)
+
 
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""

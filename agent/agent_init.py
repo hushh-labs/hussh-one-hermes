@@ -351,6 +351,26 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    try:
+        from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+        _normalized_runtime = normalize_google_model_runtime(
+            model=agent.model,
+            provider=agent.provider,
+            api_key=api_key,
+            base_url=agent.base_url,
+            api_mode=agent.api_mode,
+            credential_pool=agent._credential_pool,
+        )
+        agent.provider = _normalized_runtime["provider"] or ""
+        agent.base_url = _normalized_runtime["base_url"] or ""
+        agent.api_mode = _normalized_runtime["api_mode"] or agent.api_mode
+        api_key = _normalized_runtime["api_key"]
+        base_url = agent.base_url
+        agent._credential_pool = _normalized_runtime["credential_pool"]
+    except Exception:
+        pass
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:

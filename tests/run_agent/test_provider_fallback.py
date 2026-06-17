@@ -182,6 +182,71 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_skips_local_fallback_when_request_exceeds_context(self):
+        fbs = [
+            {"provider": "custom:lmstudio", "model": "google/gemma-4-e2b"},
+            {"provider": "openai", "model": "gpt-4o"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent._last_request_approx_tokens = 35_051
+
+        lmstudio_client = _mock_client(
+            base_url="http://localhost:1234/v1",
+            api_key="no-key-required",
+        )
+        openai_client = _mock_client(
+            base_url="https://api.openai.com/v1",
+            api_key="sk-fallback",
+        )
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc,
+            patch("agent.model_metadata.get_model_context_length", return_value=32_768),
+        ):
+            mock_rpc.side_effect = [
+                (lmstudio_client, "google/gemma-4-e2b"),
+                (openai_client, "gpt-4o"),
+            ]
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "openai"
+        assert agent.model == "gpt-4o"
+        assert agent.base_url == "https://api.openai.com/v1"
+        assert mock_rpc.call_count == 2
+
+    def test_google_claude_fallback_entry_normalizes_to_vertex(self):
+        fbs = [
+            {
+                "provider": "google-vertex",
+                "model": "claude-opus-4-8",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        vertex_client = _mock_client(
+            base_url="https://aiplatform.googleapis.com",
+            api_key="gcp-sdk",
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(vertex_client, "claude-opus-4-8"),
+            ) as mock_rpc,
+            patch(
+                "agent.anthropic_adapter.build_anthropic_provider_client",
+                return_value=MagicMock(),
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "google-vertex-claude"
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.api_key == "gcp-sdk"
+        assert mock_rpc.call_args.args[0] == "google-vertex-claude"
+        assert mock_rpc.call_args.kwargs["explicit_base_url"]
+        assert "aiplatform.googleapis.com" in mock_rpc.call_args.kwargs["explicit_base_url"]
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

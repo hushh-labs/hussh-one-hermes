@@ -1030,6 +1030,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if prefix == "":
             return body
 
+        # If the content already starts with a valid Hussh One header, we do not want
+        # to strip and re-apply it (which would overwrite [S] with [A]).
+        from hermes_cli.brand import BRAND_DISPLAY_NAME
+        _brand_strip = BRAND_DISPLAY_NAME.strip().lower()
+        _body_lstrip = body.lstrip().lower()
+        if _body_lstrip.startswith((_brand_strip, "🤫 hussh one", "hussh 🤫 one", "hussh one")):
+            return body
+
         try:
             from hermes_cli.hussh_one_header import apply_whatsapp_header
             # Let the single source of truth handle strip-then-prepend idempotently.

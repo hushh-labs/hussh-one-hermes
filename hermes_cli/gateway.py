@@ -48,6 +48,12 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+try:
+    _SERVICE_NOFILE_LIMIT = int(os.getenv("HERMES_SERVICE_NOFILE_LIMIT", "65536"))
+except ValueError:
+    _SERVICE_NOFILE_LIMIT = 65536
+_DETACHED_WATCHDOG_PID_FILE = "gateway.watchdog.pid"
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -1267,6 +1273,7 @@ def stop_profile_gateway() -> bool:
     except ImportError:
         return False
 
+    _stop_detached_gateway_watchdog()
     pid = get_running_pid()
     if pid is None:
         return False
@@ -2422,6 +2429,7 @@ RestartSec=5
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+LimitNOFILE={_SERVICE_NOFILE_LIMIT}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -2457,6 +2465,7 @@ RestartSec=5
 RestartMaxDelaySec=300
 RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+LimitNOFILE={_SERVICE_NOFILE_LIMIT}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -3121,13 +3130,12 @@ def _gateway_run_command() -> list[str]:
 
 
 def _spawn_detached_gateway() -> bool:
-    """Launch the gateway as a detached background process (launchd fallback).
+    """Launch a detached gateway watchdog (launchd fallback).
 
     Used when launchctl can no longer bootstrap/kickstart the gateway on
-    macOS 26+ (issue #23387). Mirrors the `nohup hermes gateway run --replace`
-    workaround but keeps it CLI-managed: stdout/stderr go to the profile's
-    gateway logs and the PID is tracked via the gateway.pid file that
-    `run_gateway` writes, so stop/status/restart keep working.
+    macOS 26+ (issue #23387). The watchdog restarts the gateway after abrupt
+    non-zero exits. ``hermes gateway stop`` kills the watchdog first, then
+    terminates the child through the normal profile-scoped PID file.
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
@@ -3135,6 +3143,26 @@ def _spawn_detached_gateway() -> bool:
     log_dir.mkdir(parents=True, exist_ok=True)
     out_path = log_dir / "gateway.log"
     err_path = log_dir / "gateway.error.log"
+    watchdog_path = get_hermes_home() / _DETACHED_WATCHDOG_PID_FILE
+    command = _gateway_run_command()
+    script = (
+        "import os, resource, subprocess, sys, time\n"
+        f"limit={_SERVICE_NOFILE_LIMIT!r}\n"
+        "try:\n"
+        "    resource.setrlimit(resource.RLIMIT_NOFILE, (limit, limit))\n"
+        "except Exception:\n"
+        "    pass\n"
+        f"cmd={command!r}\n"
+        f"out_path={str(out_path)!r}\n"
+        f"err_path={str(err_path)!r}\n"
+        "while True:\n"
+        "    with open(out_path, 'ab', buffering=0) as out, open(err_path, 'ab', buffering=0) as err:\n"
+        "        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err)\n"
+        "        rc = proc.wait()\n"
+        "    if rc == 0:\n"
+        "        sys.exit(0)\n"
+        "    time.sleep(5)\n"
+    )
     try:
         out = open(out_path, "ab")
         err = open(err_path, "ab")
@@ -3142,16 +3170,35 @@ def _spawn_detached_gateway() -> bool:
         return False
     try:
         with out, err:
-            subprocess.Popen(
-                _gateway_run_command(),
+            proc = subprocess.Popen(
+                [sys.executable, "-c", script],
                 stdin=subprocess.DEVNULL,
                 stdout=out,
                 stderr=err,
                 **windows_detach_popen_kwargs(),
             )
+        watchdog_path.write_text(str(proc.pid), encoding="utf-8")
     except OSError:
         return False
     return True
+
+
+def _stop_detached_gateway_watchdog() -> None:
+    """Best-effort stop for the detached fallback watchdog."""
+    path = get_hermes_home() / _DETACHED_WATCHDOG_PID_FILE
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        pid = int(raw)
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    try:
+        terminate_pid(pid, force=False)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) -> bool:
@@ -3165,8 +3212,8 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
     print(f"⚠ launchd cannot manage the gateway on this macOS version ({reason}).")
     if _spawn_detached_gateway():
-        print("✓ Started gateway as a background process instead")
-        print("  It will NOT auto-start at login or auto-restart on crash.")
+        print("✓ Started gateway under a detached restart watchdog instead")
+        print("  It will auto-restart after abrupt non-zero exits.")
         print(f"  Logs: {_dhh()}/logs/gateway.log")
         print("  Stop it with: hermes gateway stop")
         return True
@@ -3266,6 +3313,18 @@ def generate_launchd_plist() -> str:
     
     <key>KeepAlive</key>
     <true/>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{_SERVICE_NOFILE_LIMIT}</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{_SERVICE_NOFILE_LIMIT}</integer>
+    </dict>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
@@ -3439,6 +3498,7 @@ def launchd_start():
 def launchd_stop():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
+    _stop_detached_gateway_watchdog()
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
 

@@ -481,10 +481,15 @@ export class GatewayClient extends EventEmitter {
           return
         }
 
-        this.pushLog(`[lifecycle] websocket close code=${ev.code}`)
+        const closeReason =
+          ev.code === 1012
+            ? 'gateway websocket closed (1012 service restart)'
+            : `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`
+
+        this.pushLog(`[lifecycle] websocket close code=${ev.code}${ev.code === 1012 ? ' service_restart' : ''}`)
         this.ws = null
         this.wsConnectPromise = null
-        this.handleTransportExit(ev.code, `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`)
+        this.handleTransportExit(ev.code, closeReason)
       })
       ws.addEventListener('error', () => {
         const line = '[gateway] websocket transport error'

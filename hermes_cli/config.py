@@ -3725,7 +3725,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "is_local",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3820,6 +3820,10 @@ def _normalize_custom_provider_entry(
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
 
+    is_local = entry.get("is_local")
+    if isinstance(is_local, bool):
+        normalized["is_local"] = is_local
+
     extra_body = entry.get("extra_body")
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
@@ -3850,6 +3854,7 @@ def _custom_provider_entry_to_provider_config(
         "context_length",
         "rate_limit_delay",
         "discover_models",
+        "is_local",
         "extra_body",
     ):
         if field in normalized:
@@ -4051,7 +4056,7 @@ _KNOWN_ROOT_KEYS = {
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay", "extra_body",
+    "context_length", "rate_limit_delay", "extra_body", "is_local",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
@@ -4179,6 +4184,71 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
+    fallback_providers = config.get("fallback_providers")
+    if fallback_providers is not None:
+        if not isinstance(fallback_providers, list):
+            issues.append(ConfigIssue(
+                "error",
+                f"fallback_providers should be a list of provider/model dicts, got {type(fallback_providers).__name__}",
+                "Change to:\n"
+                "  fallback_providers:\n"
+                "    - provider: openrouter\n"
+                "      model: anthropic/claude-sonnet-4",
+            ))
+        else:
+            for i, entry in enumerate(fallback_providers):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"fallback_providers[{i}] should be a dict, got {type(entry).__name__}",
+                        "Each entry needs provider + model",
+                    ))
+                    continue
+                if not entry.get("provider"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is missing 'provider' field",
+                        "Add: provider: openrouter (or another provider)",
+                    ))
+                if not entry.get("model"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is missing 'model' field",
+                        "Add: model: <model-name>",
+                    ))
+
+    if fb and fallback_providers:
+        issues.append(ConfigIssue(
+            "warning",
+            "Both fallback_providers and legacy fallback_model are configured",
+            "fallback_providers is canonical; migrate the fallback_model entry into fallback_providers and remove fallback_model to make ordering explicit",
+        ))
+
+    if isinstance(fallback_providers, list) and fallback_providers:
+        first_fb = fallback_providers[0]
+        if isinstance(first_fb, dict):
+            first_provider = str(first_fb.get("provider") or "").strip().lower()
+            providers_cfg = config.get("providers")
+            provider_cfg = providers_cfg.get(first_provider) if isinstance(providers_cfg, dict) else {}
+            first_base = str(first_fb.get("base_url") or "").strip()
+            if not first_base and isinstance(provider_cfg, dict):
+                first_base = str(provider_cfg.get("base_url") or provider_cfg.get("api") or provider_cfg.get("url") or "").strip()
+            first_is_local = bool(isinstance(provider_cfg, dict) and provider_cfg.get("is_local"))
+            first_is_local = first_is_local or first_provider.startswith("custom:")
+            first_is_local = first_is_local or any(
+                host in first_base.lower()
+                for host in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]")
+            )
+            first_context = first_fb.get("context_length")
+            if first_context is None and isinstance(provider_cfg, dict):
+                first_context = provider_cfg.get("context_length")
+            if first_is_local and not isinstance(first_context, int):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "First fallback provider appears to be local but has no verified context_length",
+                    "Put a cloud fallback before local backends, or set providers.<name>.context_length after verifying the loaded model context",
+                ))
+
     # ── Check for fallback_model accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
@@ -4199,6 +4269,30 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    default: your-model-name\n"
             "    base_url: https://...",
         ))
+    if isinstance(model_cfg, dict):
+        model_name = str(model_cfg.get("default") or model_cfg.get("model") or "").strip().lower()
+        model_provider = str(model_cfg.get("provider") or "").strip().lower()
+        model_base = str(model_cfg.get("base_url") or "").strip().lower()
+        model_api_mode = str(model_cfg.get("api_mode") or "").strip().lower()
+        if model_name.startswith("claude-") and (
+            model_provider in {"google", "gemini", "google-vertex"}
+            or "generativelanguage.googleapis.com" in model_base
+        ):
+            issues.append(ConfigIssue(
+                "warning",
+                "Claude model is configured with a Gemini/Google API runtime",
+                "Use provider: google-vertex-claude with api_mode: anthropic_messages for Claude on Vertex",
+            ))
+        if model_name.startswith("gemini-") and (
+            model_provider == "google-vertex-claude"
+            or model_api_mode == "anthropic_messages"
+            or "aiplatform.googleapis.com" in model_base
+        ):
+            issues.append(ConfigIssue(
+                "warning",
+                "Gemini model is configured with a Vertex Claude/Anthropic runtime",
+                "Use provider: gemini with the Google Generative Language base URL for Gemini models",
+            ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:

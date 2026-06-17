@@ -66,4 +66,9 @@ To ensure that other developers and automated agents (such as Salesforce or Mule
 *   **Authentication:** GCP OAuth 2.0 Bearer tokens generated dynamically via **Application Default Credentials (ADC)** or GCP Service Account JSON keys.
 *   **Best For:** Enterprise-grade security, production deployment pipelines, corporate auditing, VPC network constraints, and robust multi-agent platforms.
 
+### 3. Local / Offline Mode (Air-Gapped Edge Compute)
+When running in an air-gapped local environment (`DB_OFFLINE=1` or local-first configuration), the workload router replaces online APIs with highly optimized local open-weights models running over **Ollama** or a local **LM Studio** server:
+*   **General / Light Tasks (Low Complexity):** **`Gemma 4 26B`** (e.g., `gemma-4-26b-a4b-it`). Acting as the fast local baseline, it provides exceptional natural language capabilities and fast turnaround for non-technical queries.
+*   **Coding / Complex Tasks (High Complexity):** **`Qwen 3.6 35B`** (e.g., `qwen3.6-35b-instruct` / `qwen2.5-coder:32b`). Tunneling as the local "Claude Opus," it provides state-of-the-art code generation, precise file editing, system terminal capabilities, and robust local tool execution.
+
 *Note: By setting `GOOGLE_GENAI_USE_VERTEXAI=true` and configuring your active project ID, our system's built-in adapters dynamically map all internal requests to the Vertex AI enterprise API, ensuring other downstream agents can boot and authenticate seamlessly.*

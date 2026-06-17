@@ -12398,6 +12398,31 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _raise_dashboard_nofile_limit() -> None:
+    """Raise dashboard fd headroom for PTY/WebSocket fanout under launchd."""
+    try:
+        import resource
+
+        raw_limit = (
+            os.getenv("HERMES_DASHBOARD_NOFILE_LIMIT")
+            or os.getenv("HERMES_SERVICE_NOFILE_LIMIT")
+            or os.getenv("HUSSH_ONE_NOFILE_LIMIT")
+            or "65536"
+        )
+        desired = int(raw_limit)
+        if desired <= 0:
+            return
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft >= desired:
+            return
+        hard_is_infinite = hard == getattr(resource, "RLIM_INFINITY", -1)
+        target_soft = desired if hard_is_infinite else min(desired, hard)
+        if target_soft > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target_soft, hard))
+    except Exception:
+        pass
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -12425,6 +12450,8 @@ def cmd_dashboard(args):
         _setup_logging_gui(mode="gui")
     except Exception:
         pass
+
+    _raise_dashboard_nofile_limit()
 
     try:
         import fastapi  # noqa: F401

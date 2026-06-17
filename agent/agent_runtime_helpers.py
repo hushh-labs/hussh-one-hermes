@@ -1407,8 +1407,33 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     ):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
+    try:
+        from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+        _normalized_runtime = normalize_google_model_runtime(
+            model=new_model,
+            provider=new_provider,
+            api_key=api_key,
+            base_url=base_url,
+            api_mode=api_mode,
+            credential_pool=getattr(agent, "_credential_pool", None),
+        )
+        new_provider = _normalized_runtime["provider"] or new_provider
+        api_key = _normalized_runtime["api_key"] or ""
+        base_url = _normalized_runtime["base_url"] or ""
+        api_mode = _normalized_runtime["api_mode"] or api_mode
+        if _normalized_runtime.get("credential_pool") is None:
+            agent._credential_pool = None
+    except Exception:
+        pass
+
     old_model = agent.model
     old_provider = agent.provider
+    _clear_stale_api_key = (
+        new_provider == "gemini"
+        and api_key == ""
+        and getattr(agent, "api_key", None) == "gcp-sdk"
+    )
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -1462,7 +1487,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
-        if api_key:
+        if api_key or _clear_stale_api_key:
             agent.api_key = api_key
 
         # ── Build new client ──

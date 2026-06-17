@@ -121,6 +121,61 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_normalizes_stale_claude_google_runtime():
+    runner = _make_runner()
+    runtime_kwargs = {
+        "api_key": "gemini-key",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "provider": "gemini",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": object(),
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "route this Claude turn",
+        "claude-opus-4-8",
+        runtime_kwargs,
+    )
+
+    assert route["model"] == "claude-opus-4-8"
+    assert route["runtime"]["provider"] == "google-vertex-claude"
+    assert route["runtime"]["api_key"] == "gcp-sdk"
+    assert route["runtime"]["api_mode"] == "anthropic_messages"
+    assert "aiplatform.googleapis.com" in route["runtime"]["base_url"]
+    assert route["runtime"]["credential_pool"] is None
+
+
+def test_turn_route_keeps_manual_gemini_override_from_auto_escalating(monkeypatch):
+    import hermes_cli.hussh_one_router as router
+
+    runner = _make_runner()
+    monkeypatch.setattr(router, "classify_complexity", lambda _msg: ("high", 0.99, ["test"]))
+    runtime_kwargs = {
+        "api_key": "gemini-key",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "provider": "gemini",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+        "_session_model_override": True,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner,
+        "force a high-complexity signal",
+        "gemini-3.5-flash",
+        runtime_kwargs,
+    )
+
+    assert route["model"] == "gemini-3.5-flash"
+    assert route["runtime"]["provider"] == "gemini"
+    assert route["runtime"]["api_mode"] == "chat_completions"
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()

@@ -1218,6 +1218,13 @@ class TestParseContextLimitFromError:
         msg = "Error: context window of 4096 tokens exceeded"
         assert parse_context_limit_from_error(msg) == 4096
 
+    def test_lmstudio_n_ctx_format(self):
+        msg = (
+            "The number of tokens to keep from the initial prompt is greater "
+            "than the context length (n_keep: 35051>= n_ctx: 32768)."
+        )
+        assert parse_context_limit_from_error(msg) == 32768
+
     def test_minimax_delta_only_message_returns_none(self):
         msg = "invalid params, context window exceeds limit (2013)"
         assert parse_context_limit_from_error(msg) is None

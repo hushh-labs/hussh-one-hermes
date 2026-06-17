@@ -17,11 +17,14 @@ WHATSAPP_PORT="${HUSSH_ONE_WHATSAPP_PORT:-3000}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_BIN="${HERMES_BIN:-}"
 HERMES_PYTHON_BIN="${HUSSH_ONE_PYTHON_BIN:-}"
+SERVICE_NOFILE_LIMIT="${HUSSH_ONE_NOFILE_LIMIT:-65536}"
+DASHBOARD_WATCHDOG_INTERVAL="${HUSSH_ONE_DASHBOARD_WATCHDOG_INTERVAL:-5}"
 
 DASHBOARD_SCREEN="${HUSSH_ONE_DASHBOARD_SCREEN:-hermes-dashboard-hussh-one}"
 GATEWAY_SCREEN="${HUSSH_ONE_GATEWAY_SCREEN:-hermes-gateway-hussh-one}"
 DASHBOARD_LABEL="${HUSSH_ONE_DASHBOARD_LAUNCHD_LABEL:-ai.hussh-one.dashboard}"
 DASHBOARD_UNIT="${HUSSH_ONE_DASHBOARD_SYSTEMD_UNIT:-hussh-one-dashboard.service}"
+DASHBOARD_WATCHDOG_PID="${HUSSH_ONE_DASHBOARD_WATCHDOG_PID:-$HERMES_HOME/hussh-one-dashboard.watchdog.pid}"
 DASHBOARD_LOG="${HUSSH_ONE_DASHBOARD_LOG:-$HERMES_HOME/logs/hussh-one-dashboard.log}"
 DASHBOARD_ERR_LOG="${HUSSH_ONE_DASHBOARD_ERR_LOG:-$HERMES_HOME/logs/hussh-one-dashboard.error.log}"
 GATEWAY_LOG="${HUSSH_ONE_GATEWAY_LOG:-$HERMES_HOME/logs/hussh-one-gateway.log}"
@@ -222,6 +225,125 @@ kill_port_listeners() {
   fi
 }
 
+pid_alive() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+dashboard_watchdog_active() {
+  local pid=""
+  if [[ -f "$DASHBOARD_WATCHDOG_PID" ]]; then
+    pid="$(tr -d '[:space:]' < "$DASHBOARD_WATCHDOG_PID" 2>/dev/null || true)"
+  fi
+  if pid_alive "$pid"; then
+    return 0
+  fi
+  if [[ "$DRY_RUN" != "1" ]]; then
+    rm -f "$DASHBOARD_WATCHDOG_PID" 2>/dev/null || true
+  fi
+  return 1
+}
+
+stop_dashboard_watchdog() {
+  local pid=""
+  if [[ -f "$DASHBOARD_WATCHDOG_PID" ]]; then
+    pid="$(tr -d '[:space:]' < "$DASHBOARD_WATCHDOG_PID" 2>/dev/null || true)"
+  fi
+  if pid_alive "$pid"; then
+    run_cmd kill "$pid" || true
+  fi
+  if [[ "$DRY_RUN" != "1" ]]; then
+    rm -f "$DASHBOARD_WATCHDOG_PID" 2>/dev/null || true
+  fi
+}
+
+start_dashboard_watchdog() {
+  if dashboard_watchdog_active; then
+    log "dashboard watchdog: running ($(cat "$DASHBOARD_WATCHDOG_PID" 2>/dev/null || true))"
+    return 0
+  fi
+  mkdir -p "$(dirname "$DASHBOARD_WATCHDOG_PID")" "$(dirname "$DASHBOARD_LOG")"
+  local watchdog_cmd
+  watchdog_cmd='import os, resource, socket, subprocess, sys, time, traceback
+limit = int(os.environ.get("HUSSH_ONE_NOFILE_LIMIT", "65536"))
+try:
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+    if soft < target:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+except Exception:
+    pass
+host = os.environ["HUSSH_ONE_DASHBOARD_HOST"]
+port = int(os.environ["HUSSH_ONE_DASHBOARD_PORT"])
+interval = float(os.environ.get("HUSSH_ONE_DASHBOARD_WATCHDOG_INTERVAL", "5"))
+repo_root = os.environ["HUSSH_ONE_REPO_ROOT"]
+out_path = os.environ["HUSSH_ONE_DASHBOARD_LOG"]
+err_path = os.environ["HUSSH_ONE_DASHBOARD_ERR_LOG"]
+cmd = [sys.executable, "-m", "hermes_cli.main", "dashboard", "--host", host, "--port", str(port), "--tui", "--no-open"]
+env = os.environ.copy()
+def log_watchdog(message):
+    try:
+        with open(err_path, "ab", buffering=0) as err:
+            err.write((message.rstrip() + "\n").encode("utf-8", "replace"))
+    except Exception:
+        pass
+def listening():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
+log_watchdog("[dashboard-watchdog] started")
+while True:
+    try:
+        if listening():
+            time.sleep(interval)
+            continue
+        log_watchdog("[dashboard-watchdog] dashboard port down; starting child")
+        with open(out_path, "ab", buffering=0) as out, open(err_path, "ab", buffering=0) as err:
+            proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
+            rc = proc.wait()
+        log_watchdog(f"[dashboard-watchdog] child exited rc={rc}")
+        time.sleep(interval)
+    except Exception:
+        log_watchdog("[dashboard-watchdog] loop error\n" + traceback.format_exc())
+        time.sleep(interval)
+'
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: start dashboard watchdog: $watchdog_cmd"
+    return 0
+  fi
+  local launcher_cmd
+  launcher_cmd='import os, subprocess, sys
+code = os.environ["HUSSH_ONE_DASHBOARD_WATCHDOG_CODE"]
+pid_path = os.environ["HUSSH_ONE_DASHBOARD_WATCHDOG_PID"]
+out_path = os.environ["HUSSH_ONE_DASHBOARD_LOG"]
+err_path = os.environ["HUSSH_ONE_DASHBOARD_ERR_LOG"]
+env = os.environ.copy()
+with open(out_path, "ab", buffering=0) as out, open(err_path, "ab", buffering=0) as err:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.DEVNULL,
+        stdout=out,
+        stderr=err,
+        env=env,
+        start_new_session=True,
+    )
+with open(pid_path, "w", encoding="utf-8") as f:
+    f.write(str(proc.pid))
+'
+  HUSSH_ONE_DASHBOARD_HOST="$DASHBOARD_HOST" \
+  HUSSH_ONE_DASHBOARD_PORT="$DASHBOARD_PORT" \
+  HUSSH_ONE_DASHBOARD_WATCHDOG_INTERVAL="$DASHBOARD_WATCHDOG_INTERVAL" \
+  HUSSH_ONE_REPO_ROOT="$REPO_ROOT" \
+  HUSSH_ONE_DASHBOARD_LOG="$DASHBOARD_LOG" \
+  HUSSH_ONE_DASHBOARD_ERR_LOG="$DASHBOARD_ERR_LOG" \
+  HUSSH_ONE_DASHBOARD_WATCHDOG_PID="$DASHBOARD_WATCHDOG_PID" \
+  HUSSH_ONE_DASHBOARD_WATCHDOG_CODE="$watchdog_cmd" \
+  HUSSH_ONE_NOFILE_LIMIT="$SERVICE_NOFILE_LIMIT" \
+    "$HERMES_PYTHON_BIN" -c "$launcher_cmd"
+  log "dashboard watchdog: started ($(cat "$DASHBOARD_WATCHDOG_PID"))"
+}
+
 launchd_domain() {
   printf 'gui/%s\n' "$(id -u)"
 }
@@ -253,7 +375,7 @@ systemd_gateway_active() {
 selected_dashboard_active() {
   local selected="$1"
   case "$selected" in
-    launchd) launchd_job_active ;;
+    launchd) launchd_job_active || dashboard_watchdog_active ;;
     systemd) systemd_job_active ;;
     screen) screen_session_exists "$DASHBOARD_SCREEN" ;;
     s6) s6_service_dir hussh-one-dashboard >/dev/null 2>&1 || s6_service_dir hermes-dashboard >/dev/null 2>&1 ;;
@@ -420,6 +542,16 @@ write_launchd_dashboard_plist() {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>$(xml_escape "$SERVICE_NOFILE_LIMIT")</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>$(xml_escape "$SERVICE_NOFILE_LIMIT")</integer>
+  </dict>
   <key>StandardOutPath</key>
   <string>$(xml_escape "$DASHBOARD_LOG")</string>
   <key>StandardErrorPath</key>
@@ -444,12 +576,15 @@ launchd_bootstrap_dashboard() {
 launchd_start_dashboard() {
   launchd_bootstrap_dashboard
   run_cmd launchctl kickstart -k "$(launchd_target)" || true
+  start_dashboard_watchdog
 }
 
 launchd_stop_dashboard() {
+  stop_dashboard_watchdog
   if command -v launchctl >/dev/null 2>&1; then
     run_cmd launchctl bootout "$(launchd_target)" >/dev/null 2>&1 || true
   fi
+  kill_port_listeners "$DASHBOARD_PORT"
 }
 
 launchd_status_dashboard() {
@@ -457,6 +592,11 @@ launchd_status_dashboard() {
     log "dashboard launchd: loaded ($DASHBOARD_LABEL)"
   else
     log "dashboard launchd: not loaded ($DASHBOARD_LABEL)"
+  fi
+  if dashboard_watchdog_active; then
+    log "dashboard watchdog: running ($(cat "$DASHBOARD_WATCHDOG_PID" 2>/dev/null || true))"
+  else
+    log "dashboard watchdog: not running"
   fi
 }
 
@@ -484,6 +624,7 @@ Environment=PATH=$path_env
 ExecStart=$HERMES_PYTHON_BIN -m hermes_cli.main dashboard --host $DASHBOARD_HOST --port $DASHBOARD_PORT --tui --no-open
 Restart=on-failure
 RestartSec=5
+LimitNOFILE=$SERVICE_NOFILE_LIMIT
 
 [Install]
 WantedBy=default.target
@@ -528,8 +669,8 @@ screen_start() {
   kill_port_listeners "$WHATSAPP_PORT"
   local shell_bin="${SHELL:-/bin/sh}"
   local dashboard_cmd gateway_cmd
-  dashboard_cmd="cd $(shell_quote "$REPO_ROOT") && exec $(dashboard_command_line) >> $(shell_quote "$DASHBOARD_LOG") 2>> $(shell_quote "$DASHBOARD_ERR_LOG")"
-  gateway_cmd="cd $(shell_quote "$REPO_ROOT") && exec $(shell_quote "$HERMES_BIN") gateway run --replace >> $(shell_quote "$GATEWAY_LOG") 2>> $(shell_quote "$GATEWAY_ERR_LOG")"
+  dashboard_cmd="ulimit -n $(shell_quote "$SERVICE_NOFILE_LIMIT") >/dev/null 2>&1 || true; cd $(shell_quote "$REPO_ROOT") && while true; do $(dashboard_command_line) >> $(shell_quote "$DASHBOARD_LOG") 2>> $(shell_quote "$DASHBOARD_ERR_LOG"); rc=\$?; [ \$rc -eq 0 ] && exit 0; sleep 5; done"
+  gateway_cmd="ulimit -n $(shell_quote "$SERVICE_NOFILE_LIMIT") >/dev/null 2>&1 || true; cd $(shell_quote "$REPO_ROOT") && while true; do $(shell_quote "$HERMES_BIN") gateway run --replace >> $(shell_quote "$GATEWAY_LOG") 2>> $(shell_quote "$GATEWAY_ERR_LOG"); rc=\$?; [ \$rc -eq 0 ] && exit 0; sleep 5; done"
   run_cmd screen -dmS "$DASHBOARD_SCREEN" "$shell_bin" -lc "$dashboard_cmd"
   run_cmd screen -dmS "$GATEWAY_SCREEN" "$shell_bin" -lc "$gateway_cmd"
 }

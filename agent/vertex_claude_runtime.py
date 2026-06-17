@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, MutableSet
 
+from utils import base_url_hostname
+
 from hermes_cli.vertex_ai_locations import (
     infer_vertex_location_from_base_url,
     vertex_aiplatform_base_url,
@@ -12,6 +14,111 @@ from hermes_cli.vertex_ai_locations import (
 from hermes_cli.vertex_claude_access import candidate_locations_for_vertex_claude
 
 logger = logging.getLogger(__name__)
+
+
+_GOOGLE_CLAUDE_PROVIDERS = {
+    "gemini",
+    "google",
+    "google-gemini-cli",
+    "google-vertex",
+    "google-vertex-claude",
+    "vertex-claude",
+    "gcp-claude",
+    "google-claude",
+}
+
+
+def _is_claude_model(model: str | None) -> bool:
+    return (model or "").strip().lower().startswith("claude-")
+
+
+def _is_gemini_model(model: str | None) -> bool:
+    return (model or "").strip().lower().startswith("gemini-")
+
+
+def _is_google_model_host(base_url: str | None) -> bool:
+    host = base_url_hostname(base_url or "")
+    return host.endswith("googleapis.com") if host else False
+
+
+def _default_vertex_base_url(model: str | None) -> str:
+    try:
+        locations = candidate_locations_for_vertex_claude(model or "")
+        if locations:
+            return vertex_aiplatform_base_url(locations[0])
+    except Exception:
+        pass
+    return vertex_aiplatform_base_url("global")
+
+
+def normalize_google_model_runtime(
+    *,
+    model: str | None,
+    provider: str | None = None,
+    api_key: Any = None,
+    base_url: str | None = None,
+    api_mode: str | None = None,
+    credential_pool: Any = None,
+) -> dict[str, Any]:
+    """Normalize Google model/provider transport pairings.
+
+    This is a defensive invariant guard for mixed Gemini/Vertex Claude
+    sessions. A Claude model routed through any Google runtime must use the
+    Vertex Claude Anthropic transport; a Gemini model must not keep stale
+    Vertex/Anthropic state after a switch back to Gemini.
+    """
+    normalized = {
+        "model": model,
+        "provider": provider,
+        "api_key": api_key,
+        "base_url": base_url,
+        "api_mode": api_mode,
+        "credential_pool": credential_pool,
+    }
+    provider_norm = (provider or "").strip().lower()
+    base = (base_url or "").strip()
+
+    if _is_claude_model(model) and (
+        provider_norm in _GOOGLE_CLAUDE_PROVIDERS
+        or _is_google_model_host(base)
+        or api_key == "gcp-sdk"
+    ):
+        normalized.update(
+            {
+                "provider": "google-vertex-claude",
+                "api_key": "gcp-sdk",
+                "api_mode": "anthropic_messages",
+                "base_url": (
+                    base
+                    if "aiplatform.googleapis.com" in base
+                    else _default_vertex_base_url(model)
+                ),
+                "credential_pool": None,
+            }
+        )
+        return normalized
+
+    if _is_gemini_model(model) and (
+        provider_norm == "google-vertex-claude"
+        or api_mode == "anthropic_messages"
+        or "aiplatform.googleapis.com" in base
+        or api_key == "gcp-sdk"
+    ):
+        normalized.update(
+            {
+                "provider": "gemini",
+                "api_mode": "chat_completions",
+                "api_key": "" if api_key == "gcp-sdk" else api_key,
+                "base_url": (
+                    base
+                    if base and "aiplatform.googleapis.com" not in base
+                    else "https://generativelanguage.googleapis.com/v1beta"
+                ),
+                "credential_pool": None,
+            }
+        )
+
+    return normalized
 
 
 def looks_like_vertex_claude_runtime(

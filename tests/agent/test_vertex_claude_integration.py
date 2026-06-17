@@ -4,6 +4,82 @@ from unittest.mock import MagicMock, patch
 from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient, AsyncAnthropicAuxiliaryClient
 
 
+class TestGoogleModelRuntimeNormalization:
+    def test_claude_on_google_runtime_normalizes_to_vertex_claude(self):
+        from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+        runtime = normalize_google_model_runtime(
+            model="claude-opus-4-8",
+            provider="google-vertex",
+            api_key="gemini-key",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            api_mode="chat_completions",
+            credential_pool=object(),
+        )
+
+        assert runtime["provider"] == "google-vertex-claude"
+        assert runtime["api_mode"] == "anthropic_messages"
+        assert runtime["api_key"] == "gcp-sdk"
+        assert "aiplatform.googleapis.com" in runtime["base_url"]
+        assert runtime["credential_pool"] is None
+
+    def test_gemini_runtime_clears_stale_vertex_claude_state(self):
+        from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+        runtime = normalize_google_model_runtime(
+            model="gemini-3.5-flash",
+            provider="google-vertex-claude",
+            api_key="gcp-sdk",
+            base_url="https://aiplatform.googleapis.com",
+            api_mode="anthropic_messages",
+            credential_pool=object(),
+        )
+
+        assert runtime["provider"] == "gemini"
+        assert runtime["api_mode"] == "chat_completions"
+        assert runtime["api_key"] == ""
+        assert runtime["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
+        assert runtime["credential_pool"] is None
+
+    def test_switch_to_gemini_clears_stale_gcp_sdk_key(self):
+        from agent.agent_runtime_helpers import switch_model
+
+        agent = MagicMock()
+        agent.model = "claude-opus-4-8"
+        agent.provider = "google-vertex-claude"
+        agent.base_url = "https://aiplatform.googleapis.com"
+        agent.api_mode = "anthropic_messages"
+        agent.api_key = "gcp-sdk"
+        agent.client = None
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_api_key = "gcp-sdk"
+        agent._anthropic_base_url = "https://aiplatform.googleapis.com"
+        agent._is_anthropic_oauth = False
+        agent._config_context_length = None
+        agent._client_kwargs = {}
+        agent._credential_pool = object()
+        agent._transport_cache = {}
+        agent.context_compressor = None
+        agent._anthropic_prompt_cache_policy.return_value = (False, False)
+        agent._ensure_lmstudio_runtime_loaded.return_value = None
+        agent._is_azure_openai_url.return_value = False
+        agent._create_openai_client.return_value = MagicMock()
+
+        switch_model(
+            agent,
+            "gemini-3.5-flash",
+            "google-vertex-claude",
+            api_key="",
+            base_url="https://aiplatform.googleapis.com",
+            api_mode="anthropic_messages",
+        )
+
+        assert agent.provider == "gemini"
+        assert agent.api_mode == "chat_completions"
+        assert agent.api_key == ""
+        assert agent._client_kwargs["api_key"] == ""
+
+
 class TestAuxiliaryClientVertexClaudeResolution:
     """Verify resolve_provider_client handles Vertex Claude's gcp_sdk auth type."""
 

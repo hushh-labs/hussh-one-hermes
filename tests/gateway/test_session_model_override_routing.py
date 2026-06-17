@@ -126,6 +126,35 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
+def test_session_override_normalizes_stale_claude_google_runtime(monkeypatch):
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+
+    runner = _make_runner()
+    session_key = "agent:main:local:dm"
+    runner._session_model_overrides[session_key] = {
+        "model": "claude-opus-4-8",
+        "provider": "gemini",
+        "api_key": "gemini-key",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "api_mode": "chat_completions",
+    }
+
+    model, runtime_kwargs = runner._resolve_session_agent_runtime(
+        session_key=session_key,
+        user_config={"model": {"default": "gemini-3.5-flash", "provider": "gemini"}},
+    )
+
+    assert model == "claude-opus-4-8"
+    assert runtime_kwargs["provider"] == "google-vertex-claude"
+    assert runtime_kwargs["api_key"] == "gcp-sdk"
+    assert runtime_kwargs["api_mode"] == "anthropic_messages"
+    assert "aiplatform.googleapis.com" in runtime_kwargs["base_url"]
+    assert runtime_kwargs["credential_pool"] is None
+    assert runtime_kwargs["_session_model_override"] is True
+
+
 @pytest.mark.asyncio
 async def test_background_task_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
@@ -260,4 +289,3 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "env-secret"
     assert runtime_kwargs["base_url"] == "https://fallback.example/v1"
     assert runtime_kwargs["model"] == "fallback-model"
-

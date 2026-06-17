@@ -54,6 +54,21 @@ def test_supervisor_supports_expected_managers_and_conflict_guard():
     assert "--tui --no-open" in text
 
 
+def test_supervisor_service_definitions_restart_and_raise_fd_limit():
+    text = (ROOT / "scripts/hussh-one-supervisor.sh").read_text(encoding="utf-8")
+
+    assert "SERVICE_NOFILE_LIMIT" in text
+    assert "<key>SoftResourceLimits</key>" in text
+    assert "<key>HardResourceLimits</key>" in text
+    assert "LimitNOFILE=$SERVICE_NOFILE_LIMIT" in text
+    assert "DASHBOARD_WATCHDOG_PID" in text
+    assert "start_dashboard_watchdog" in text
+    assert "socket.socket(socket.AF_INET, socket.SOCK_STREAM)" in text
+    assert "hermes_cli.main\", \"dashboard\"" in text
+    assert "while true; do $(dashboard_command_line)" in text
+    assert "while true; do $(shell_quote \"$HERMES_BIN\") gateway run --replace" in text
+
+
 def test_supervisor_dry_run_covers_launchd_systemd_and_screen(tmp_path):
     env = {
         "HUSSH_ONE_DRY_RUN": "1",

@@ -755,7 +755,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert spawned == [True]
-        assert "background process" in capsys.readouterr().out.lower()
+        output = capsys.readouterr().out.lower()
+        assert "restart watchdog" in output
+        assert "auto-restart" in output
 
     def test_launchd_install_falls_back_to_detached_on_bootstrap_5(self, tmp_path, monkeypatch, capsys):
         """macOS bootstrap error 5 should spawn a detached gateway, not crash."""
@@ -2764,3 +2766,17 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+    def test_service_definitions_raise_file_descriptor_limit(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "LimitNOFILE=65536" in unit
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>HardResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist

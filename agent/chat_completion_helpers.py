@@ -1032,6 +1032,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
+    try:
+        from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+        _normalized_fb = normalize_google_model_runtime(
+            model=fb_model,
+            provider=fb_provider,
+            api_key=fb.get("api_key"),
+            base_url=fb.get("base_url"),
+            api_mode=fb.get("api_mode"),
+            credential_pool=getattr(agent, "_credential_pool", None),
+        )
+        fb_provider = (_normalized_fb.get("provider") or fb_provider).strip().lower()
+        fb_model = _normalized_fb.get("model") or fb_model
+        fb = dict(fb)
+        for _key in ("api_key", "base_url", "api_mode"):
+            _value = _normalized_fb.get(_key)
+            if _value:
+                fb[_key] = _value
+        if _normalized_fb.get("credential_pool") is None:
+            agent._credential_pool = None
+    except Exception:
+        pass
 
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
@@ -1102,10 +1124,46 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Determine api_mode from provider / base URL / model
         fb_api_mode = "chat_completions"
         fb_base_url = str(fb_client.base_url)
+        _fb_context_length_override = None
+        _last_request_tokens = int(getattr(agent, "_last_request_approx_tokens", 0) or 0)
+        if _last_request_tokens and is_local_endpoint(fb_base_url):
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                _fb_context_length_override = get_model_context_length(
+                    fb_model,
+                    base_url=fb_base_url,
+                    api_key=getattr(fb_client, "api_key", "") or "",
+                    provider=fb_provider,
+                    config_context_length=getattr(agent, "_config_context_length", None),
+                    custom_providers=getattr(agent, "_custom_providers", None),
+                )
+            except Exception:
+                _fb_context_length_override = None
+            if (
+                isinstance(_fb_context_length_override, int)
+                and _fb_context_length_override > 0
+                and _last_request_tokens > _fb_context_length_override
+            ):
+                logger.warning(
+                    "Fallback skip: local backend %s/%s context window %d "
+                    "is smaller than current request estimate %d",
+                    fb_provider,
+                    fb_model,
+                    _fb_context_length_override,
+                    _last_request_tokens,
+                )
+                try:
+                    agent._buffer_status(
+                        "⚠️ Local fallback context is too small for this turn — trying next fallback..."
+                    )
+                except Exception:
+                    pass
+                return agent._try_activate_fallback()
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
-        elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+        elif fb_provider in {"anthropic", "google-vertex-claude"} or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
             # Azure OpenAI serves gpt-5.x on /chat/completions — does NOT
@@ -1235,7 +1293,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             # probes. Foundry typically resolves via config/static
             # catalogs anyway, so coerce defensively.
             _fb_ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-            fb_context_length = get_model_context_length(
+            fb_context_length = _fb_context_length_override or get_model_context_length(
                 agent.model, base_url=agent.base_url,
                 api_key=_fb_ctx_api_key, provider=agent.provider,
                 config_context_length=getattr(agent, "_config_context_length", None),
@@ -2379,7 +2437,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
             try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                if getattr(agent, "api_mode", None) == "anthropic_messages":
+                    agent._rebuild_anthropic_client()
+                else:
+                    agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
             except Exception:
                 pass
             # Reset the timer so we don't kill repeatedly while
