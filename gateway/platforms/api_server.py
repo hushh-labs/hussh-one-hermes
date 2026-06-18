@@ -102,6 +102,73 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return default
 
 
+def _sanitize_reasoning_chunk(text: str) -> str:
+    """Clean a reasoning/thinking delta for GUI rendering.
+
+    Some providers (notably Gemini) emit thought summaries with terse,
+    machine-style markup: stray pseudo-XML control tags (``<thinking>``,
+    ``<thought>``, ``<reasoning>``) and bold "section header" lines like
+    ``**Exploring Context's Impact**`` that read as cryptic dumps rather
+    than natural language in Open WebUI's "Thinking…" accordion.
+
+    This strips the control tags entirely and demotes the bold section
+    headers to plain sentence-case lines so the reasoning stream reads as
+    calm, human prose. It is intentionally light-touch: it never drops
+    actual reasoning content, only normalizes presentation. Streamed
+    deltas can split mid-tag, so only well-formed inline tags are removed;
+    partial fragments pass through untouched and get cleaned on the chunk
+    that completes them.
+    """
+    if not text:
+        return text
+    import re as _re
+    # Strip well-formed pseudo-XML control tags the model leaks into thoughts.
+    text = _re.sub(
+        r"</?(?:thinking|thought|reasoning|think|scratchpad|inner_monologue)\s*>",
+        "",
+        text,
+        flags=_re.IGNORECASE,
+    )
+    # Demote bold-only "section header" lines (**Header**) to plain text so
+    # they don't render as loud cryptic banners inside the Thinking block.
+    text = _re.sub(r"(?m)^\s*\*\*(.+?)\*\*\s*$", r"\1", text)
+    return text
+
+
+# Human-readable present-progressive phrases for tool activity, ADK-style.
+# Keeps GUI status lines natural ("Searching files…") instead of raw tool
+# names. Mirrors the polished interaction-event vocabulary the Hussh ADK
+# bridge uses so both surfaces read identically.
+_TOOL_STATUS_VERBS = {
+    "search_files": "Searching files",
+    "read_file": "Reading file",
+    "write_file": "Writing file",
+    "patch": "Editing file",
+    "terminal": "Running command",
+    "execute_code": "Running code",
+    "web_search": "Searching the web",
+    "web_extract": "Reading web pages",
+    "browser_navigate": "Browsing",
+    "vision_analyze": "Analyzing image",
+    "image_generate": "Generating image",
+    "delegate_task": "Delegating work",
+    "skill_view": "Loading skill",
+    "skills_list": "Browsing skills",
+    "clarify": "Asking a question",
+    "send_message": "Sending a message",
+    "cronjob": "Managing schedule",
+}
+
+
+def _tool_status_description(tool_name: str, label: str = "") -> str:
+    """Return an ADK-style human phrase for a tool activity status line."""
+    verb = _TOOL_STATUS_VERBS.get(tool_name)
+    if verb:
+        return f"{verb}…"
+    pretty = (tool_name or "tool").replace("_", " ").strip().capitalize()
+    return f"{pretty}…"
+
+
 _TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
 
@@ -1929,7 +1996,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Stream live (no buffering) to avoid the "screen goes dark
                 # then dumps everything at once" swallow bug.
                 if text:
-                    _stream_q.put(("__reasoning__", text))
+                    cleaned = _sanitize_reasoning_chunk(text)
+                    if cleaned:
+                        _stream_q.put(("__reasoning__", cleaned))
 
             def _on_status(kind, message):
                 # Surface agent lifecycle status (e.g. "🗜️ Compacting
@@ -1969,6 +2038,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "tool": function_name,
                     "emoji": get_tool_emoji(function_name),
                     "label": label,
+                    "description": _tool_status_description(function_name, label),
                     "toolCallId": tool_call_id,
                     "status": "running",
                 }))
