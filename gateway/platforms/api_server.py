@@ -1006,6 +1006,8 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
+        status_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -1118,6 +1120,8 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            reasoning_callback=reasoning_callback,
+            status_callback=status_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -1916,6 +1920,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(text):
+                # Forward reasoning/thinking deltas as a tagged tuple so the
+                # SSE writer emits them on the OpenAI-native
+                # ``delta.reasoning_content`` field.  Open WebUI (and other
+                # OpenAI-compatible GUIs) render this as a collapsible live
+                # "Thinking…" accordion — matching the TUI's reasoning stream.
+                # Stream live (no buffering) to avoid the "screen goes dark
+                # then dumps everything at once" swallow bug.
+                if text:
+                    _stream_q.put(("__reasoning__", text))
+
+            def _on_status(kind, message):
+                # Surface agent lifecycle status (e.g. "🗜️ Compacting
+                # context…", router [S]/[A] identity) the TUI prints inline.
+                # Emitted as a custom ``event: hermes.lifecycle`` SSE event so
+                # GUI clients can show a status line WITHOUT polluting the
+                # answer content or conversation history. Signature matches the
+                # agent status_callback contract: (kind, message).
+                if message:
+                    _stream_q.put(("__lifecycle__", {"kind": str(kind or "status"), "message": str(message)}))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
@@ -1979,6 +2004,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
+                status_callback=_on_status,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -2162,6 +2189,33 @@ class APIServerAdapter(BasePlatformAdapter):
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    # Reasoning/thinking delta — emit on the OpenAI-native
+                    # ``delta.reasoning_content`` field. Open WebUI, LibreChat,
+                    # and other OpenAI-compatible GUIs natively render this as
+                    # a collapsible live "Thinking…" accordion above the
+                    # answer, matching the TUI's reasoning stream. Streamed
+                    # live as it arrives (no buffering) so the thinking block
+                    # animates token-by-token instead of popping in at once.
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"reasoning_content": item[1]},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__lifecycle__":
+                    # Agent lifecycle status (compaction, router identity).
+                    # Emitted as a custom ``event: hermes.lifecycle`` SSE event
+                    # so clients can render an inline status line without
+                    # storing it in answer content or conversation history.
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: hermes.lifecycle\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -3553,6 +3607,8 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
+        status_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -3577,6 +3633,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                reasoning_callback=reasoning_callback,
+                status_callback=status_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,

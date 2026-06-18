@@ -1257,6 +1257,120 @@ class TestChatCompletionsEndpoint:
             assert pairs[1] == ("completed", "call_terminal_1"), pairs
 
     @pytest.mark.asyncio
+    async def test_stream_includes_reasoning_content(self, adapter):
+        """reasoning_callback fires → reasoning appears on delta.reasoning_content.
+
+        Open WebUI and other OpenAI-compatible GUIs render the
+        ``delta.reasoning_content`` field as a collapsible live "Thinking…"
+        accordion. This is the chat-completions equivalent of the TUI's
+        reasoning stream. The reasoning must NOT leak into delta.content.
+        """
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                rcb = kwargs.get("reasoning_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if rcb:
+                    rcb("Let me think about this step by step.")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("The answer is 42.")
+                return (
+                    {"final_response": "The answer is 42.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "what is the answer"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+
+            # Reasoning must surface on at least one chunk's
+            # delta.reasoning_content — and must NOT appear in delta.content.
+            saw_reasoning = False
+            for line in body.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+                try:
+                    chunk = _json.loads(line[len("data: "):])
+                except _json.JSONDecodeError:
+                    continue
+                if chunk.get("object") != "chat.completion.chunk":
+                    continue
+                for choice in chunk.get("choices", []):
+                    delta = choice.get("delta", {})
+                    if "Let me think" in (delta.get("reasoning_content") or ""):
+                        saw_reasoning = True
+                    # reasoning text must never leak into answer content
+                    assert "Let me think" not in (delta.get("content") or "")
+            assert saw_reasoning, "reasoning_content was not emitted on any chunk"
+            assert "The answer is 42." in body
+
+    @pytest.mark.asyncio
+    async def test_stream_includes_lifecycle_event(self, adapter):
+        """status_callback fires → lifecycle status appears as a custom SSE event.
+
+        Surfaces agent lifecycle status (compaction, router identity) the TUI
+        prints inline, on a custom ``event: hermes.lifecycle`` line — without
+        polluting answer content.
+        """
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                scb = kwargs.get("status_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if scb:
+                    scb("lifecycle", "🗜️ Compacting context — summarizing earlier conversation...")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Continuing.")
+                return (
+                    {"final_response": "Continuing.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "keep going"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "event: hermes.lifecycle" in body
+                assert "Compacting context" in body
+                # Lifecycle text must NOT appear inside delta.content chunks.
+                for line in body.splitlines():
+                    if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                        continue
+                    try:
+                        chunk = _json.loads(line[len("data: "):])
+                    except _json.JSONDecodeError:
+                        continue
+                    if chunk.get("object") != "chat.completion.chunk":
+                        continue
+                    for choice in chunk.get("choices", []):
+                        assert "Compacting context" not in (choice.get("delta", {}).get("content") or "")
+                assert "Continuing." in body
+
+    @pytest.mark.asyncio
     async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
         """Internal tools (``_thinking``-style) and ``completed`` events
         without a prior matching ``running`` must produce no lifecycle
