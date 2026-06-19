@@ -370,3 +370,67 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Sibling session is completely untouched.
     assert sess_a["model_override"] is None
     assert sess_a["agent"].model == "minimax/m3"
+
+
+def test_make_agent_falls_back_on_invalid_override_provider():
+    """Verify that if AIAgent initialization fails with model_override (e.g. because
+    the stored model's provider is not configured), it falls back to the default/startup
+    runtime, updates the session model in state.db, and builds successfully.
+    """
+    def echo_runtime(requested=None, target_model=None):
+        return {
+            "provider": requested or "GLOBAL_DEFAULT",
+            "base_url": "global-url",
+            "api_key": "global-key",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        }
+
+    fake_cfg = {
+        "agent": {"system_prompt": ""},
+        "model": {"default": "global/model", "provider": "globalprov"},
+    }
+
+    override = {
+        "model": "broken/model",
+        "provider": "broken",
+    }
+
+    call_count = 0
+    mock_agent_instance = MagicMock()
+
+    def mock_agent_init(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("No LLM provider configured")
+        return mock_agent_instance
+
+    mock_db = MagicMock()
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=mock_db),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch("tui_gateway.server._resolve_startup_runtime", return_value=("global/model", "globalprov")),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=echo_runtime,
+        ),
+        patch("run_agent.AIAgent", side_effect=mock_agent_init),
+    ):
+        from tui_gateway.server import _make_agent
+
+        agent = _make_agent(
+            "sid-override", "key-override", session_id="key-override", session_db=mock_db, model_override=override
+        )
+
+        assert call_count == 2
+        assert agent == mock_agent_instance
+        # The database should be updated to fallback model
+        mock_db.update_session_model.assert_called_once_with("key-override", "global/model")
+

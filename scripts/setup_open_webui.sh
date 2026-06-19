@@ -178,6 +178,205 @@ install_open_webui() {
   "$py" -m pip install open-webui
 }
 
+# Open WebUI auto-loads /static/custom.css and /static/loader.js from its bundled
+# frontend (index.html references both). We drop in a small reasoning-block
+# enhancer so the "Thinking…" panel behaves like the Hermes TUI:
+#   * auto-EXPANDS while the model is actively thinking (streaming),
+#   * auto-COLLAPSES the moment thinking finishes,
+#   * is capped to a fixed, scrollable height instead of growing forever.
+# Idempotent: re-running setup re-writes these files. We locate the static dir
+# under the freshly created venv so a clean install always gets it.
+install_static_assets() {
+  local static_dir
+  static_dir="$(
+    "$OPEN_WEBUI_VENV/bin/python" - <<'PY'
+import os
+import open_webui
+base = os.path.dirname(open_webui.__file__)
+# Prefer the served frontend static dir; fall back to the package static dir.
+for candidate in (
+    os.path.join(base, "frontend", "static"),
+    os.path.join(base, "static"),
+):
+    if os.path.isdir(candidate):
+        print(candidate)
+        break
+PY
+  )"
+  if [[ -z "$static_dir" || ! -d "$static_dir" ]]; then
+    log 'Could not locate Open WebUI static dir; skipping reasoning-panel assets.'
+    return 0
+  fi
+
+  log "Installing Hermes reasoning-panel assets into: $static_dir"
+
+  cat > "$static_dir/custom.css" <<'CSS'
+/*
+ * Hermes reasoning / "thinking" panel: fixed, scrollable height so a long chain
+ * of thought never pushes the answer far down the page. loader.js tags the
+ * reasoning content container with `data-hushh-thinking-body` (Open WebUI's
+ * built markup uses dynamic Svelte hashes we cannot target directly).
+ */
+[data-hushh-thinking-body] {
+  max-height: 16rem;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+  border-radius: 0.5rem;
+}
+
+[data-hushh-thinking-body][data-hushh-thinking-live="true"] {
+  /* While streaming, jump straight to the newest thought (no smooth lag). */
+  scroll-behavior: auto;
+}
+
+[data-hushh-thinking-body]::-webkit-scrollbar {
+  width: 8px;
+}
+
+[data-hushh-thinking-body]::-webkit-scrollbar-thumb {
+  background-color: rgb(156 163 175 / 0.5);
+  border-radius: 9999px;
+}
+
+.dark [data-hushh-thinking-body]::-webkit-scrollbar-thumb {
+  background-color: rgb(107 114 128 / 0.5);
+}
+CSS
+
+  cat > "$static_dir/loader.js" <<'JS'
+(() => {
+  // ---------------------------------------------------------------------------
+  // Hermes reasoning / "thinking" block UX
+  //   (a) auto-EXPAND while the model is actively thinking (streaming),
+  //   (b) auto-COLLAPSE once thinking finishes,
+  //   (c) tag the content body so custom.css caps it to a fixed, scrollable
+  //       height instead of an infinitely long block.
+  //
+  // Open WebUI renders each reasoning block as:
+  //     div.w-full.space-y-1                 <- the component (REASONING_ROOT)
+  //       div.cursor-pointer (header)        <- "Thinking..." / "Thought for X"
+  //       div (content, markdown)            <- present only when expanded
+  // The header shows "Thinking..." while streaming and "Thought for ..." once
+  // done. The Collapsible toggles on `pointerup` (NOT click). We never fight a
+  // manual toggle: once the user toggles a block, we leave it alone.
+  // ---------------------------------------------------------------------------
+  const LIVE_RE = /Thinking|Analyzing|Exploring/i;
+  const DONE_RE = /Thought for|Thought\b|Analyzed|Explored/i;
+
+  const state = new WeakMap();
+  let selfClicking = false;
+
+  const reasoningHeader = (root) => {
+    const first = root.firstElementChild;
+    if (!first) return null;
+    const cls = (first.className || "").toString();
+    if (!cls.includes("cursor-pointer")) return null;
+    const text = (first.textContent || "").trim();
+    if (!LIVE_RE.test(text) && !DONE_RE.test(text)) return null;
+    return first;
+  };
+
+  const isExpanded = (root) => root.children.length > 1;
+
+  const toggle = (header) => {
+    selfClicking = true;
+    try {
+      const opts = { bubbles: true, cancelable: true, composed: true };
+      try {
+        header.dispatchEvent(new PointerEvent("pointerdown", opts));
+      } catch (_e) {
+        /* PointerEvent may be unavailable; pointerup alone still toggles. */
+      }
+      header.dispatchEvent(new PointerEvent("pointerup", opts));
+    } finally {
+      setTimeout(() => {
+        selfClicking = false;
+      }, 0);
+    }
+  };
+
+  const tagBody = (root) => {
+    for (let i = 1; i < root.children.length; i++) {
+      const body = root.children[i];
+      if (body && !body.hasAttribute("data-hushh-thinking-body")) {
+        body.setAttribute("data-hushh-thinking-body", "");
+      }
+    }
+  };
+
+  const processReasoning = () => {
+    const roots = document.querySelectorAll("div.w-full.space-y-1");
+    for (const root of roots) {
+      const header = reasoningHeader(root);
+      if (!header) continue;
+
+      let st = state.get(root);
+      if (!st) {
+        st = { autoExpanded: false, settled: false, userToggled: false };
+        state.set(root, st);
+      }
+
+      const label = (header.textContent || "").trim();
+      const live = LIVE_RE.test(label) && !DONE_RE.test(label);
+      const expanded = isExpanded(root);
+
+      if (expanded) tagBody(root);
+      if (st.userToggled) continue; // hands off — user is in control
+
+      if (live) {
+        if (!expanded) toggle(header);
+        for (let i = 1; i < root.children.length; i++) {
+          const body = root.children[i];
+          if (body) {
+            body.setAttribute("data-hushh-thinking-live", "true");
+            body.scrollTop = body.scrollHeight;
+          }
+        }
+        if (expanded) st.autoExpanded = true;
+      } else {
+        for (let i = 1; i < root.children.length; i++) {
+          root.children[i].removeAttribute("data-hushh-thinking-live");
+        }
+        if (st.autoExpanded && !st.settled && expanded) {
+          toggle(header);
+          st.settled = true;
+        }
+      }
+    }
+  };
+
+  document.addEventListener(
+    "pointerup",
+    (event) => {
+      if (selfClicking) return;
+      const header = event.target.closest && event.target.closest(".cursor-pointer");
+      if (!header) return;
+      const root = header.parentElement;
+      if (!root || !root.classList || !root.classList.contains("space-y-1")) return;
+      if (!reasoningHeader(root)) return;
+      const st = state.get(root) || { autoExpanded: false, settled: false };
+      st.userToggled = true;
+      state.set(root, st);
+    },
+    true,
+  );
+
+  const schedule = () => window.requestAnimationFrame(processReasoning);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", schedule, { once: true });
+  } else {
+    schedule();
+  }
+  new MutationObserver(schedule).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+})();
+JS
+}
+
 write_launcher() {
   mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
 
@@ -346,6 +545,7 @@ main() {
 
   log 'Installing Open WebUI into a dedicated virtualenv...'
   install_open_webui
+  install_static_assets
   write_launcher
 
   case "$OPEN_WEBUI_ENABLE_SERVICE" in

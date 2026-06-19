@@ -4270,6 +4270,38 @@ class TestPtyWebSocket:
                     break
             assert b"99" in buf and b"41" in buf
 
+    def test_ping_escape_is_consumed_not_forwarded(self, monkeypatch):
+        # The browser keepalive `\x1b[PING]` must be swallowed server-side
+        # (like RESIZE) and never reach the child's stdin. We bracket it
+        # between two real payloads through `cat`; the echo must contain the
+        # payloads but NOT the PING escape bytes.
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        with self.client.websocket_connect(self._url()) as conn:
+            conn.send_bytes(b"before-ping\n")
+            conn.send_text("\x1b[PING]")
+            conn.send_bytes(b"after-ping\n")
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    frame = conn.receive_bytes()
+                except Exception:
+                    break
+                if frame:
+                    buf += frame
+                if b"before-ping" in buf and b"after-ping" in buf:
+                    break
+            assert b"before-ping" in buf and b"after-ping" in buf
+            # The PING escape itself must never have been echoed (proves it
+            # was consumed, not written to the PTY).
+            assert b"PING" not in buf
+
     def test_unavailable_platform_closes_with_message(self, monkeypatch):
         from hermes_cli.pty_bridge import PtyUnavailableError
 

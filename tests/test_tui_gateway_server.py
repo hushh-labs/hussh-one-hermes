@@ -6137,3 +6137,120 @@ def test_sniff_image_ext_magic_and_filename():
     assert server._sniff_image_ext(b"unknown") == ".png"  # fallback
     # filename hint wins over magic bytes
     assert server._sniff_image_ext(b"\x89PNG", "photo.jpeg") == ".jpeg"
+
+
+def test_tui_model_switch_persistence_and_resumption_production_grade(monkeypatch):
+    """
+    Test that model switching in a session is persisted to state.db (via update_session_model)
+    and that a subsequent session resume cleanly rehydrates the model choice.
+    """
+    class MockDB:
+        def __init__(self):
+            self.sessions = {}
+            self.messages = []
+
+        def get_session(self, session_id):
+            return self.sessions.get(session_id)
+
+        def update_session_model(self, session_id, model):
+            if session_id in self.sessions:
+                self.sessions[session_id]["model"] = model
+
+        def get_messages_as_conversation(self, session_id, include_ancestors=False):
+            return self.messages
+
+        def reopen_session(self, session_id):
+            pass
+
+    class MockAgent:
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.provider = kwargs.get("provider")
+            self.base_url = kwargs.get("base_url")
+            self.api_key = kwargs.get("api_key")
+            self.api_mode = kwargs.get("api_mode")
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs.get("new_model")
+            self.provider = kwargs.get("new_provider")
+            self.api_key = kwargs.get("api_key")
+            self.base_url = kwargs.get("base_url")
+            self.api_mode = kwargs.get("api_mode")
+
+    # Setup the mock database
+    mock_db = MockDB()
+    mock_db.sessions["session_123"] = {
+        "id": "session_123",
+        "model": "original-model",
+    }
+
+    # Monkeypatch dependencies so we avoid real config loading / network calls
+    monkeypatch.setattr(server, "_get_db", lambda: mock_db)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    # Mock switch_model output for the model switch action
+    switch_result = types.SimpleNamespace(
+        success=True,
+        new_model="anthropic/claude-3-5-opus",
+        target_provider="anthropic",
+        api_key="sk-opus-key",
+        base_url="https://api.anthropic.com/v1",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: switch_result)
+
+    # 1. Trigger the model switch via config.set (simulating "switch to opus 4.8")
+    session = _session(agent=MockAgent(model="original-model"), session_key="session_123")
+    server._sessions["sid_123"] = session
+
+    try:
+        resp = server.handle_request({
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid_123",
+                "key": "model",
+                "value": "anthropic/claude-3-5-opus",
+            }
+        })
+        assert isinstance(resp, dict)
+        assert "error" not in resp
+        assert resp["result"]["value"] == "anthropic/claude-3-5-opus"
+
+        # Verify that update_session_model was called and wrote to state.db
+        assert mock_db.sessions["session_123"]["model"] == "anthropic/claude-3-5-opus"
+
+        # 2. Simulate resuming this session in a fresh server environment (sessions dict is cleared)
+        server._sessions.clear()
+
+        # Mock the agent reconstruction to return our mock agent
+        monkeypatch.setattr("run_agent.AIAgent", MockAgent)
+
+        # Trigger session.resume RPC call
+        resume_resp = server.handle_request({
+            "id": "2",
+            "method": "session.resume",
+            "params": {
+                "session_id": "session_123",
+                "cols": 80,
+            }
+        })
+        assert isinstance(resume_resp, dict)
+        assert "error" not in resume_resp
+        
+        # Verify that the resumed session info has rehydrated the custom model!
+        resumed_sid = resume_resp["result"]["session_id"]
+        resumed_session = server._sessions[resumed_sid]
+        resumed_agent = resumed_session["agent"]
+        
+        assert resumed_agent.model == "anthropic/claude-3-5-opus"
+        assert resumed_agent.provider == "anthropic"
+        assert resumed_agent.api_key == "sk-opus-key"
+        assert resumed_agent.base_url == "https://api.anthropic.com/v1"
+        assert resumed_agent.api_mode == "anthropic_messages"
+
+    finally:
+        server._sessions.clear()
+

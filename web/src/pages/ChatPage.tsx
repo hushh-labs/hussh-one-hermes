@@ -565,92 +565,225 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     });
 
-    // WebSocket. In gated mode (``window.__HERMES_AUTH_REQUIRED__``) this
-    // awaits a single-use ticket via /api/auth/ws-ticket before opening;
-    // in loopback mode it resolves synchronously against the injected
-    // session token. The IIFE keeps the outer effect synchronous so its
-    // ``return cleanup`` stays at the top level; handlers + disposables
-    // are hoisted to ``let`` bindings the cleanup closes over.
+    // Resilient PTY WebSocket with auto-reconnect.
+    //
+    // A dropped /api/pty socket used to dead-end at "[session ended]" and
+    // sit there until the user reloaded the page. In practice the socket
+    // drops for transient reasons all the time — laptop sleep/wake, Wi-Fi
+    // blips, the browser throttling a backgrounded tab past the keepalive
+    // window, or the dashboard server being restarted by its supervisor —
+    // and every one of those surfaced as a permanent dead terminal.
+    //
+    // We now treat non-fatal closes as transient and reconnect with
+    // full-jitter exponential backoff. Fatal auth/policy codes
+    // (4401/4403/4404/4408) still show a banner and stop, because retrying
+    // them can't succeed without a page reload. The xterm input handlers
+    // are attached ONCE and route to the *live* socket via `wsRef`, so they
+    // survive across reconnects instead of capturing a stale instance.
+    //
+    // In gated mode (`window.__HERMES_AUTH_REQUIRED__`) each connect awaits
+    // a fresh single-use ticket via /api/auth/ws-ticket; in loopback mode
+    // it resolves synchronously against the injected session token.
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
-    void (async () => {
-      const authParam = await buildWsAuthParam();
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let attempt = 0; // consecutive failed/closed connects since last open
+    let everConnected = false; // have we successfully opened at least once?
+    let connecting = false; // guard against overlapping connect() calls
+
+    // Auth/policy rejections that a blind retry can never fix — show the
+    // banner and stop. Everything else (1006 abnormal, 1005 no-status,
+    // 1001 going-away, 1011 server error, 1012/1013 restart/overload,
+    // and a server-initiated 1000) is treated as transient → reconnect.
+    const FATAL_CODES = new Set([4401, 4403, 4404, 4408]);
+    const HEARTBEAT_MS = 15000;
+    const BASE_BACKOFF_MS = 500;
+    const MAX_BACKOFF_MS = 15000;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+    const stopHeartbeat = () => {
+      if (heartbeatTimer !== null) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    };
+    const startHeartbeat = () => {
+      stopHeartbeat();
+      heartbeatTimer = setInterval(() => {
+        const sock = wsRef.current;
+        if (sock && sock.readyState === WebSocket.OPEN) {
+          // The server consumes `\x1b[PING]` in pty_ws and never forwards
+          // it to the PTY child (same local-consume path as RESIZE). It
+          // keeps NAT/proxy/idle timers warm and lets the browser notice a
+          // half-open socket sooner than the default ~minute TCP timeout.
+          try {
+            sock.send("\x1b[PING]");
+          } catch {
+            /* a failing send just means the socket is on its way down;
+               onclose will drive the reconnect. */
+          }
+        }
+      }, HEARTBEAT_MS);
+    };
+
+    const scheduleReconnect = () => {
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
-      const ws = new WebSocket(url);
+      clearReconnectTimer();
+      // Full-jitter backoff: random in [0, min(MAX, BASE * 2^attempt)].
+      // Jitter prevents a thundering herd of tabs all retrying in lockstep
+      // after a server restart.
+      const ceiling = Math.min(
+        MAX_BACKOFF_MS,
+        BASE_BACKOFF_MS * 2 ** Math.min(attempt, 10),
+      );
+      const delay = Math.round(Math.random() * ceiling);
+      attempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delay);
+    };
+
+    const connect = async () => {
+      if (unmounting || connecting) return;
+      const existing = wsRef.current;
+      if (
+        existing &&
+        (existing.readyState === WebSocket.OPEN ||
+          existing.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+      connecting = true;
+
+      let authParam: [string, string];
+      try {
+        authParam = await buildWsAuthParam();
+      } catch (err) {
+        connecting = false;
+        console.warn(
+          `[chat] PTY auth-param fetch failed: ${(err as Error).message}`,
+        );
+        scheduleReconnect();
+        return;
+      }
+      if (unmounting) {
+        connecting = false;
+        return;
+      }
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(buildWsUrl(authParam, resumeParam, channel));
+      } catch (err) {
+        connecting = false;
+        console.warn(
+          `[chat] PTY WebSocket construct failed: ${(err as Error).message}`,
+        );
+        scheduleReconnect();
+        return;
+      }
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
-    ws.onopen = () => {
-      setBanner(null);
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      ws.onopen = () => {
+        connecting = false;
+        attempt = 0;
+        setBanner(null);
+        if (everConnected) {
+          // Only announce on a genuine *re*connect, not the first open.
+          term.write("\r\n\x1b[90m[reconnected]\x1b[0m\r\n");
+        }
+        everConnected = true;
+        startHeartbeat();
+        // Send the initial RESIZE immediately so Ink has *a* size to lay
+        // out against on its first paint. The double-rAF block above will
+        // follow up with the authoritative measurement.
+        ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          term.write(ev.data);
+        } else {
+          term.write(new Uint8Array(ev.data as ArrayBuffer));
+        }
+      };
+
+      ws.onerror = () => {
+        // `onerror` is always followed by `onclose`; let onclose own the
+        // reconnect policy so we don't double-schedule.
+      };
+
+      ws.onclose = (ev) => {
+        connecting = false;
+        stopHeartbeat();
+        if (wsRef.current === ws) wsRef.current = null;
+        if (unmounting) return;
+
+        // Surface the real cause to the browser console on every close so a
+        // "chat won't connect" report can be diagnosed without server
+        // access. The server sends a machine-parseable reason on every
+        // rejection (see pty_ws in web_server.py).
+        const why = ev.reason ? ` reason=${ev.reason}` : "";
+        console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
+
+        if (FATAL_CODES.has(ev.code)) {
+          if (ev.code === 4401) {
+            setBanner(
+              ev.reason
+                ? `Auth failed (${ev.reason}). Reload to refresh the session.`
+                : "Auth failed. Reload the page to refresh the session token.",
+            );
+          } else if (ev.code === 4403) {
+            // Host/Origin mismatch (DNS-rebinding guard).
+            setBanner(
+              ev.reason
+                ? `Refused: ${ev.reason}.`
+                : "Refused: request host/origin doesn't match the dashboard.",
+            );
+          } else if (ev.code === 4404) {
+            setBanner(
+              "Embedded chat is disabled on this server (start it with --tui).",
+            );
+          } else if (ev.code === 4408) {
+            setBanner(
+              ev.reason
+                ? `Refused: ${ev.reason}.`
+                : "Refused: your client isn't permitted (server bound to localhost only).",
+            );
+          }
+          // Fatal: do not reconnect. A page reload is required.
+          return;
+        }
+
+        // Transient close → self-heal with backoff. `attempt` is 0 here on
+        // the first drop after an open (onopen reset it), so we only print
+        // the status line once per outage rather than on every retry. Code
+        // 1011 means the server already wrote its own ANSI error frame, so
+        // we stay quiet and just retry slowly.
+        if (ev.code !== 1011) {
+          if (!everConnected && attempt === 0) {
+            term.write("\r\n\x1b[90m[connecting…]\x1b[0m\r\n");
+          } else if (attempt === 0) {
+            term.write(
+              "\r\n\x1b[90m[connection lost — reconnecting…]\x1b[0m\r\n",
+            );
+          }
+        }
+        scheduleReconnect();
+      };
     };
 
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
-
-    ws.onclose = (ev) => {
-      wsRef.current = null;
-      if (unmounting) {
-        return;
-      }
-      // Surface the real cause to the browser console on every close so a
-      // "chat won't connect" report can be diagnosed without server access.
-      // The server sends a machine-parseable reason on every rejection (see
-      // pty_ws in web_server.py); echo it verbatim alongside the close code.
-      const why = ev.reason ? ` reason=${ev.reason}` : "";
-      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
-      if (ev.code === 4401) {
-        setBanner(
-          ev.reason
-            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
-            : "Auth failed. Reload the page to refresh the session token.",
-        );
-        return;
-      }
-      if (ev.code === 4403) {
-        // Host/Origin mismatch (DNS-rebinding guard).
-        setBanner(
-          ev.reason
-            ? `Refused: ${ev.reason}.`
-            : "Refused: request host/origin doesn't match the dashboard.",
-        );
-        return;
-      }
-      if (ev.code === 4404) {
-        setBanner(
-          "Embedded chat is disabled on this server (start it with --tui).",
-        );
-        return;
-      }
-      if (ev.code === 4408) {
-        setBanner(
-          ev.reason
-            ? `Refused: ${ev.reason}.`
-            : "Refused: your client isn't permitted (server bound to localhost only).",
-        );
-        return;
-      }
-      if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
-        return;
-      }
-      term.write(
-        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
-      );
-    };
-
-    // Keystrokes → PTY.
+    // Keystrokes → PTY. Attached ONCE; routes to whichever socket is live
+    // via `wsRef` so input keeps working across reconnects.
     //
     // IMPORTANT:
     // The embedded web chat has occasionally surfaced stray letters/digits
@@ -664,25 +797,50 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // mouse reporting, so we drop SGR mouse reports entirely instead of
     // forwarding them into Hermes. Keyboard input, paste, and resize still
     // behave normally.
-      // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-      onDataDisposable = term.onData((data) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
+    // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
+    const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+    onDataDisposable = term.onData((data) => {
+      const sock = wsRef.current;
+      if (!sock || sock.readyState !== WebSocket.OPEN) return;
+      if (SGR_MOUSE_RE.test(data)) return;
+      sock.send(data);
+    });
 
-        if (SGR_MOUSE_RE.test(data)) {
-          return;
-        }
+    onResizeDisposable = term.onResize(({ cols, rows }) => {
+      const sock = wsRef.current;
+      if (sock && sock.readyState === WebSocket.OPEN) {
+        sock.send(`\x1b[RESIZE:${cols};${rows}]`);
+      }
+    });
 
-        ws.send(data);
-      });
+    // Reconnect *immediately* (bypassing backoff) when the environment
+    // signals the network is back or the user refocused the tab — the two
+    // moments a transient drop is most likely to be over. We reset
+    // `attempt` so the next connect fires without waiting out a long
+    // backoff that was scheduled while the laptop was asleep.
+    const wakeReconnect = () => {
+      if (unmounting) return;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        return;
+      }
+      const sock = wsRef.current;
+      const idle =
+        !sock ||
+        sock.readyState === WebSocket.CLOSED ||
+        sock.readyState === WebSocket.CLOSING;
+      if (idle) {
+        attempt = 0;
+        clearReconnectTimer();
+        void connect();
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") wakeReconnect();
+    };
+    window.addEventListener("online", wakeReconnect);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
-      onResizeDisposable = term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(`\x1b[RESIZE:${cols};${rows}]`);
-        }
-      });
-    })();
-
+    void connect();
     term.focus();
 
     return () => {
@@ -690,6 +848,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
+      clearReconnectTimer();
+      stopHeartbeat();
+      window.removeEventListener("online", wakeReconnect);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
@@ -700,12 +862,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
-      // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
-      // ticket fetch makes the open async). The cleanup runs at the outer
-      // effect's top level so it can't reach into that scope — close via
-      // the ref instead. ``?.`` covers the race where unmount fires before
-      // the ticket fetch resolves and ``wsRef.current`` was never assigned.
-      wsRef.current?.close();
+      // The live socket lives on `wsRef` (connect() reassigns it on every
+      // reconnect). Detach our onclose first so the teardown close doesn't
+      // re-enter the reconnect path, then close. `unmounting=true` above is
+      // a belt-and-suspenders guard for the same race.
+      const sock = wsRef.current;
+      if (sock) {
+        sock.onclose = null;
+        sock.onerror = null;
+        sock.onmessage = null;
+        sock.onopen = null;
+        sock.close();
+      }
       wsRef.current = null;
       term.dispose();
       termRef.current = null;

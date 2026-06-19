@@ -1543,6 +1543,15 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             "api_key": result.api_key,
             "api_mode": result.api_mode,
         }
+        # Also persist the model switch to state.db so a fresh process resumption preserves it!
+        _sess_key = session.get("session_key")
+        if _sess_key:
+            _db_handle = _get_db()
+            if _db_handle is not None:
+                try:
+                    _db_handle.update_session_model(_sess_key, result.new_model)
+                except Exception as _db_exc:
+                    logger.debug("Failed to persist model switch to state.db for session %s: %s", _sess_key, _db_exc)
     if persist_global:
         _persist_model_switch(result)
     return {
@@ -2679,6 +2688,50 @@ def _make_agent(
     # switch) over global config/env resolution. This keeps a rebuilt session
     # (/new, resume) on the model the user picked FOR THIS SESSION, without
     # reading process-global env vars that another session may have changed.
+    if (not model_override or not model_override.get("model")) and session_id:
+        db_handle = session_db if session_db is not None else _get_db()
+        if db_handle is not None:
+            try:
+                row = db_handle.get_session(session_id)
+                stored_model = (row or {}).get("model")
+                if stored_model:
+                    from hermes_cli.model_switch import switch_model as _switch_model
+                    from hermes_cli.config import get_compatible_custom_providers, load_config
+
+                    _cfg = load_config()
+                    _user_provs = _cfg.get("providers") or {}
+                    try:
+                        _custom_provs = get_compatible_custom_providers(_cfg)
+                    except Exception:
+                        _custom_provs = _cfg.get("custom_providers")
+                    if not isinstance(_custom_provs, list):
+                        _custom_provs = None
+
+                    _sw = _switch_model(
+                        raw_input=stored_model,
+                        current_provider="openrouter",
+                        current_model="",
+                        current_base_url="",
+                        current_api_key="",
+                        user_providers=_user_provs,
+                        custom_providers=_custom_provs,
+                        verify_runtime_access=False,  # Skip verification/test-call on resume
+                    )
+                    if _sw.success and _sw.new_model:
+                        model_override = {
+                            "model": _sw.new_model,
+                            "provider": _sw.target_provider,
+                            "base_url": _sw.base_url,
+                            "api_key": _sw.api_key,
+                            "api_mode": _sw.api_mode,
+                        }
+            except Exception as _rebuild_exc:
+                logger.debug(
+                    "Failed to restore stored model for session %s: %s",
+                    session_id,
+                    _rebuild_exc,
+                )
+
     if model_override and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or None
@@ -2704,35 +2757,88 @@ def _make_agent(
             requested=requested_provider,
             target_model=model or None,
         )
-    return AIAgent(
-        model=model,
-        max_iterations=_cfg_max_turns(cfg, 90),
-        provider=runtime.get("provider"),
-        base_url=runtime.get("base_url"),
-        api_key=runtime.get("api_key"),
-        api_mode=runtime.get("api_mode"),
-        acp_command=runtime.get("command"),
-        acp_args=runtime.get("args"),
-        credential_pool=runtime.get("credential_pool"),
-        quiet_mode=True,
-        # verbose_logging controls DEBUG-level agent logging; it is intentionally
-        # independent of tool_progress_mode (which only controls per-tool
-        # display detail).  See cli.py PR (decoupling fix) for the matching
-        # change on the classic CLI side.
-        verbose_logging=False,
-        reasoning_config=_load_reasoning_config(),
-        service_tier=_load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(),
-        platform="tui",
-        session_id=session_id or key,
-        session_db=session_db if session_db is not None else _get_db(),
-        ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
-        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        **_agent_cbs(sid),
-    )
+    try:
+        return AIAgent(
+            model=model,
+            max_iterations=_cfg_max_turns(cfg, 90),
+            provider=runtime.get("provider"),
+            base_url=runtime.get("base_url"),
+            api_key=runtime.get("api_key"),
+            api_mode=runtime.get("api_mode"),
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
+            credential_pool=runtime.get("credential_pool"),
+            quiet_mode=True,
+            # verbose_logging controls DEBUG-level agent logging; it is intentionally
+            # independent of tool_progress_mode (which only controls per-tool
+            # display detail).  See cli.py PR (decoupling fix) for the matching
+            # change on the classic CLI side.
+            verbose_logging=False,
+            reasoning_config=_load_reasoning_config(),
+            service_tier=_load_service_tier(),
+            enabled_toolsets=_load_enabled_toolsets(),
+            platform="tui",
+            session_id=session_id or key,
+            session_db=session_db if session_db is not None else _get_db(),
+            ephemeral_system_prompt=system_prompt or None,
+            checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+            pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+            skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+            skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+            **_agent_cbs(sid),
+        )
+    except Exception as e:
+        # If initializing with model_override failed (e.g. stored model's provider is not configured),
+        # fall back to the default/startup runtime instead of failing the entire resume/load.
+        if model_override and model_override.get("model"):
+            logger.warning(
+                "Failed to initialize agent with stored/override model %s: %s. "
+                "Falling back to startup default model.",
+                model,
+                e,
+            )
+            model, requested_provider = _resolve_startup_runtime()
+            runtime = resolve_runtime_provider(
+                requested=requested_provider,
+                target_model=model or None,
+            )
+            # Try once more with the fallback runtime. Let any exception propagate now,
+            # as if this fails too, we truly have no configured LLM.
+            agent = AIAgent(
+                model=model,
+                max_iterations=_cfg_max_turns(cfg, 90),
+                provider=runtime.get("provider"),
+                base_url=runtime.get("base_url"),
+                api_key=runtime.get("api_key"),
+                api_mode=runtime.get("api_mode"),
+                acp_command=runtime.get("command"),
+                acp_args=runtime.get("args"),
+                credential_pool=runtime.get("credential_pool"),
+                quiet_mode=True,
+                verbose_logging=False,
+                reasoning_config=_load_reasoning_config(),
+                service_tier=_load_service_tier(),
+                enabled_toolsets=_load_enabled_toolsets(),
+                platform="tui",
+                session_id=session_id or key,
+                session_db=session_db if session_db is not None else _get_db(),
+                ephemeral_system_prompt=system_prompt or None,
+                checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+                pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+                skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+                skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+                **_agent_cbs(sid),
+            )
+            # Update the DB's session model to the fallback model to prevent repeated errors.
+            db_handle = session_db if session_db is not None else _get_db()
+            if db_handle is not None and session_id:
+                try:
+                    db_handle.update_session_model(session_id, model)
+                except Exception as _db_exc:
+                    logger.debug("Failed to update session model in state.db for %s: %s", session_id, _db_exc)
+            return agent
+        else:
+            raise
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):

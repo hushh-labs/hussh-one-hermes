@@ -8245,6 +8245,10 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
         pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
+# App-level keepalive from the browser chat client (ChatPage.tsx). Consumed
+# locally like RESIZE — never forwarded to the PTY child — so it keeps NAT /
+# proxy / idle timers warm without injecting bytes into the terminal.
+_PING_RE = re.compile(rb"\x1b\[PING\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
@@ -8748,6 +8752,14 @@ async def pty_ws(ws: WebSocket) -> None:
                 cols = int(match.group(1))
                 rows = int(match.group(2))
                 bridge.resize(cols=cols, rows=rows)
+                continue
+
+            # App-level keepalive ping — consumed locally like RESIZE so it
+            # never reaches the terminal. Pure liveness/idle-timer keepalive;
+            # nothing to echo back (the WS protocol pong is handled by the
+            # ASGI server's own ping/pong).
+            ping_match = _PING_RE.match(raw)
+            if ping_match and ping_match.end() == len(raw):
                 continue
 
             bridge.write(raw)
