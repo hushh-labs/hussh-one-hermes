@@ -918,10 +918,17 @@ def _ensure_session_db_row(session: dict) -> None:
     if db is None:
         return
     try:
+        # Record the session's ACTUAL runtime model (the agent may have been
+        # built with a session model_override or router-escalated model, e.g.
+        # claude-opus-4-8), NOT the global config default. Using _resolve_model()
+        # here stamped every TUI row with the config default (gemini-3.5-flash),
+        # so on resume the wrong model was restored/displayed in the chrome.
+        _agent = session.get("agent")
+        _row_model = (getattr(_agent, "model", "") or "").strip() or _resolve_model()
         db.create_session(
             key,
             source="tui",
-            model=_resolve_model(),
+            model=_row_model,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:

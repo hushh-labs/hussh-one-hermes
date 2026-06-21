@@ -214,6 +214,7 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let reconnectAttempts = 0;
 
 const chatHistory = {};
 const MAX_HISTORY_PER_CHAT = 150;
@@ -242,8 +243,19 @@ async function startSocket() {
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
-    syncFullHistory: true,
+    // ROBUST FIX (AwaitingInitialSync 408 flap): full-history sync makes Baileys
+    // block on the entire history download every connect; on a busy account this
+    // times out (reason 408), forcing a reconnect that re-triggers the sync — an
+    // infinite connect/close loop that presents to health checks as flapping.
+    // We don't need server history (E2EE means WA servers don't retain it; we
+    // cache live messages in chatHistory), so disable it for a stable socket.
+    syncFullHistory: false,
     markOnlineOnConnect: false,
+    // Generous timeouts + keepalive so transient latency doesn't trip a 408 close.
+    connectTimeoutMs: 60_000,
+    defaultQueryTimeoutMs: 60_000,
+    keepAliveIntervalMs: 15_000,
+    retryRequestDelayMs: 1_000,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
@@ -283,16 +295,24 @@ async function startSocket() {
         console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         process.exit(1);
       } else {
-        // 515 = restart requested (common after pairing). Always reconnect.
+        // 515 = restart requested (common after pairing). Always reconnect fast.
         if (reason === 515) {
           console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
+          reconnectAttempts = 0;
+          setTimeout(startSocket, 1000);
         } else {
-          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
+          // Exponential backoff (capped) so a flapping connection (e.g. repeated
+          // 408 AwaitingInitialSync timeouts) does not hammer WhatsApp every 3s,
+          // which itself can trigger rate-limiting and prolong the outage.
+          reconnectAttempts = Math.min(reconnectAttempts + 1, 6);
+          const delay = Math.min(3000 * 2 ** (reconnectAttempts - 1), 60000);
+          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`);
+          setTimeout(startSocket, delay);
         }
-        setTimeout(startSocket, reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
+      reconnectAttempts = 0;
       console.log('✅ WhatsApp connected!');
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
