@@ -185,6 +185,12 @@ set_config_defaults() {
   run_cmd "$hermes" config set model.default gemini-3.5-flash
   run_cmd "$hermes" config set agent.reasoning_effort high
   run_cmd "$hermes" config set display.show_reasoning true
+  # Compact sessions well before the dashboard memory ceiling so a long Hussh
+  # One session can't balloon to 200k+ tokens / 500+ msgs and get OOM-killed
+  # (SIGKILL rc=-9) mid-write — which surfaces only as "connection lost". Pairs
+  # with the supervisor RSS soft-cap (HUSSH_ONE_DASHBOARD_MEM_CAP_MB).
+  run_cmd "$hermes" config set compression.threshold 0.35
+  run_cmd "$hermes" config set compression.hygiene_hard_message_limit 250
 }
 
 env_value() {
