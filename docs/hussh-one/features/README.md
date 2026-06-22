@@ -23,6 +23,8 @@ template so the catalog stays modular, deterministic, and advertisable.
 | Message edit / recovery | WhatsApp | ✅ Shipped | [whatsapp-local-data.md](./whatsapp-local-data.md) |
 | CLI/TUI + Dashboard theming | CLI/Web | ✅ Shipped | [theming.md](./theming.md) |
 | Natural-language model switching | WhatsApp/TUI | ✅ Shipped | [model-switching.md](./model-switching.md) |
+| Session-model persistence & resume | TUI/Web/API | ✅ Shipped | [session-model-resume.md](./session-model-resume.md) |
+| Dashboard crash resilience (OOM-safe) | Web/Ops | ✅ Shipped | [../operations/crash-resilience.md](../operations/crash-resilience.md) |
 
 ## Planned features
 See the [roadmap](../roadmap/README.md).

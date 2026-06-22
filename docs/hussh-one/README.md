@@ -38,8 +38,9 @@ Hermes Agent to create **hussh 🤫 One**. It is designed to be:
 |-------|-----------|--------|
 | Core brand | `brand.py`, skin, dashboard theme, header, mcp-scan | ✅ intact |
 | WhatsApp layer | adapter, capsule, bridge.js, memory/send tools | ✅ intact |
+| Reliability | session-model resume, Vertex-Claude pinning, dashboard OOM guard | ✅ shipped |
 | Ops scripts | bootstrap, supervisor, doctor, guard, restart | ✅ intact |
-| Tests | branding, header, scripts, capsule, gating, prefix | ✅ 69 passing |
+| Tests | branding, header, scripts, capsule, gating, prefix, resume-model | ✅ passing |
 | Stale legacy brand data | — | ✅ none found |
 
 Re-run the audit anytime with:

@@ -37,6 +37,11 @@ git switch main
 scripts/hussh-one-bootstrap.sh --manager auto --start
 ```
 
+> The bootstrap's `set_config_defaults()` also seeds the OOM-safe compression
+> tuning (`compression.threshold=0.35`, `compression.hygiene_hard_message_limit=250`).
+> See [Crash resilience](./crash-resilience.md). Optionally cap dashboard memory
+> on small-RAM boxes: `export HUSSH_ONE_DASHBOARD_MEM_CAP_MB=4096` (default 6144).
+
 ## .env keys (local, git-ignored)
 ```
 WHATSAPP_MODE=self-chat
@@ -65,6 +70,7 @@ python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsap
 ```
 
 ## See also
+- [Crash resilience — dashboard OOM & session-model persistence](./crash-resilience.md)
 - [Upgrading from upstream](./upgrading.md)
 - [`docs/hussh-one-deployment.md`](../../hussh-one-deployment.md)
 - [`docs/hussh-one-upstream-maintenance.md`](../../hussh-one-upstream-maintenance.md)
