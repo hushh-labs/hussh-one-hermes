@@ -180,8 +180,20 @@ _BRAND_LINE_RE = re.compile(
     r"^(?:🤫\s*Hussh One|hussh\s*🤫?\s*One|hussh One)\s*\n?", re.IGNORECASE
 )
 _MODEL_LINE_RE = re.compile(
-    r"^(?:Gemini|Gemma|Qwen|Claude|Anthropic|Llama|Mistral|OpenRouter|Whizbang|DeepSeek)"
-    r"[^\n]*?(?:\s*\[[SA]\])?\s*\n?",
+    r"^(?:"
+    # Family-prefixed model lines (always safe to strip as a header echo).
+    # Greedy to end-of-line so the whole "Gemini 3.5 Flash [A]" is consumed,
+    # not just the family token.
+    r"(?:Gemini|Gemma|Qwen|Claude|Anthropic|Llama|Mistral|OpenRouter|Whizbang|DeepSeek)"
+    r"[^\n]*"
+    r"|"
+    # Bare variant tokens the model emits WITHOUT the family prefix
+    # (e.g. "Opus 4.8 [A]", "Sonnet 4.6", "Flash [A]"). Guard against eating
+    # real prose ("Pro tip: ...") by requiring the variant be followed by a
+    # version number and/or the [S]/[A] mode token — never arbitrary words.
+    r"(?:Opus|Sonnet|Haiku|Flash|Pro)\s*(?:\d[\d.\- ]*)?\s*\[[SA]\]"
+    r"|(?:Opus|Sonnet|Haiku|Flash|Pro)\s+\d[\d.\-]*\s*(?:\[[SA]\])?"
+    r")\s*\n?",
     re.IGNORECASE,
 )
 _DIVIDER_RE = re.compile(r"^[═=─-]{5,}\s*\n?")

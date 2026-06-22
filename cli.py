@@ -3195,6 +3195,11 @@ class HermesCLI:
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        # Track whether the caller passed an explicit --model (vs. falling back
+        # to the config default). Used by session resume to decide whether to
+        # rehydrate the session's last-used model: if the user explicitly asked
+        # for a model we honour it, otherwise we restore what the session ran.
+        self._model_arg_explicit = bool(model)
         # Read max_tokens from config (env var override: HERMES_MAX_TOKENS)
         _env_mt = os.environ.get("HERMES_MAX_TOKENS")
         if _env_mt:
@@ -5206,6 +5211,11 @@ class HermesCLI:
                 self._session_db._conn.commit()
             except Exception:
                 pass
+
+            # Restore the session's last-used model on resume (see
+            # _restore_session_model). Only when the dashboard/CLI did NOT
+            # preload history first; the preload path calls it directly.
+            self._restore_session_model(session_meta)
         
         try:
             runtime = runtime_override or {
@@ -5472,6 +5482,68 @@ class HermesCLI:
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
+    def _restore_session_model(self, session_meta: dict | None) -> None:
+        """Rehydrate a resumed session's last-used model + provider runtime.
+
+        The dashboard Chat tab and ``hermes --resume`` rebuild the agent from
+        config.yaml's model.default, so a session last running Claude Opus
+        silently reverts to the Gemini default after a browser refresh. The
+        chosen model is persisted in ``sessions.model``; restore it UNLESS the
+        caller passed an explicit ``--model``. Claude is always re-pinned to GCP
+        Vertex (ADC) so it never falls back to an Anthropic-direct OAuth token
+        (the claude.ai-billing 400). Idempotent + fail-safe.
+        (#hussh-one session-model resume)
+        """
+        try:
+            if getattr(self, "_model_arg_explicit", False):
+                return
+            stored_model = (session_meta or {}).get("model")
+            if not stored_model or stored_model == self.model:
+                return
+            if str(stored_model).lower().startswith("claude"):
+                try:
+                    from hermes_cli.hussh_one_router import (
+                        _vertex_claude_runtime as _vcr,
+                    )
+                    _vrt = _vcr(stored_model)
+                    self.model = stored_model
+                    self.provider = _vrt["provider"]
+                    self.requested_provider = _vrt["provider"]
+                    self.api_mode = _vrt["api_mode"]
+                    self.api_key = _vrt["api_key"]
+                    self._explicit_api_key = _vrt["api_key"]
+                    self.base_url = _vrt["base_url"]
+                    self._explicit_base_url = _vrt["base_url"]
+                    self._credential_pool = None
+                except Exception:
+                    self.model = stored_model
+            else:
+                from hermes_cli.model_switch import switch_model as _sw_fn
+                _sw = _sw_fn(
+                    raw_input=stored_model,
+                    current_provider=self.provider or "openrouter",
+                    current_model=self.model or "",
+                    current_base_url=self.base_url or "",
+                    current_api_key=self.api_key or "",
+                )
+                if _sw.success and _sw.new_model:
+                    self.model = _sw.new_model
+                    if _sw.target_provider:
+                        self.provider = _sw.target_provider
+                        self.requested_provider = _sw.target_provider
+                    if _sw.api_key:
+                        self.api_key = _sw.api_key
+                        self._explicit_api_key = _sw.api_key
+                    if _sw.base_url:
+                        self.base_url = _sw.base_url
+                        self._explicit_base_url = _sw.base_url
+                    if _sw.api_mode:
+                        self.api_mode = _sw.api_mode
+                else:
+                    self.model = stored_model
+        except Exception as _mexc:
+            logger.debug("Per-session model restore on resume skipped: %s", _mexc)
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -5547,6 +5619,12 @@ class HermesCLI:
             self._session_db._conn.commit()
         except Exception:
             pass
+
+        # Restore the session's last-used model/provider here too, since this
+        # preload path populates conversation_history and thereby skips the
+        # equivalent restore inside _init_agent (which is gated on empty
+        # history). Without this, dashboard resume reverts Claude→Gemini.
+        self._restore_session_model(session_meta)
 
         return True
 

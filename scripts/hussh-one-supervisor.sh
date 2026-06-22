@@ -280,6 +280,11 @@ interval = float(os.environ.get("HUSSH_ONE_DASHBOARD_WATCHDOG_INTERVAL", "5"))
 repo_root = os.environ["HUSSH_ONE_REPO_ROOT"]
 out_path = os.environ["HUSSH_ONE_DASHBOARD_LOG"]
 err_path = os.environ["HUSSH_ONE_DASHBOARD_ERR_LOG"]
+# Soft RSS cap for the dashboard process tree (MB). When the agent balloons a
+# session past this, we SIGTERM the child for a CLEAN, logged restart BEFORE the
+# kernel OOM-kills it with SIGKILL (rc=-9) mid-write (which can corrupt the
+# session DB and surfaces to the user only as "connection lost"). 0 disables.
+mem_cap_mb = int(os.environ.get("HUSSH_ONE_DASHBOARD_MEM_CAP_MB", "6144"))
 cmd = [sys.executable, "-m", "hermes_cli.main", "dashboard", "--host", host, "--port", str(port), "--tui", "--no-open"]
 env = os.environ.copy()
 def log_watchdog(message):
@@ -292,7 +297,40 @@ def listening():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
         return sock.connect_ex((host, port)) == 0
-log_watchdog("[dashboard-watchdog] started")
+def tree_rss_kb(root_pid):
+    # Sum RSS (KB) of root_pid and all descendants via ps (macOS + Linux, no
+    # psutil dependency). Returns 0 on any failure so monitoring never crashes
+    # the watchdog.
+    try:
+        out = subprocess.check_output(
+            ["ps", "-axo", "pid=,ppid=,rss="], text=True, timeout=4
+        )
+    except Exception:
+        return 0
+    children = {}
+    rss = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0]); ppid = int(parts[1]); kb = int(parts[2])
+        except ValueError:
+            continue
+        children.setdefault(ppid, []).append(pid)
+        rss[pid] = kb
+    total = 0
+    stack = [root_pid]
+    seen = set()
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        total += rss.get(p, 0)
+        stack.extend(children.get(p, []))
+    return total
+log_watchdog("[dashboard-watchdog] started (mem_cap=%d MB)" % mem_cap_mb)
 while True:
     try:
         if listening():
@@ -301,7 +339,33 @@ while True:
         log_watchdog("[dashboard-watchdog] dashboard port down; starting child")
         with open(out_path, "ab", buffering=0) as out, open(err_path, "ab", buffering=0) as err:
             proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
-            rc = proc.wait()
+            # Poll for exit while watching memory; SIGTERM if the tree exceeds
+            # the soft cap so we never let the OS SIGKILL it (rc=-9).
+            rc = None
+            while True:
+                try:
+                    rc = proc.wait(timeout=interval)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if mem_cap_mb > 0:
+                    used_mb = tree_rss_kb(proc.pid) // 1024
+                    if used_mb >= mem_cap_mb:
+                        log_watchdog(
+                            "[dashboard-watchdog] mem cap hit: tree RSS %d MB >= %d MB; "
+                            "SIGTERM child %d for clean restart" % (used_mb, mem_cap_mb, proc.pid)
+                        )
+                        try:
+                            proc.terminate()
+                            try:
+                                rc = proc.wait(timeout=15)
+                            except subprocess.TimeoutExpired:
+                                log_watchdog("[dashboard-watchdog] child ignored SIGTERM; SIGKILL")
+                                proc.kill()
+                                rc = proc.wait()
+                        except Exception:
+                            log_watchdog("[dashboard-watchdog] terminate failed\n" + traceback.format_exc())
+                        break
         log_watchdog(f"[dashboard-watchdog] child exited rc={rc}")
         time.sleep(interval)
     except Exception:

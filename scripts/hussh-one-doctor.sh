@@ -107,10 +107,13 @@ check_branch_and_remote() {
   local branch origin default_branch
   branch="$(git branch --show-current 2>/dev/null || true)"
   origin="$(git remote get-url origin 2>/dev/null || true)"
-  if [[ "$branch" == "hussh-one-hermes" ]]; then
-    pass "branch is hussh-one-hermes"
+  # The Hussh One fork lives at hushh-labs/hussh-one-hermes but its DEFAULT
+  # (deployment) branch is "main" — there is no separate "hussh-one-hermes"
+  # branch. Accept either so a normal main checkout is not flagged.
+  if [[ "$branch" == "main" || "$branch" == "hussh-one-hermes" ]]; then
+    pass "branch is '$branch' (Hussh One deployment branch)"
   else
-    warn "current branch is '${branch:-unknown}', expected hussh-one-hermes for Hussh One deployments"
+    warn "current branch is '${branch:-unknown}', expected main for Hussh One deployments"
   fi
   if [[ "$origin" == *"hushh-labs/hussh-one-hermes"* ]]; then
     pass "origin points at hushh-labs/hussh-one-hermes"
@@ -120,10 +123,10 @@ check_branch_and_remote() {
   if command -v gh >/dev/null 2>&1; then
     default_branch="$(gh repo view hushh-labs/hussh-one-hermes --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
     if [[ -n "$default_branch" ]]; then
-      if [[ "$default_branch" == "hussh-one-hermes" ]]; then
-        pass "GitHub default branch is hussh-one-hermes"
+      if [[ "$default_branch" == "main" || "$default_branch" == "hussh-one-hermes" ]]; then
+        pass "GitHub default branch is $default_branch"
       else
-        warn "GitHub default branch is $default_branch, expected hussh-one-hermes"
+        warn "GitHub default branch is $default_branch, expected main"
       fi
     fi
   fi
@@ -185,8 +188,15 @@ errors = []
 warnings = []
 
 brand = cfg.get("brand") if isinstance(cfg.get("brand"), dict) else {}
-if brand.get("display_name") != "hussh 🤫 One":
-    errors.append("brand.display_name is not hussh 🤫 One")
+# Match the canonical brand from hermes_cli.brand (single source of truth)
+# rather than a hardcoded string, so the doctor never drifts from the real
+# brand. Current canonical form is the emoji-first "🤫 Hussh One".
+try:
+    from hermes_cli.brand import BRAND_DISPLAY_NAME as _CANON_BRAND
+except Exception:
+    _CANON_BRAND = "🤫 Hussh One"
+if brand.get("display_name") != _CANON_BRAND:
+    errors.append(f"brand.display_name is not {_CANON_BRAND}")
 if cfg.get("display", {}).get("skin") != "hussh-one":
     errors.append("display.skin is not hussh-one")
 if cfg.get("dashboard", {}).get("theme") != "hussh-one":

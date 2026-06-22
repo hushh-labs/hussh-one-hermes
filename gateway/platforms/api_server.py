@@ -1119,51 +1119,84 @@ class APIServerAdapter(BasePlatformAdapter):
                 _row = _db.get_session(session_id) if _db is not None else None
                 _stored_model = (_row or {}).get("model")
                 if _stored_model and _stored_model != model:
-                    from hermes_cli.model_switch import switch_model as _switch_model
-                    from hermes_cli.config import get_compatible_custom_providers
-                    _user_provs = (user_config or {}).get("providers")
-                    try:
-                        _custom_provs = get_compatible_custom_providers(user_config)
-                    except Exception:
-                        _custom_provs = (user_config or {}).get("custom_providers")
-                    _sw = _switch_model(
-                        raw_input=_stored_model,
-                        current_provider=runtime_kwargs.get("provider") or "openrouter",
-                        current_model=model or "",
-                        current_base_url=runtime_kwargs.get("base_url") or "",
-                        current_api_key=runtime_kwargs.get("api_key") or "",
-                        user_providers=_user_provs,
-                        custom_providers=_custom_provs,
-                    )
-                    if _sw.success and _sw.new_model:
-                        model = _sw.new_model
-                        # Only override credential fields the switch actually
-                        # resolved; otherwise keep the runtime defaults so we
-                        # never blank out a working api_key/base_url.
-                        if _sw.target_provider:
-                            runtime_kwargs["provider"] = _sw.target_provider
-                        if _sw.api_key:
-                            runtime_kwargs["api_key"] = _sw.api_key
-                        if _sw.base_url:
-                            runtime_kwargs["base_url"] = _sw.base_url
-                        if _sw.api_mode:
-                            runtime_kwargs["api_mode"] = _sw.api_mode
-                        logger.info(
-                            "Restored per-session model for %s: %s (provider=%s)",
-                            session_id, model, _sw.target_provider or runtime_kwargs.get("provider"),
-                        )
+                    # 🤫 Hussh One: Claude models MUST resolve through GCP Vertex
+                    # (ADC), never Anthropic-direct. switch_model() maps a bare
+                    # "claude-*" name to provider="anthropic" and grabs a Claude
+                    # Code OAuth token (~/.claude/.credentials.json), which
+                    # Anthropic rejects for API use ("third-party apps now draw
+                    # from your extra usage"). For Claude we reuse the live
+                    # router's proven Vertex runtime resolver instead so a
+                    # restored session stays on Vertex exactly like a fresh turn.
+                    if str(_stored_model or "").lower().startswith("claude"):
+                        try:
+                            from hermes_cli.hussh_one_router import (
+                                _vertex_claude_runtime as _vcr,
+                            )
+                            _vrt = _vcr(_stored_model)
+                            model = _stored_model
+                            runtime_kwargs["provider"] = _vrt["provider"]
+                            runtime_kwargs["api_mode"] = _vrt["api_mode"]
+                            runtime_kwargs["api_key"] = _vrt["api_key"]
+                            runtime_kwargs["base_url"] = _vrt["base_url"]
+                            runtime_kwargs["credential_pool"] = None
+                            logger.info(
+                                "Restored per-session Claude model for %s: %s "
+                                "(provider=google-vertex-claude via ADC)",
+                                session_id, model,
+                            )
+                        except Exception as _vexc:
+                            model = _stored_model
+                            logger.warning(
+                                "Vertex Claude restore for %s failed (%s); "
+                                "using stored model name with default runtime.",
+                                session_id, _vexc,
+                            )
                     else:
-                        # Resolver couldn't rebuild a provider bundle — still
-                        # honor the stored model name so the session doesn't
-                        # silently fall back to the global default.
-                        model = _stored_model
-                        logger.warning(
-                            "Per-session model %s for %s could not be fully "
-                            "resolved (%s); using stored model name with "
-                            "default runtime.",
-                            _stored_model, session_id,
-                            _sw.error_message or "no provider match",
+                        from hermes_cli.model_switch import switch_model as _switch_model
+                        from hermes_cli.config import get_compatible_custom_providers
+                        _user_provs = (user_config or {}).get("providers")
+                        try:
+                            _custom_provs = get_compatible_custom_providers(user_config)
+                        except Exception:
+                            _custom_provs = (user_config or {}).get("custom_providers")
+                        _sw = _switch_model(
+                            raw_input=_stored_model,
+                            current_provider=runtime_kwargs.get("provider") or "openrouter",
+                            current_model=model or "",
+                            current_base_url=runtime_kwargs.get("base_url") or "",
+                            current_api_key=runtime_kwargs.get("api_key") or "",
+                            user_providers=_user_provs,
+                            custom_providers=_custom_provs,
                         )
+                        if _sw.success and _sw.new_model:
+                            model = _sw.new_model
+                            # Only override credential fields the switch actually
+                            # resolved; otherwise keep the runtime defaults so we
+                            # never blank out a working api_key/base_url.
+                            if _sw.target_provider:
+                                runtime_kwargs["provider"] = _sw.target_provider
+                            if _sw.api_key:
+                                runtime_kwargs["api_key"] = _sw.api_key
+                            if _sw.base_url:
+                                runtime_kwargs["base_url"] = _sw.base_url
+                            if _sw.api_mode:
+                                runtime_kwargs["api_mode"] = _sw.api_mode
+                            logger.info(
+                                "Restored per-session model for %s: %s (provider=%s)",
+                                session_id, model, _sw.target_provider or runtime_kwargs.get("provider"),
+                            )
+                        else:
+                            # Resolver couldn't rebuild a provider bundle — still
+                            # honor the stored model name so the session doesn't
+                            # silently fall back to the global default.
+                            model = _stored_model
+                            logger.warning(
+                                "Per-session model %s for %s could not be fully "
+                                "resolved (%s); using stored model name with "
+                                "default runtime.",
+                                _stored_model, session_id,
+                                _sw.error_message or "no provider match",
+                            )
             except Exception as _exc:
                 logger.debug(
                     "Failed to restore per-session model for %s: %s",

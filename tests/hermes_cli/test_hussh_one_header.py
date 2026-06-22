@@ -110,3 +110,33 @@ class TestContaminationStripping:
         monkeypatch.setenv("WHATSAPP_REPLY_PREFIX", "")
         out = h.apply_whatsapp_header("Just text", "gemini", is_select_mode=False)
         assert out == "Just text"
+
+    def test_strips_bare_variant_model_line(self):
+        # Regression: the model sometimes echoes a bare variant header
+        # ("Opus 4.8 [A]") WITHOUT the family prefix. The original regex only
+        # matched family-prefixed lines (Gemini/Claude/...), so this slipped
+        # through and produced a double header on WhatsApp.
+        h = _h()
+        contaminated = "Opus 4.8 [A]\n════════════════════\nBridge health check works."
+        assert h.strip_contaminated_header(contaminated) == "Bridge health check works."
+
+    def test_strips_double_stacked_header(self):
+        # Full real-world double-stamp: gateway brand+model line, then the
+        # model's own echoed model line + divider, then the body.
+        h = _h()
+        dup = (
+            "🤫 Hussh One\nGemini 3.5 Flash [A]\n════════════════════\n"
+            "Opus 4.8 [A]\n════════════════════\nConnection holding."
+        )
+        assert h.strip_contaminated_header(dup) == "Connection holding."
+
+    def test_bare_variant_words_in_prose_are_preserved(self):
+        # False-positive guard: prose starting with a variant word but NOT a
+        # header (no version number / mode token) must survive untouched.
+        h = _h()
+        for prose in (
+            "Pro tip: always pin Vertex.",
+            "Opus is a great model for reasoning.",
+            "Flashback to last week we shipped.",
+        ):
+            assert h.strip_contaminated_header(prose) == prose

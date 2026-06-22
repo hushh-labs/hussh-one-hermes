@@ -695,7 +695,13 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 except Exception:
                     session_db = None
             try:
-                agent = _make_agent(sid, key, session_db=session_db)
+                # Pass session_id=key so _make_agent restores this session's
+                # last-used model from sessions.model (state.db). Without it the
+                # restore guard (`...and session_id`) is False and a resumed
+                # session silently reverts to the config default model — e.g. a
+                # Claude Opus session coming back as Gemini after a browser
+                # refresh. (#hussh-one session-model resume)
+                agent = _make_agent(sid, key, session_id=key, session_db=session_db)
             finally:
                 _clear_session_context(tokens)
 
@@ -2702,36 +2708,68 @@ def _make_agent(
                 row = db_handle.get_session(session_id)
                 stored_model = (row or {}).get("model")
                 if stored_model:
-                    from hermes_cli.model_switch import switch_model as _switch_model
-                    from hermes_cli.config import get_compatible_custom_providers, load_config
+                    # 🤫 Hussh One: Claude models MUST resolve through GCP Vertex
+                    # (ADC), never Anthropic-direct. switch_model() maps a bare
+                    # "claude-*" name to provider="anthropic" and grabs a Claude
+                    # Code OAuth token (~/.claude/.credentials.json), which
+                    # Anthropic rejects for API use ("third-party apps now draw
+                    # from your extra usage"). For Claude we reuse the live
+                    # router's proven Vertex runtime resolver instead so a
+                    # restored TUI session stays on Vertex.
+                    if str(stored_model or "").lower().startswith("claude"):
+                        try:
+                            from hermes_cli.hussh_one_router import (
+                                _vertex_claude_runtime as _vcr,
+                            )
+                            _vrt = _vcr(stored_model)
+                            model_override = {
+                                "model": stored_model,
+                                "provider": _vrt["provider"],
+                                "base_url": _vrt["base_url"],
+                                "api_key": _vrt["api_key"],
+                                "api_mode": _vrt["api_mode"],
+                            }
+                            logger.info(
+                                "Restored per-session Claude model for TUI session %s: %s "
+                                "(provider=google-vertex-claude via ADC)",
+                                session_id, stored_model,
+                            )
+                        except Exception as _vexc:
+                            logger.warning(
+                                "Vertex Claude TUI restore for %s failed (%s)",
+                                session_id, _vexc,
+                            )
+                    else:
+                        from hermes_cli.model_switch import switch_model as _switch_model
+                        from hermes_cli.config import get_compatible_custom_providers, load_config
 
-                    _cfg = load_config()
-                    _user_provs = _cfg.get("providers") or {}
-                    try:
-                        _custom_provs = get_compatible_custom_providers(_cfg)
-                    except Exception:
-                        _custom_provs = _cfg.get("custom_providers")
-                    if not isinstance(_custom_provs, list):
-                        _custom_provs = None
+                        _cfg = load_config()
+                        _user_provs = _cfg.get("providers") or {}
+                        try:
+                            _custom_provs = get_compatible_custom_providers(_cfg)
+                        except Exception:
+                            _custom_provs = _cfg.get("custom_providers")
+                        if not isinstance(_custom_provs, list):
+                            _custom_provs = None
 
-                    _sw = _switch_model(
-                        raw_input=stored_model,
-                        current_provider="openrouter",
-                        current_model="",
-                        current_base_url="",
-                        current_api_key="",
-                        user_providers=_user_provs,
-                        custom_providers=_custom_provs,
-                        verify_runtime_access=False,  # Skip verification/test-call on resume
-                    )
-                    if _sw.success and _sw.new_model:
-                        model_override = {
-                            "model": _sw.new_model,
-                            "provider": _sw.target_provider,
-                            "base_url": _sw.base_url,
-                            "api_key": _sw.api_key,
-                            "api_mode": _sw.api_mode,
-                        }
+                        _sw = _switch_model(
+                            raw_input=stored_model,
+                            current_provider="openrouter",
+                            current_model="",
+                            current_base_url="",
+                            current_api_key="",
+                            user_providers=_user_provs,
+                            custom_providers=_custom_provs,
+                            verify_runtime_access=False,  # Skip verification/test-call on resume
+                        )
+                        if _sw.success and _sw.new_model:
+                            model_override = {
+                                "model": _sw.new_model,
+                                "provider": _sw.target_provider,
+                                "base_url": _sw.base_url,
+                                "api_key": _sw.api_key,
+                                "api_mode": _sw.api_mode,
+                            }
             except Exception as _rebuild_exc:
                 logger.debug(
                     "Failed to restore stored model for session %s: %s",
