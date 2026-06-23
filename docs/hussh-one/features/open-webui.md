@@ -50,6 +50,26 @@ curl -s http://127.0.0.1:8642/v1/models | jq .          # API server advertises 
 curl -s http://127.0.0.1:8642/health/detailed | jq .    # rich status probe
 ```
 
+## In-app Features page (Pipe Function)
+Open WebUI is a separate Svelte app with a prebuilt frontend, so a Features page
+is shipped as an **upgrade-safe Pipe Function** (lives in OWU's function DB, not
+the bundle):
+- **`scripts/open-webui/hussh_one_features_pipe.py`** — the Pipe. Registers one
+  selectable entry, **"🤫 Hussh One — Features"**, in the model dropdown.
+  Selecting it and sending any message renders the feature catalog as markdown
+  in the main chat body.
+- **`scripts/open-webui/install_features_pipe.py`** — idempotent installer
+  (upserts the function row, owns it with the first admin user, marks it
+  active + global).
+- Auto-installed by `setup_open_webui.sh` (`install_features_pipe`). On a fresh
+  box the OWU DB only exists after first launch — re-run the installer once after
+  the first start:
+  ```bash
+  ~/.local/open-webui-venv/bin/python scripts/open-webui/install_features_pipe.py
+  ```
+- Source of truth for the catalog content stays `docs/hussh-one/features`; keep
+  the pipe markdown in sync when features change.
+
 ## Status
 ✅ Shipped and actively optimized.
 

@@ -50,6 +50,7 @@ HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-Hermes Agent}"
 HERMES_API_BASE_URL="http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/v1"
 LAUNCHER_PATH="$HOME/.local/bin/start-open-webui-hermes.sh"
 LOG_DIR="$HOME/.hermes/logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
@@ -377,6 +378,26 @@ CSS
 JS
 }
 
+install_features_pipe() {
+  # Register the "🤫 Hussh One — Features" Pipe Function into Open WebUI's
+  # function DB so it appears in the model dropdown and renders the feature
+  # catalog in the chat body. Upgrade-safe (lives in the DB, not the frontend
+  # bundle). Best-effort: the DB only exists after Open WebUI's first launch,
+  # so a fresh install may skip this — re-run the installer after first launch.
+  local installer="${SCRIPT_DIR}/open-webui/install_features_pipe.py"
+  if [[ ! -f "$installer" ]]; then
+    log "Features pipe installer not found at ${installer}; skipping."
+    return 0
+  fi
+  log 'Installing the Hussh One Features pipe into Open WebUI...'
+  if "${OPEN_WEBUI_VENV}/bin/python" "$installer"; then
+    log 'Features pipe installed.'
+  else
+    log 'Features pipe not installed yet (Open WebUI DB may not exist until first launch).'
+    log "Re-run after first launch: ${OPEN_WEBUI_VENV}/bin/python ${installer}"
+  fi
+}
+
 write_launcher() {
   mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
 
@@ -546,6 +567,7 @@ main() {
   log 'Installing Open WebUI into a dedicated virtualenv...'
   install_open_webui
   install_static_assets
+  install_features_pipe
   write_launcher
 
   case "$OPEN_WEBUI_ENABLE_SERVICE" in
