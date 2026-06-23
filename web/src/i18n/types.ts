@@ -92,6 +92,7 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      features?: string;
       keys: string;
       logs: string;
       models: string;

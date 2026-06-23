@@ -12,6 +12,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/profiles": "profiles",
   "/config": "config",
   "/env": "keys",
+  "/features": "features",
   "/docs": "documentation",
 };
 
@@ -30,7 +31,7 @@ export function resolvePageTitle(
   }
   const key = BUILTIN[normalized];
   if (key) {
-    return t.app.nav[key];
+    return t.app.nav[key] ?? (key.charAt(0).toUpperCase() + key.slice(1));
   }
   // Derive title from pathname: "/profiles" → "Profiles"
   const segment = normalized.slice(1);
