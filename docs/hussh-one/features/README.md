@@ -25,6 +25,8 @@ template so the catalog stays modular, deterministic, and advertisable.
 | Natural-language model switching | WhatsApp/TUI | ✅ Shipped | [model-switching.md](./model-switching.md) |
 | Session-model persistence & resume | TUI/Web/API | ✅ Shipped | [session-model-resume.md](./session-model-resume.md) |
 | Dashboard crash resilience (OOM-safe) | Web/Ops | ✅ Shipped | [../operations/crash-resilience.md](../operations/crash-resilience.md) |
+| Open WebUI browser chat variant | Web | ✅ Shipped | [open-webui.md](./open-webui.md) |
+| In-session model popover sync (TUI) | TUI | ✅ Shipped | [model-switching.md](./model-switching.md) |
 
 ## Planned features
 See the [roadmap](../roadmap/README.md).

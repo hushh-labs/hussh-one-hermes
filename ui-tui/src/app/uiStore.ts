@@ -36,6 +36,12 @@ export const $uiState = atom<UiState>(buildUiState())
 
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
+// Authoritative live model for THIS session, sourced from the latest
+// `session.info` event (same source the status bar renders). The model picker
+// reads this so its popover can never disagree with the status line shown above
+// the tool calls — even when an in-session switch (e.g. Claude→Vertex) lands
+// before the picker's own `model.options` round-trip resolves.
+export const $uiLiveModel = computed($uiState, state => state.info?.model ?? '')
 
 export const getUiState = () => $uiState.get()
 

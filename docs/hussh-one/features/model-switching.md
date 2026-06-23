@@ -26,6 +26,18 @@ questions, negations, and injection-shaped phrases ("ignore previous", "system p
 Vertex Claude switches run a live access check before mutating the session; stale Vertex
 runtimes normalize back to the `google-vertex-claude` adapter.
 
+## TUI model popover sync
+The model picker popover (opened by clicking/selecting the status-bar model) opens
+**reflecting the live session model**, not a stale snapshot:
+- The picker accepts an authoritative `liveModel` from `session.info` (the same
+  source the status bar renders), which wins over its own `model.options` RPC
+  snapshot — so the popover can never disagree with the model shown above the
+  tool calls (e.g. Claude Opus on Vertex).
+- `resolvePickerSelection()` lands the cursor on the **current provider AND the
+  active model within it**, instead of always highlighting provider 0 / model 0.
+- Pure, tested helper: `ui-tui/src/components/modelPicker.tsx` →
+  `tests`: `ui-tui/src/__tests__/modelPickerSelection.test.ts`.
+
 ## Tests
 - `tests/hermes_cli/test_natural_model_switch.py`
 - `tests/gateway/test_natural_model_switch.py`

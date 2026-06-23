@@ -17,9 +17,31 @@ const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
-export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
+/**
+ * Resolve the model picker's initial selection so the popover opens reflecting
+ * the live session model instead of always row 0. Pure + exported for testing.
+ *
+ * - `currentModel` is the authoritative live model (session.info → status bar).
+ * - Provider index lands on the `is_current` provider (or 0).
+ * - Model index lands on `currentModel` within that provider (or 0).
+ */
+export function resolvePickerSelection(
+  providers: ModelOptionProvider[],
+  currentModel: string
+): { providerIdx: number; modelIdx: number } {
+  const providerIdx = Math.max(
+    0,
+    providers.findIndex(p => p.is_current)
+  )
+  const models = providers[providerIdx]?.models ?? []
+  const found = currentModel ? models.indexOf(currentModel) : -1
+
+  return { providerIdx, modelIdx: found >= 0 ? found : 0 }
+}
+
+export function ModelPicker({ allowPersistGlobal = true, gw, liveModel, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
-  const [currentModel, setCurrentModel] = useState('')
+  const [currentModel, setCurrentModel] = useState(liveModel ?? '')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [persistGlobal, setPersistGlobal] = useState(false)
@@ -53,14 +75,18 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
         const next = r.providers ?? []
         setProviders(next)
-        setCurrentModel(String(r.model ?? ''))
-        setProviderIdx(
-          Math.max(
-            0,
-            next.findIndex(p => p.is_current)
-          )
-        )
-        setModelIdx(0)
+        // liveModel (from session.info, the status-bar source of truth) wins
+        // over the RPC's snapshot so the popover always reflects what's shown
+        // above the tool calls. Fall back to the RPC value only when no live
+        // model has reached the client yet.
+        const authoritativeModel = (liveModel && liveModel.trim()) || String(r.model ?? '')
+        setCurrentModel(authoritativeModel)
+        // Land provider + model cursor on the live model (see
+        // resolvePickerSelection) so the popover opens in sync with the status
+        // bar instead of always highlighting provider 0 / model 0.
+        const sel = resolvePickerSelection(next, authoritativeModel)
+        setProviderIdx(sel.providerIdx)
+        setModelIdx(sel.modelIdx)
         setStage('provider')
         setErr('')
         setLoading(false)
@@ -69,7 +95,7 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, sessionId])
+  }, [gw, sessionId, liveModel])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -318,7 +344,15 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         }
 
         setStage('model')
-        setModelIdx(0)
+        // When drilling into the CURRENT provider, land on the active model;
+        // for any other provider, start at the top. Keeps the popover in sync
+        // with the live model instead of always highlighting row 1.
+        if (provider.is_current && currentModel) {
+          const i = (provider.models ?? []).indexOf(currentModel)
+          setModelIdx(i >= 0 ? i : 0)
+        } else {
+          setModelIdx(0)
+        }
         setFilter('')
 
         return
@@ -639,6 +673,9 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 interface ModelPickerProps {
   allowPersistGlobal?: boolean
   gw: GatewayClient
+  /** Authoritative live model from session.info (status-bar source of truth).
+   *  Wins over the model.options RPC snapshot so the popover can't desync. */
+  liveModel?: string
   onCancel: () => void
   onSelect: (value: string) => void
   sessionId: string | null

@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { $uiSessionId, $uiTheme, $uiLiveModel } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -119,6 +119,7 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
+  const liveModel = useStore($uiLiveModel)
 
   const hasAny =
     overlay.modelPicker ||
@@ -160,6 +161,7 @@ export function FloatingOverlays({
         <FloatBox color={theme.color.border}>
           <ModelPicker
             gw={gw}
+            liveModel={liveModel}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}

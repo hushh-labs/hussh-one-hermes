@@ -15,6 +15,8 @@ the product — each maps to a test or guard check. The dense source remains in
 | **G — Branding & header** | Canonical stacked header; no legacy brand strings in tracked files | `test_hussh_one_branding.py`, `test_hussh_one_header.py` |
 | **H — Session-model resume** | A resumed session restores its persisted model; Claude always resolves via Vertex (ADC), never Anthropic-direct | `tests/cli/test_resume_model_restore.py` |
 | **I — Dashboard crash resilience** | The dashboard child is never OOM-`SIGKILL`ed mid-write: sessions compact before the ceiling and the supervisor `SIGTERM`s at a soft RSS cap | `bash -n` + `tests/scripts/test_hussh_one_scripts.py`; `mem cap hit` log on trip |
+| **J — TUI model popover sync** | The model picker opens reflecting the live `session.info` model + lands the cursor on the active provider/model | `ui-tui` `tests/__tests__/modelPickerSelection.test.ts` |
+| **K — Open WebUI surface** | The OpenAI-compatible API server advertises the agent and streams turns; setup defaults to 1 agent call/message | `bash -n scripts/setup_open_webui.sh`; `/v1/models` + `/health/detailed` probes |
 
 ## Determinism rules (apply to all features)
 1. **A feature isn't done without:** a module, a config knob, a test, and a doc page.
