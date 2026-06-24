@@ -8250,6 +8250,30 @@ _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 # proxy / idle timers warm without injecting bytes into the terminal.
 _PING_RE = re.compile(rb"\x1b\[PING\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+# Busy-spin guard tuning for the PTY reader loop (see pty_ws). Empty reads that
+# return faster than half the read timeout are "suspect" — a healthy idle read
+# blocks ~_PTY_READ_CHUNK_TIMEOUT in select before returning empty.
+_PTY_SPIN_FAST_THRESHOLD = _PTY_READ_CHUNK_TIMEOUT / 2
+_PTY_SPIN_BACKOFF_MAX = 0.5
+
+
+def _pty_reader_backoff(elapsed: float, fast_empty_streak: int) -> float:
+    """Backoff (seconds) to sleep after an empty PTY read.
+
+    Pure + deterministic so it can be unit-tested without a live PTY.
+
+    * A *healthy* idle read blocks ~``_PTY_READ_CHUNK_TIMEOUT`` in select before
+      returning empty → ``elapsed`` is large → return 0.0 (yield only).
+    * A *degenerate* read that returns empty almost instantly (broken select /
+      half-closed master) → ``elapsed`` tiny → return an escalating positive
+      backoff so the reader loop cannot busy-spin a CPU core. This is the
+      structural defense against the 145h-at-101%-CPU dashboard hang.
+    """
+    if elapsed >= _PTY_SPIN_FAST_THRESHOLD:
+        return 0.0
+    return min(_PTY_SPIN_BACKOFF_MAX, _PTY_READ_CHUNK_TIMEOUT * max(1, fast_empty_streak))
+
+
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
@@ -8715,16 +8739,36 @@ async def pty_ws(ws: WebSocket) -> None:
     loop = asyncio.get_running_loop()
 
     # --- reader task: PTY master → WebSocket ----------------------------
+    # Busy-spin guard: bridge.read() is *expected* to block up to
+    # _PTY_READ_CHUNK_TIMEOUT (via select) before returning empty on an idle
+    # PTY, so a healthy idle loop ticks ~5x/sec. But a degenerate PTY/WS state
+    # (half-closed master that keeps reporting readable-but-empty without ever
+    # surfacing EOF) can make read() return empty *immediately*, turning the
+    # `continue` into a tight loop that pegs a full CPU core indefinitely — the
+    # observed failure where the dashboard ran 145h at 101% CPU. The
+    # _pty_reader_backoff() helper makes the loop structurally unable to spin:
+    # suspiciously-fast empty reads earn an escalating backoff sleep so the
+    # worst case is a slow idle, never a hot core. Any real data resets it.
     async def pump_pty_to_ws() -> None:
+        fast_empty_streak = 0
         while True:
+            t0 = loop.time()
             chunk = await loop.run_in_executor(
                 None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
             )
-            if chunk is None:  # EOF
+            if chunk is None:  # EOF — child exited / master closed
                 return
-            if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
+            if not chunk:  # no data this tick
+                elapsed = loop.time() - t0
+                backoff = _pty_reader_backoff(elapsed, fast_empty_streak + 1)
+                if backoff > 0:
+                    fast_empty_streak += 1
+                    await asyncio.sleep(backoff)
+                else:
+                    fast_empty_streak = 0
+                    await asyncio.sleep(0)
                 continue
+            fast_empty_streak = 0  # real data: healthy, reset the guard
             try:
                 await ws.send_bytes(chunk)
             except Exception:
