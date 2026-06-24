@@ -155,130 +155,238 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     if (!channel) {
       return;
     }
-    // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
+
     let unmounting = false;
     let ws: WebSocket | null = null;
-    void (async () => {
-      const [authName, authValue] = await buildWsAuthParam();
-      if (!authValue || unmounting) {
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let attempt = 0;
+    let connecting = false;
+
+    const FATAL_CODES = new Set([4401, 4403]);
+    const HEARTBEAT_MS = 15000;
+    const BASE_BACKOFF_MS = 500;
+    const MAX_BACKOFF_MS = 15000;
+    const DISCONNECTED = "events feed disconnected — tool calls may not appear";
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const stopHeartbeat = () => {
+      if (heartbeatTimer !== null) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+    };
+
+    const startHeartbeat = (socket: WebSocket) => {
+      stopHeartbeat();
+      heartbeatTimer = setInterval(() => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          try {
+            socket.send("\x1b[PING]");
+          } catch {
+            // ignore
+          }
+        }
+      }, HEARTBEAT_MS);
+    };
+
+    const scheduleReconnect = () => {
+      if (unmounting) return;
+      clearReconnectTimer();
+      const ceiling = Math.min(
+        MAX_BACKOFF_MS,
+        BASE_BACKOFF_MS * 2 ** Math.min(attempt, 10),
+      );
+      const delay = Math.round(Math.random() * ceiling);
+      attempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delay);
+    };
+
+    const connect = async () => {
+      if (unmounting || connecting) return;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
       }
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const qs = new URLSearchParams({ [authName]: authValue, channel });
-      ws = new WebSocket(
-        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
-      );
+      connecting = true;
 
-      // `unmounting` suppresses the banner during cleanup — `ws.close()`
-      // from the effect's return fires a close event with code 1005 that
-      // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-      const surface = (msg: string) => !unmounting && setError(msg);
+      let authParam: [string, string];
+      try {
+        authParam = await buildWsAuthParam();
+      } catch (err) {
+        connecting = false;
+        console.warn(
+          `[events] Auth-param fetch failed: ${(err as Error).message}`,
+        );
+        scheduleReconnect();
+        return;
+      }
 
-      ws.addEventListener("error", () => surface(DISCONNECTED));
+      if (unmounting) {
+        connecting = false;
+        return;
+      }
+
+      const [authName, authValue] = authParam;
+      if (!authValue) {
+        connecting = false;
+        return;
+      }
+
+      try {
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const qs = new URLSearchParams({ [authName]: authValue, channel });
+        ws = new WebSocket(
+          `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
+        );
+      } catch (err) {
+        connecting = false;
+        console.warn(`[events] WebSocket construct failed: ${(err as Error).message}`);
+        scheduleReconnect();
+        return;
+      }
+
+      ws.addEventListener("open", () => {
+        connecting = false;
+        attempt = 0;
+        setError(null);
+        if (ws) {
+          startHeartbeat(ws);
+        }
+      });
+
+      ws.addEventListener("error", () => {
+        // close handles reconnect
+      });
 
       ws.addEventListener("close", (ev) => {
-        if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
+        connecting = false;
+        stopHeartbeat();
+        ws = null;
+        if (unmounting) return;
+
+        const why = ev.reason ? ` reason=${ev.reason}` : "";
+        console.warn(`[events] WebSocket closed code=${ev.code}${why}`);
+
+        if (FATAL_CODES.has(ev.code)) {
+          if (ev.code === 4401 || ev.code === 4403) {
+            setError(`events feed rejected (${ev.code}) — reload the page`);
+          }
+          return;
         }
+
+        setError(DISCONNECTED);
+        scheduleReconnect();
       });
 
       ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
+        let frame: RpcEnvelope;
 
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
+        try {
+          frame = JSON.parse(ev.data);
+        } catch {
           return;
         }
 
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
+        if (frame.method !== "event" || !frame.params) {
           return;
         }
 
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
-          | undefined;
+        const { type, payload } = frame.params;
 
-        if (!p?.tool_id) {
-          return;
+        if (type === "session.info") {
+          if (payload) {
+            setInfo((prev) => ({ ...prev, ...(payload as SessionInfo) }));
+          }
+        } else if (type === "tool.start") {
+          const p = payload as
+            | { tool_id?: string; name?: string; context?: string }
+            | undefined;
+          const toolId = p?.tool_id;
+
+          if (!toolId) {
+            return;
+          }
+
+          setTools((prev) =>
+            [
+              ...prev,
+              {
+                kind: "tool" as const,
+                id: `tool-${toolId}-${prev.length}`,
+                tool_id: toolId,
+                name: p?.name ?? "tool",
+                context: p?.context,
+                status: "running" as const,
+                startedAt: Date.now(),
+              },
+            ].slice(-TOOL_LIMIT),
+          );
+        } else if (type === "tool.progress") {
+          const p = payload as
+            | { name?: string; preview?: string }
+            | undefined;
+
+          if (!p?.name || !p.preview) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.status === "running" && t.name === p.name
+                ? { ...t, preview: p.preview }
+                : t,
+            ),
+          );
+        } else if (type === "tool.complete") {
+          const p = payload as
+            | {
+                tool_id?: string;
+                summary?: string;
+                error?: string;
+                inline_diff?: string;
+              }
+            | undefined;
+
+          if (!p?.tool_id) {
+            return;
+          }
+
+          setTools((prev) =>
+            prev.map((t) =>
+              t.tool_id === p.tool_id
+                ? {
+                    ...t,
+                    status: p.error ? "error" : "done",
+                    summary: p.summary,
+                    error: p.error,
+                    inline_diff: p.inline_diff,
+                    completedAt: Date.now(),
+                  }
+                : t,
+            ),
+          );
         }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
       });
-    })();
+    };
+
+    void connect();
 
     return () => {
       unmounting = true;
-      ws?.close();
+      clearReconnectTimer();
+      stopHeartbeat();
+      if (ws) {
+        ws.close();
+      }
     };
   }, [channel, version]);
 
