@@ -248,19 +248,320 @@ CSS
   cat > "$static_dir/loader.js" <<'JS'
 (() => {
   // ---------------------------------------------------------------------------
-  // Hermes reasoning / "thinking" block UX
-  //   (a) auto-EXPAND while the model is actively thinking (streaming),
-  //   (b) auto-COLLAPSE once thinking finishes,
-  //   (c) tag the content body so custom.css caps it to a fixed, scrollable
-  //       height instead of an infinitely long block.
-  //
-  // Open WebUI renders each reasoning block as:
-  //     div.w-full.space-y-1                 <- the component (REASONING_ROOT)
-  //       div.cursor-pointer (header)        <- "Thinking..." / "Thought for X"
-  //       div (content, markdown)            <- present only when expanded
-  // The header shows "Thinking..." while streaming and "Thought for ..." once
-  // done. The Collapsible toggles on `pointerup` (NOT click). We never fight a
-  // manual toggle: once the user toggles a block, we leave it alone.
+  // Part 1: Hero title branding ("Powered by Google Agent Development Kit")
+  // ---------------------------------------------------------------------------
+  const titles = new Set([
+    "Hussh Google Ads Agent",
+    "Hussh Google Ads Executive Demo Agent",
+  ]);
+  const poweredBy = "Powered by Google Agent Development Kit";
+  const adkLogoPath = "/static/google-adk-logo.png";
+  const appTitle = "Hussh One ADK";
+  const fallbackChatTitle = "Hussh Google Ads Agent";
+  let lastGoodDocumentTitle = appTitle;
+
+  const normalizeLogoSrc = (value) => {
+    try {
+      return new URL(value || "", window.location.origin).pathname;
+    } catch (_e) {
+      return String(value || "");
+    }
+  };
+
+  const shouldUseAdkLogo = (value) => {
+    const raw = String(value || "");
+    const path = normalizeLogoSrc(raw);
+    return (
+      /agent-development-kit\.png(?:$|[?#])/i.test(raw) ||
+      /^\/static\/(?:apple-touch-icon|favicon(?:-96x96)?|splash(?:-dark)?|logo)\.(?:png|svg|ico)$/i.test(path)
+    );
+  };
+
+  const applyAdkLogo = () => {
+    for (const image of document.querySelectorAll("img[src]")) {
+      if (shouldUseAdkLogo(image.getAttribute("src"))) {
+        image.src = adkLogoPath;
+      }
+    }
+
+    for (const link of document.querySelectorAll("link[href]")) {
+      const rel = String(link.getAttribute("rel") || "").toLowerCase();
+      if ((rel.includes("icon") || rel.includes("apple-touch-icon")) && shouldUseAdkLogo(link.getAttribute("href"))) {
+        link.href = adkLogoPath;
+      }
+    }
+  };
+
+  const isVisibleHeroTitle = (element) => {
+    const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+    if (!titles.has(text)) return false;
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    const style = window.getComputedStyle(element);
+    const fontSize = Number.parseFloat(style.fontSize || "0");
+    return fontSize >= 28;
+  };
+
+  const markTitle = () => {
+    const candidates = Array.from(
+      document.querySelectorAll("h1,h2,h3,div,span,p,button"),
+    ).filter(isVisibleHeroTitle);
+
+    const leafCandidates = candidates.filter(
+      (candidate) => !candidates.some((other) => other !== candidate && candidate.contains(other)),
+    );
+
+    const selected = leafCandidates[0] || candidates[0];
+    for (const element of document.querySelectorAll(".hushh-adk-agent-title")) {
+      if (element !== selected) {
+        element.classList.remove("hushh-adk-agent-title");
+        delete element.dataset.hushhAdkPowered;
+      }
+    }
+
+    if (!selected) return;
+    selected.classList.add("hushh-adk-agent-title");
+    selected.dataset.hushhAdkPowered = poweredBy;
+  };
+
+  // ---------------------------------------------------------------------------
+  // Part 2: Browser tab title hygiene
+  // ---------------------------------------------------------------------------
+  const htmlEntityTextarea = document.createElement("textarea");
+
+  const compactText = (value) => (value || "").replace(/\s+/g, " ").trim();
+
+  const decodeHtmlEntities = (value) => {
+    htmlEntityTextarea.innerHTML = value || "";
+    return htmlEntityTextarea.value;
+  };
+
+  const stripTitleMarkup = (value) => {
+    let text = decodeHtmlEntities(String(value || ""));
+    text = text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, " ");
+    text = text.replace(/<think\b[^>]*>[\s\S]*$/gi, " ");
+    text = text.replace(/<\/?think\b[^>]*>/gi, " ");
+    text = text.replace(/<[^>]+>/g, " ");
+    text = text.replace(/\bThought\s+for\s+\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)\b/gi, " ");
+    return compactText(text);
+  };
+
+  const isLeakyTitle = (value) => {
+    const raw = String(value || "");
+    const decoded = decodeHtmlEntities(raw);
+    return (
+      /<\/?[a-z][\s\S]*>/i.test(decoded) ||
+      /\bThought\s+for\s+\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds)\b/i.test(decoded) ||
+      /^Thinking(?:\.\.\.)?$/i.test(compactText(decoded))
+    );
+  };
+
+  const isGenericTitle = (value) => {
+    const text = compactText(stripTitleMarkup(value)).toLowerCase();
+    return !text || text === "open webui" || text === appTitle.toLowerCase();
+  };
+
+  const isUsableChatTitle = (value) => {
+    const text = compactText(stripTitleMarkup(value));
+    if (text.length < 3 || text.length > 120) return false;
+    if (/^(new chat|open webui|hussh one adk)$/i.test(text)) return false;
+    if (titles.has(text)) return false;
+    return !isLeakyTitle(text);
+  };
+
+  const textForElement = (element) => compactText(stripTitleMarkup(element && element.textContent));
+
+  const activeChatPath = () => {
+    const match = window.location.pathname.match(/^\/c\/[^/?#]+/);
+    return match ? match[0] : "";
+  };
+
+  const currentSidebarChatTitle = () => {
+    const path = activeChatPath();
+    if (!path) return "";
+
+    const links = Array.from(document.querySelectorAll("a[href]"));
+    const activeLinks = links.filter((link) => {
+      try {
+        return new URL(link.getAttribute("href"), window.location.origin).pathname === path;
+      } catch (_e) {
+        return false;
+      }
+    });
+
+    for (const link of activeLinks) {
+      const text = textForElement(link);
+      if (isUsableChatTitle(text)) return text;
+    }
+
+    return "";
+  };
+
+  const fallbackVisibleChatTitle = () => {
+    if (isUsableChatTitle(lastGoodDocumentTitle) && !isGenericTitle(lastGoodDocumentTitle)) {
+      return lastGoodDocumentTitle;
+    }
+    return fallbackChatTitle;
+  };
+
+  const shouldSkipTextNode = (node) => {
+    const parent = node && node.parentElement;
+    if (!parent) return true;
+    const tag = (parent.tagName || "").toLowerCase();
+    if (["script", "style", "textarea", "input", "code", "pre"].includes(tag)) return true;
+    const text = compactText(node.nodeValue || "");
+    if (!text) return true;
+    if (!isLeakyTitle(text)) return true;
+
+    const rect = parent.getBoundingClientRect ? parent.getBoundingClientRect() : null;
+    if (rect && (rect.width > 560 || rect.height > 96)) return true;
+    return false;
+  };
+
+  const sanitizeVisibleLeakyTitles = () => {
+    if (!document.createTreeWalker) return;
+    const showText =
+      (window.NodeFilter && window.NodeFilter.SHOW_TEXT) ||
+      (typeof NodeFilter !== "undefined" && NodeFilter.SHOW_TEXT) ||
+      4;
+    const walker = document.createTreeWalker(document.body || document.documentElement, showText);
+    const replacements = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!shouldSkipTextNode(node)) replacements.push(node);
+    }
+
+    const replacement = currentSidebarChatTitle() || fallbackVisibleChatTitle();
+    for (const node of replacements) {
+      node.nodeValue = replacement;
+    }
+  };
+
+  const syncDocumentTitle = () => {
+    const current = document.title || "";
+    const sanitized = stripTitleMarkup(current);
+    const sidebarTitle = currentSidebarChatTitle();
+    const shouldUseSidebar =
+      sidebarTitle &&
+      (isLeakyTitle(current) || isGenericTitle(current) || sanitized !== current.trim());
+    const next = shouldUseSidebar
+      ? sidebarTitle
+      : isUsableChatTitle(sanitized)
+        ? sanitized
+        : lastGoodDocumentTitle;
+
+    if (next && next !== document.title) {
+      document.title = next;
+    }
+    if (isUsableChatTitle(next)) {
+      lastGoodDocumentTitle = next;
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Part 2b: Disabled-auth sign-in chrome suppression
+  // ---------------------------------------------------------------------------
+  const disabledAuthChromeSuppressionEnabled = true;
+  const AUTH_PROMPT_RE =
+    /\b(?:sign\s*in|sign\s*up|log\s*in|login|register|create\s+(?:an\s+)?account|continue\s+with\s+(?:google|github|microsoft|sso)|you\s+need\s+to\s+(?:sign|log)\s+in|not\s+signed\s+in)\b/i;
+  const AUTH_REQUIRED_RE =
+    /\b(?:authentication|authorization)\s+(?:required|needed|to\s+continue)\b/i;
+  const AUTH_SUCCESS_RE =
+    /\b(?:you(?:'|’)?re|you\s+are)\s+now\s+logged\s+in\.?\b/i;
+
+  const isDisabledAuthPromptText = (value) => {
+    const text = compactText(decodeHtmlEntities(String(value || "")));
+    if (!text || text.length > 260) return false;
+
+    if (/\bbridge\s+authentication\s+required\b/i.test(text)) return false;
+
+    return AUTH_PROMPT_RE.test(text) || AUTH_REQUIRED_RE.test(text) || AUTH_SUCCESS_RE.test(text);
+  };
+
+  const isToastLikeElement = (element) => {
+    if (!element) return false;
+    const getAttr = (name) =>
+      element.getAttribute ? String(element.getAttribute(name) || "").toLowerCase() : "";
+    if (element.hasAttribute && element.hasAttribute("data-sonner-toast")) return true;
+    const role = getAttr("role");
+    if (role === "alert" || role === "status") return true;
+    const className = String(element.className || "").toLowerCase();
+    return className.includes("sonner") || className.includes("toast") || className.includes("toaster");
+  };
+
+  const closestElement = (element, predicate, maxDepth = 8) => {
+    let current = element;
+    let depth = 0;
+    while (current && depth <= maxDepth) {
+      if (predicate(current)) return current;
+      current = current.parentElement;
+      depth += 1;
+    }
+    return null;
+  };
+
+  const isCompactVisibleChromeElement = (element) => {
+    if (!element) return false;
+    const tag = String(element.tagName || "").toLowerCase();
+    if (["script", "style", "textarea", "input", "code", "pre"].includes(tag)) return false;
+    if (!["a", "button", "div", "form", "h1", "h2", "h3", "label", "p", "section", "span"].includes(tag)) {
+      return false;
+    }
+
+    const text = compactText(element.textContent || "");
+    if (!isDisabledAuthPromptText(text)) return false;
+    if (!element.getBoundingClientRect) return true;
+    const rect = element.getBoundingClientRect();
+    return !rect || (rect.width <= 760 && rect.height <= 360);
+  };
+
+  const hideDisabledAuthElement = (element) => {
+    if (!element) return;
+    if (element.setAttribute) {
+      element.setAttribute("data-hushh-disabled-auth-hidden", "");
+      element.setAttribute("aria-hidden", "true");
+    }
+    if (element.style) {
+      element.style.display = "none";
+      element.style.visibility = "hidden";
+    }
+  };
+
+  const disabledAuthPromptContainer = (node) => {
+    const parent = node && node.parentElement;
+    if (!parent) return null;
+    const toast = closestElement(parent, isToastLikeElement, 10);
+    if (toast) return toast;
+    return closestElement(parent, isCompactVisibleChromeElement, 5);
+  };
+
+  const suppressDisabledAuthChrome = () => {
+    if (!disabledAuthChromeSuppressionEnabled || !document.createTreeWalker) return;
+    const root = document.body || document.documentElement;
+    if (!root) return;
+
+    const showText =
+      (window.NodeFilter && window.NodeFilter.SHOW_TEXT) ||
+      (typeof NodeFilter !== "undefined" && NodeFilter.SHOW_TEXT) ||
+      4;
+    const walker = document.createTreeWalker(root, showText);
+    const containers = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!isDisabledAuthPromptText(node && node.nodeValue)) continue;
+      const container = disabledAuthPromptContainer(node);
+      if (container) containers.push(container);
+    }
+
+    for (const container of containers) {
+      hideDisabledAuthElement(container);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Part 3: Reasoning / "thinking" block UX
   // ---------------------------------------------------------------------------
   const LIVE_RE = /Thinking|Analyzing|Exploring/i;
   const DONE_RE = /Thought for|Thought\b|Analyzed|Explored/i;
@@ -280,15 +581,13 @@ CSS
 
   const isExpanded = (root) => root.children.length > 1;
 
-  const toggle = (header) => {
+  const clickHeader = (header) => {
     selfClicking = true;
     try {
       const opts = { bubbles: true, cancelable: true, composed: true };
       try {
         header.dispatchEvent(new PointerEvent("pointerdown", opts));
-      } catch (_e) {
-        /* PointerEvent may be unavailable; pointerup alone still toggles. */
-      }
+      } catch (_e) {}
       header.dispatchEvent(new PointerEvent("pointerup", opts));
     } finally {
       setTimeout(() => {
@@ -323,10 +622,11 @@ CSS
       const expanded = isExpanded(root);
 
       if (expanded) tagBody(root);
-      if (st.userToggled) continue; // hands off — user is in control
+
+      if (st.userToggled) continue;
 
       if (live) {
-        if (!expanded) toggle(header);
+        if (!expanded) clickHeader(header);
         for (let i = 1; i < root.children.length; i++) {
           const body = root.children[i];
           if (body) {
@@ -334,16 +634,17 @@ CSS
             body.scrollTop = body.scrollHeight;
           }
         }
-        if (expanded) st.autoExpanded = true;
       } else {
         for (let i = 1; i < root.children.length; i++) {
           root.children[i].removeAttribute("data-hushh-thinking-live");
         }
         if (st.autoExpanded && !st.settled && expanded) {
-          toggle(header);
+          clickHeader(header);
           st.settled = true;
         }
       }
+
+      if (live && expanded) st.autoExpanded = true;
     }
   };
 
@@ -363,40 +664,308 @@ CSS
     true,
   );
 
-  const schedule = () => window.requestAnimationFrame(processReasoning);
+  // ---------------------------------------------------------------------------
+  // Part 4: Sidebar Changelog view (static info instead of chat component)
+  // ---------------------------------------------------------------------------
+  let isChangelogActive = false;
+  let lastPathname = window.location.pathname;
+
+  const CHANGELOG_HTML = `
+<div class="space-y-8">
+  <div class="flex items-center gap-4 border-b border-gray-100 dark:border-gray-800 pb-6">
+    <div class="p-3 bg-blue-50 dark:bg-blue-950/30 rounded-2xl text-blue-600 dark:text-blue-400">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-8">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+      </svg>
+    </div>
+    <div>
+      <h1 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">🤫 Hussh One — Features</h1>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">v1.0.0 · Active &amp; Verified</p>
+    </div>
+  </div>
+
+  <div class="bg-blue-50/50 dark:bg-blue-950/20 border-l-4 border-blue-500 p-5 rounded-r-2xl">
+    <p class="text-sm text-gray-700 dark:text-gray-300 italic leading-relaxed">
+      <strong>hussh</strong> = <strong>Hu</strong>man <strong>S</strong>ecure <strong>S</strong>ocket <strong>H</strong>ost. Overlay on Hermes Agent — a single, secure personal agent present across every surface. Every feature has a module, a config knob, a test, and a doc page.
+    </p>
+  </div>
+
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">Three first-class surfaces</h2>
+    <div class="overflow-hidden border border-gray-100 dark:border-gray-800/80 rounded-2xl">
+      <table class="min-w-full divide-y divide-gray-100 dark:divide-gray-800">
+        <thead class="bg-gray-50/70 dark:bg-gray-950/30">
+          <tr>
+            <th class="px-5 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-1/3">Surface</th>
+            <th class="px-5 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">What it is</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-800 bg-white dark:bg-transparent">
+          <tr>
+            <td class="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-gray-100">TUI / Dashboard</td>
+            <td class="px-5 py-4 text-sm text-gray-600 dark:text-gray-300"><code>hermes --tui</code> + the embedded real TUI in the web dashboard</td>
+          </tr>
+          <tr>
+            <td class="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-gray-100">WhatsApp</td>
+            <td class="px-5 py-4 text-sm text-gray-600 dark:text-gray-300">Branded, owner-gated personal agent with capsules</td>
+          </tr>
+          <tr>
+            <td class="px-5 py-4 text-sm font-semibold text-gray-900 dark:text-gray-100">Open WebUI</td>
+            <td class="px-5 py-4 text-sm text-gray-600 dark:text-gray-300">This browser chat, over the OpenAI-compatible API server</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-gray-400 dark:text-gray-500 italic px-1">*All three run the same agent, router, and models.*</p>
+  </section>
+
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight flex items-center gap-2">
+      <span>📱</span> WhatsApp Layer
+    </h2>
+    <ul class="list-disc pl-6 space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
+      <li><strong>Stacked brand header</strong> — 3-line header (brand · model [A/S] · divider) on every send</li>
+      <li><strong>Owner-only triggering</strong> — injection-proof gating; strict <code>@One</code> tagging in groups and DMs</li>
+      <li><strong>Multi-device (LID) auth</strong> — authorizes your linked devices via JID/LID</li>
+      <li><strong>Social-group capsules</strong> — sandboxed: isolated memory, read-only toolset, no lateral sends</li>
+      <li><strong>Anti-DOS rate limit</strong> — non-owner capsule triggering with configurable rate caps</li>
+      <li><strong>Clean output</strong> — no reasoning/logs/jargon; bold-only; autopilot approvals</li>
+      <li><strong>Local data &amp; recovery</strong> — WhatsApp history/media retrieval, message edit/recovery</li>
+    </ul>
+  </section>
+
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight flex items-center gap-2">
+      <span>🖥️</span> CLI / Web / API
+    </h2>
+    <ul class="list-disc pl-6 space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
+      <li><strong>CLI/TUI + Dashboard theming</strong> — the <code>hussh-one</code> skin across terminal and web</li>
+      <li><strong>Natural-language model switching</strong> — "switch to opus 4.8" (deterministic, injection-safe)</li>
+      <li><strong>Open WebUI browser chat variant</strong> — full web chat over the OpenAI-compatible API server; 1 agent call per message</li>
+      <li><strong>TUI model popover sync</strong> — picker opens reflecting the live session model + active provider/model</li>
+    </ul>
+  </section>
+
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight flex items-center gap-2">
+      <span>🔒</span> Reliability
+    </h2>
+    <ul class="list-disc pl-6 space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
+      <li><strong>Session-model persistence &amp; resume</strong> — sessions keep their model across refresh / <code>--resume</code> / cold restart</li>
+      <li><strong>Vertex-Claude pinning</strong> — Claude always routes through GCP Vertex (ADC), never Anthropic-direct</li>
+      <li><strong>Dashboard crash resilience (OOM-safe)</strong> — compaction tuning + supervisor RSS soft-cap → clean restart, never SIGKILL</li>
+      <li><strong>Open WebUI optimization</strong> — title/tag generation off by default → 1 agent call per message</li>
+    </ul>
+  </section>
+
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">🚦 Deterministic contracts (A–K)</h2>
+    <div class="overflow-hidden border border-gray-100 dark:border-gray-800/80 rounded-2xl">
+      <table class="min-w-full divide-y divide-gray-100 dark:divide-gray-800">
+        <thead class="bg-gray-50/70 dark:bg-gray-950/30">
+          <tr>
+            <th class="px-5 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-16">Item</th>
+            <th class="px-5 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Invariant Contract</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100 dark:divide-gray-800 bg-white dark:bg-transparent">
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">A</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Group routing safeguard</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">B</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Zero-width unicode leakage</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">C</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Upstream update guard</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">D</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Dashboard real-TUI (not forked chat)</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">E</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">NL model switching (deterministic, injection-safe)</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">F</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Capsule sandbox</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">G</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Branding &amp; header</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">H</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Session-model resume</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">I</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Dashboard crash resilience</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">J</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">TUI model popover sync</td></tr>
+          <tr><td class="px-5 py-3 text-sm font-semibold text-gray-900 dark:text-gray-100">K</td><td class="px-5 py-3 text-sm text-gray-600 dark:text-gray-300">Open WebUI surface</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="space-y-4">
+    <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight flex items-center gap-2">
+      <span>🟣</span> Built on Hermes Agent
+    </h2>
+    <ul class="list-disc pl-6 space-y-2.5 text-sm text-gray-600 dark:text-gray-300">
+      <li><strong>Closed learning loop</strong> — curated memory, autonomous skills, FTS5 cross-session recall</li>
+      <li><strong>60+ tools</strong> — file, terminal (6 backends), web/browser, media gen, orchestration</li>
+      <li><strong>20+ platforms</strong> — one gateway: CLI, Telegram, Discord, Slack, WhatsApp, and more</li>
+      <li><strong>Multi-provider</strong> — Nous Portal, OpenRouter, Vertex, Anthropic, Gemini, local + plugins</li>
+    </ul>
+  </section>
+
+  <div class="border-t border-gray-100 dark:border-gray-800 pt-6">
+    <p class="text-xs text-gray-400 dark:text-gray-500 italic">
+      *Source of truth: <code>docs/hussh-one/features</code> in the hussh-one-hermes repo.*
+    </p>
+  </div>
+</div>
+  `;
+
+  const injectChangelogButton = () => {
+    const list = document.getElementById('pinned-menu-items-list') || document.querySelector('.pb-1.5');
+    if (!list) return;
+
+    if (!document.getElementById('hushh-changelog-menu-item')) {
+      const item = document.createElement('div');
+      item.id = 'hushh-changelog-menu-item';
+      item.className = 'px-[0.4375rem] flex justify-center text-gray-800 dark:text-gray-200';
+      item.innerHTML = `
+        <button class="group grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none" id="sidebar-changelog-button">
+          <div class="flex self-center translate-y-[0.5px] text-gray-500 dark:text-gray-400 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+            </svg>
+          </div>
+          <div class="flex flex-1 self-center translate-y-[0.5px]">
+            <div class="self-center text-sm font-primary font-medium text-gray-600 dark:text-gray-300 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition">Changelog</div>
+          </div>
+        </button>
+      `;
+      list.appendChild(item);
+    }
+  };
+
+  const updateChangelogView = () => {
+    const container = document.getElementById('chat-container');
+    if (!container) return;
+
+    let view = document.getElementById('hushh-changelog-view');
+
+    if (isChangelogActive) {
+      // Hide normal children of #chat-container
+      Array.from(container.children).forEach(child => {
+        if (child.id !== 'hushh-changelog-view') {
+          child.style.setProperty('display', 'none', 'important');
+        }
+      });
+
+      // Create or show our changelog view
+      if (!view) {
+        view = document.createElement('div');
+        view.id = 'hushh-changelog-view';
+        view.className = 'h-full w-full overflow-y-auto bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 flex flex-col';
+        view.innerHTML = `
+          <div class="border-b border-gray-100 dark:border-gray-800/50 px-8 py-5 flex justify-between items-center bg-gray-50/50 dark:bg-gray-950/20 backdrop-blur shrink-0">
+            <div class="flex items-center gap-3">
+              <span class="text-xl">🤫</span>
+              <h1 class="text-lg font-semibold font-primary">Hussh One — Information</h1>
+            </div>
+            <div class="text-xs text-gray-500 dark:text-gray-400 font-mono">
+              ACTIVE
+            </div>
+          </div>
+          <div class="flex-1 p-8 @2xl:p-12 max-w-4xl mx-auto w-full">
+            <div class="prose prose-gray dark:prose-invert max-w-none font-primary">
+              ${CHANGELOG_HTML}
+            </div>
+          </div>
+        `;
+        container.appendChild(view);
+      } else {
+        view.style.display = 'flex';
+      }
+
+      // Make the button look active
+      const btn = document.getElementById('sidebar-changelog-button');
+      if (btn) {
+        btn.classList.add('bg-gray-100', 'dark:bg-gray-900');
+        const text = btn.querySelector('.font-primary');
+        if (text) text.classList.add('text-gray-900', 'dark:text-gray-100');
+      }
+    } else {
+      // Hide our view
+      if (view) {
+        view.style.display = 'none';
+      }
+
+      // Show other children
+      Array.from(container.children).forEach(child => {
+        if (child.id !== 'hushh-changelog-view') {
+          child.style.removeProperty('display');
+        }
+      });
+
+      // Make the button look inactive
+      const btn = document.getElementById('sidebar-changelog-button');
+      if (btn) {
+        btn.classList.remove('bg-gray-100', 'dark:bg-gray-900');
+        const text = btn.querySelector('.font-primary');
+        if (text) text.classList.remove('text-gray-900', 'dark:text-gray-100');
+      }
+    }
+  };
+
+  // Listen to clicks for the sidebar button
+  document.addEventListener('click', (event) => {
+    const changelogBtn = event.target.closest('#sidebar-changelog-button');
+    if (changelogBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      isChangelogActive = !isChangelogActive;
+      updateChangelogView();
+      return;
+    }
+
+    const sidebar = event.target.closest('#sidebar');
+    if (sidebar) {
+      const linkOrBtn = event.target.closest('a, button');
+      if (linkOrBtn && linkOrBtn.id !== 'sidebar-changelog-button') {
+        isChangelogActive = false;
+        updateChangelogView();
+      }
+    }
+  }, true);
+
+  // Sync state if pathname changes
+  const checkRouteChanged = () => {
+    if (window.location.pathname !== lastPathname) {
+      lastPathname = window.location.pathname;
+      isChangelogActive = false;
+      updateChangelogView();
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Shared scheduler + observer
+  // ---------------------------------------------------------------------------
+  const run = () => {
+    applyAdkLogo();
+    suppressDisabledAuthChrome();
+    markTitle();
+    sanitizeVisibleLeakyTitles();
+    syncDocumentTitle();
+    processReasoning();
+    injectChangelogButton();
+    checkRouteChanged();
+    if (isChangelogActive) {
+      updateChangelogView();
+    }
+  };
+  const schedule = () => window.requestAnimationFrame(run);
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", schedule, { once: true });
   } else {
     schedule();
   }
-  new MutationObserver(schedule).observe(document.documentElement, {
+
+  const observer = new MutationObserver(schedule);
+  observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
     characterData: true,
   });
+  window.addEventListener("focus", schedule);
+  window.addEventListener("pageshow", schedule);
 })();
 JS
 }
 
-install_features_pipe() {
-  # Register the "🤫 Hussh One — Features" Pipe Function into Open WebUI's
-  # function DB so it appears in the model dropdown and renders the feature
-  # catalog in the chat body. Upgrade-safe (lives in the DB, not the frontend
-  # bundle). Best-effort: the DB only exists after Open WebUI's first launch,
-  # so a fresh install may skip this — re-run the installer after first launch.
-  local installer="${SCRIPT_DIR}/open-webui/install_features_pipe.py"
-  if [[ ! -f "$installer" ]]; then
-    log "Features pipe installer not found at ${installer}; skipping."
-    return 0
-  fi
-  log 'Installing the Hussh One Features pipe into Open WebUI...'
-  if "${OPEN_WEBUI_VENV}/bin/python" "$installer"; then
-    log 'Features pipe installed.'
-  else
-    log 'Features pipe not installed yet (Open WebUI DB may not exist until first launch).'
-    log "Re-run after first launch: ${OPEN_WEBUI_VENV}/bin/python ${installer}"
-  fi
-}
+
 
 write_launcher() {
   mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
@@ -567,7 +1136,6 @@ main() {
   log 'Installing Open WebUI into a dedicated virtualenv...'
   install_open_webui
   install_static_assets
-  install_features_pipe
   write_launcher
 
   case "$OPEN_WEBUI_ENABLE_SERVICE" in
