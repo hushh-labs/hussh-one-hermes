@@ -13,6 +13,7 @@ SKIP_INSTALL=0
 SKIP_BUILD=0
 LIVE_SMOKE=0
 CLEAN_CONFLICTS=0
+SETUP_COPILOT="${HUSSH_ONE_SETUP_COPILOT:-0}"
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 
@@ -27,6 +28,7 @@ Options:
   --skip-build              Do not build TUI/dashboard frontend assets
   --live-smoke              Run optional live Vertex smoke checks from doctor
   --clean-conflicts         Let supervisor clean stale conflicting sessions
+  --copilot                 Set up VS Code Copilot BYOK (Vertex ADC proxy + shim)
   --dry-run                 Print actions without mutating the machine
   -h, --help                Show this help
 USAGE
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --clean-conflicts)
       CLEAN_CONFLICTS=1
+      shift
+      ;;
+    --copilot)
+      SETUP_COPILOT=1
       shift
       ;;
     --dry-run)
@@ -262,6 +268,21 @@ check_whatsapp_pairing() {
   fi
 }
 
+setup_copilot_byok() {
+  if [[ "$SETUP_COPILOT" != "1" ]]; then
+    return 0
+  fi
+  local args=("$SCRIPT_DIR/hussh-one-copilot-setup.sh")
+  if [[ "$DRY_RUN" == "1" ]]; then
+    args+=(--dry-run)
+  fi
+  if [[ "$START_SERVICES" == "1" ]]; then
+    args+=(--start)
+  fi
+  log "Setting up VS Code Copilot BYOK (Vertex ADC) ..."
+  run_cmd "${args[@]}"
+}
+
 start_services() {
   local args=("$SCRIPT_DIR/hussh-one-supervisor.sh" restart --manager "$MANAGER")
   if [[ "$CLEAN_CONFLICTS" == "1" ]]; then
@@ -294,6 +315,7 @@ build_assets
 set_config_defaults
 check_gcp_adc
 check_whatsapp_pairing
+setup_copilot_byok
 
 if [[ "$START_SERVICES" == "1" ]]; then
   start_services

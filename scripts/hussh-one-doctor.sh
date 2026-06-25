@@ -363,6 +363,51 @@ run_live_vertex_smoke() {
   rm -f /tmp/hussh-one-vertex.$$ /tmp/hussh-one-vertex-err.$$
 }
 
+check_copilot_byok() {
+  # VS Code Copilot BYOK (Vertex ADC) stack is optional per-machine. If the
+  # launchers aren't installed, emit a hint (not a failure) pointing at setup.
+  local proxy_launcher="$HERMES_HOME/scripts/start_litellm_proxy.sh"
+  local shim_launcher="$HERMES_HOME/scripts/start_litellm_shim.sh"
+  local shim_py="$HERMES_HOME/scripts/litellm_auth_shim.py"
+
+  if [[ ! -f "$proxy_launcher" || ! -f "$shim_launcher" || ! -f "$shim_py" ]]; then
+    warn "Copilot BYOK not installed; run: scripts/hussh-one-copilot-setup.sh --start"
+    return 0
+  fi
+  pass "Copilot BYOK assets present (proxy launcher, shim launcher, shim)"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    pass "Copilot BYOK live probe skipped in dry-run mode"
+    return 0
+  fi
+
+  # Probe the shim (:8644). Auth semantics must be deterministic: no-auth -> 401.
+  local py
+  py="$(python_bin)"
+  if [[ -z "$py" || ! -x "$py" ]]; then
+    warn "Python runtime not found for Copilot BYOK probe"
+    return 0
+  fi
+  if "$py" - <<'PY'
+import urllib.request, urllib.error, sys
+def code(path, auth=None):
+    req = urllib.request.Request("http://127.0.0.1:8644"+path)
+    if auth: req.add_header("Authorization", "Bearer "+auth)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r: return r.status
+    except urllib.error.HTTPError as e: return e.code
+    except Exception: return None
+noauth = code("/v1/models")            # must be 401 (deterministic auth)
+health = code("/healthz")              # 200 if shim+upstream alive
+sys.exit(0 if (noauth == 401 and health == 200) else 1)
+PY
+  then
+    pass "Copilot BYOK shim live on :8644 (deterministic 401, upstream healthy)"
+  else
+    warn "Copilot BYOK shim not responding correctly on :8644; start it: scripts/hussh-one-copilot-setup.sh --start (the reaper also self-heals it)"
+  fi
+}
+
 check_branch_and_remote
 check_required_files || true
 check_legacy_branding
@@ -372,6 +417,7 @@ check_dashboard_chat
 check_whatsapp_health
 check_vertex_profile
 run_live_vertex_smoke
+check_copilot_byok
 
 if [[ "$FAILURES" -gt 0 ]]; then
   printf 'Hussh One doctor failed with %s failure(s) and %s warning(s).\n' "$FAILURES" "$WARNINGS" >&2

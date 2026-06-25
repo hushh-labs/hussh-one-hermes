@@ -1,0 +1,56 @@
+# Hussh One — LiteLLM Proxy config: transparent Vertex AI (ADC) → OpenAI gateway
+#
+# Purpose: give VS Code Copilot BYOK *native* capabilities (inline edit, apply,
+# agent mode, @workspace, tool calling) backed by Vertex models. Unlike the
+# Hermes :8642 endpoint (which runs its OWN agent and drops the client's tools
+# array), this proxy is a pure passthrough: it forwards Copilot's `tools`,
+# `tool_choice`, streaming, and system prompt straight to Vertex and returns the
+# raw model response. Copilot stays in the driver's seat.
+#
+# Auth to Google: Application Default Credentials (ADC) at
+#   ~/.config/gcloud/application_default_credentials.json
+# Project: set via __VERTEX_PROJECT__ (filled in at install time from your
+#   GOOGLE_CLOUD_PROJECT / gcloud active project).
+# Location: global  — Hermes serves BOTH Gemini and Claude from the Vertex
+#   `global` multi-region endpoint. Claude is NOT servable in us-central1
+#   (FAILED_PRECONDITION), so we MUST use global to match the working Hermes
+#   runtime (hermes_cli/vertex_ai_locations.py + agent/vertex_claude_runtime.py
+#   default location to "global").
+#
+# Client auth (Copilot -> proxy): the master key (LITELLM_MASTER_KEY env at
+# launch). In the hardened setup, Copilot talks to the auth shim on :8644, which
+# enforces it and forwards here.
+#
+# This is the repo-canonical template. hussh-one-copilot-setup.sh substitutes
+# __VERTEX_PROJECT__ and writes the result to ~/.hermes/litellm-proxy-config.yaml.
+
+model_list:
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: vertex_ai/claude-sonnet-4-6
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: vertex_ai/claude-opus-4-8
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+
+litellm_settings:
+  drop_params: true          # tolerate Copilot-specific params Vertex doesn't know
+  set_verbose: false
+
+# master_key is supplied via the LITELLM_MASTER_KEY env var at launch. Providing
+# it as an env var lets LiteLLM authorize against the master key directly WITHOUT
+# a Postgres DB — avoiding the "No connected db" failure that occurs when
+# master_key is set in-file without a DATABASE_URL. The proxy binds to 127.0.0.1
+# only. NOTE: DB-less LiteLLM returns 500/400 (not 401) on auth failures — that
+# is exactly why the auth shim on :8644 sits in front of it.
+general_settings: {}

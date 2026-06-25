@@ -228,6 +228,50 @@ scripts/hussh-one-restart.sh
 
 The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `3000`.
 
+### Step 5: VS Code Copilot BYOK (Vertex ADC) — native, optional
+
+Hussh One ships a one-command setup that wires **VS Code Copilot Custom
+Endpoints (BYOK)** to Google Vertex AI through Application Default Credentials —
+so Copilot's native chat, inline edit, apply, `@workspace`, and **agent-mode
+tool calling** run on the same Vertex models (`gemini-3.5-flash`,
+`claude-sonnet-4-6`, `claude-opus-4-8`) Hussh One uses, with no third-party
+extension.
+
+```bash
+# Standalone (idempotent, re-runnable):
+scripts/hussh-one-copilot-setup.sh --start
+
+# Or as part of bootstrap:
+scripts/hussh-one-bootstrap.sh --copilot --start
+```
+
+It stands up two loopback-only services and points Copilot at the shim:
+
+| Port | Service | Role |
+|------|---------|------|
+| `8643` | LiteLLM proxy | Transparent Vertex→OpenAI passthrough. Forwards Copilot's `tools`/`tool_choice`/streaming verbatim so Copilot stays in the driver's seat. DB-less. |
+| `8644` | **Auth shim** (`litellm_auth_shim.py`) | Deterministic `401`s + streaming passthrough in FRONT of the proxy. **Copilot points here.** |
+
+Why the shim exists: DB-less LiteLLM mislabels auth failures (missing header →
+`500`, wrong key → `400`) which makes clients retry a permanent auth error or
+conclude the proxy is down. The shim returns a correct `401` and otherwise
+streams through untouched. It is built for large + refilling context windows
+(Copilot resends the whole transcript each turn): request and response bodies
+are streamed, never buffered, with no body-size cap and no read timeout — so a
+1M-token Gemini context flows through at constant memory. Verified to 160K-token
+prompts (1.18 MB bodies) and growing multi-turn transcripts.
+
+Both services are kept alive by the reaper watchdog (`ensure_litellm_proxy` in
+`reap_stale_processes.py`, every 30 min) and protected from being killed or
+reniced. The model URLs live in VS Code's `chatLanguageModels.json` under the
+**"Hussh One Vertex ADC"** endpoint; the master key is generated once and stored
+only in the chmod-700 launcher. After setup, run **Developer: Reload Window** in
+VS Code and pick a Vertex model.
+
+The doctor reports BYOK health (`check_copilot_byok`): asset presence + a live
+probe that the shim returns `401` on no-auth and `200` on `/healthz`. Full
+reference: [`scripts/copilot-byok/README.md`](scripts/copilot-byok/README.md).
+
 ---
 
 ## 6. SANDBOXED GROUP CONTAINERS ("Capsule" mode)
