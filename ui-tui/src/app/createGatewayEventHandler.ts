@@ -7,7 +7,8 @@ import type {
   DelegationStatusResponse,
   GatewayEvent,
   GatewaySkin,
-  SessionMostRecentResponse
+  SessionMostRecentResponse,
+  SessionResumableRecentResponse
 } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
@@ -363,14 +364,73 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // `hermes --tui` muscle memory and addresses the audit's "session
     // unrecoverable after disconnection" gap.  Default off so existing
     // users aren't surprised.  (Shares the memoized full-config read.)
+    //
+    // Hussh One Hermes upgrade: when `display.tui_resume_all_recent` is
+    // also on, restore EVERY recently-active human-facing session (each
+    // separate chat tab) that was live when the gateway died — not just
+    // the single most recent one. The newest is focused; the rest are
+    // re-attached as background live sessions (via session.resume, which
+    // re-registers them in the gateway so they appear in the active-session
+    // switcher). This is what makes a gateway restart/replace transparent:
+    // all your parallel chats keep going.
     getFullConfigOnce()
       .then(cfg => {
-        if (!cfg?.config?.display?.tui_auto_resume_recent) {
+        const display = cfg?.config?.display
+        const resumeAll = Boolean(display?.tui_resume_all_recent)
+        const resumeRecent = resumeAll || Boolean(display?.tui_auto_resume_recent)
+
+        if (!resumeRecent) {
           patchUiState({ status: 'forging session…' })
           newSession()
           scheduleStartupPrompt()
 
           return
+        }
+
+        if (resumeAll) {
+          return rpc<SessionResumableRecentResponse>('session.resumable_recent', {})
+            .then(r => {
+              const sessions = (r?.sessions ?? []).filter(s => s.session_id)
+
+              if (sessions.length === 0) {
+                patchUiState({ status: 'forging session…' })
+                newSession()
+                scheduleStartupPrompt()
+
+                return
+              }
+
+              // Newest-first from the backend. Focus the newest; re-attach
+              // the rest as background live sessions so they survive in the
+              // switcher. Background restores are best-effort: a single
+              // failure must not abort the others or the focused resume.
+              const [focused, ...background] = sessions
+
+              patchUiState({
+                status:
+                  sessions.length === 1
+                    ? 'resuming most recent…'
+                    : `restoring ${sessions.length} sessions…`
+              })
+
+              for (const s of background) {
+                rpc('session.resume', { session_id: s.session_id }).catch((e: unknown) => {
+                  sys(`could not restore session ${s.session_id}: ${rpcErrorMessage(e)}`)
+                })
+              }
+
+              resumeById(focused.session_id)
+              scheduleStartupPrompt()
+
+              if (sessions.length > 1) {
+                sys(`restored ${sessions.length} sessions · switch with the active-session picker`)
+              }
+            })
+            .catch(() => {
+              patchUiState({ status: 'forging session…' })
+              newSession()
+              scheduleStartupPrompt()
+            })
         }
 
         return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {

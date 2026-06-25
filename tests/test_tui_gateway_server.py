@@ -4750,6 +4750,125 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     assert resp["result"]["session_id"] is None
 
 
+# ── session.resumable_recent (Hussh One multi-session restore) ────────
+
+
+def _resumable_db(rows):
+    class _DB:
+        def list_sessions_rich(self, *, limit=200, include_children=False, order_by_last_active=False):
+            return list(rows)
+
+    return _DB()
+
+
+def test_resumable_recent_returns_live_tui_sessions_newest_first(monkeypatch):
+    """Only un-ended human-facing sessions, newest-first, bounded."""
+    import time as _t
+
+    now = _t.time()
+    rows = [
+        {"id": "tui-new", "source": "tui", "title": "newest", "started_at": now - 10,
+         "last_active": now - 5, "ended_at": None, "message_count": 4},
+        {"id": "tui-old", "source": "tui", "title": "older", "started_at": now - 100,
+         "last_active": now - 50, "ended_at": None, "message_count": 2},
+    ]
+    monkeypatch.setattr(server, "_get_db", lambda: _resumable_db(rows))
+    monkeypatch.setattr(server, "_sessions", {}, raising=False)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resumable_recent", "params": {}}
+    )
+
+    out = resp["result"]["sessions"]
+    assert [s["session_id"] for s in out] == ["tui-new", "tui-old"]
+    assert out[0]["message_count"] == 4
+
+
+def test_resumable_recent_excludes_ended_tool_empty_and_live(monkeypatch):
+    """Skips cleanly-ended sessions, tool sub-agents, empty shells, and
+    sessions already live in this process (no duplicate restore)."""
+    import time as _t
+
+    now = _t.time()
+    rows = [
+        {"id": "ended", "source": "tui", "ended_at": now - 1, "last_active": now,
+         "started_at": now - 10, "message_count": 5},
+        {"id": "tool-run", "source": "tool", "ended_at": None, "last_active": now,
+         "started_at": now - 10, "message_count": 5},
+        {"id": "empty", "source": "tui", "ended_at": None, "last_active": now,
+         "started_at": now - 10, "message_count": 0},
+        {"id": "already-live", "source": "tui", "ended_at": None, "last_active": now,
+         "started_at": now - 10, "message_count": 3},
+        {"id": "good", "source": "tui", "ended_at": None, "last_active": now,
+         "started_at": now - 10, "message_count": 3},
+    ]
+    monkeypatch.setattr(server, "_get_db", lambda: _resumable_db(rows))
+    # already-live: present in _sessions under its session_key.
+    monkeypatch.setattr(
+        server, "_sessions",
+        {"sid1": {"session_key": "already-live", "_finalized": False}},
+        raising=False,
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resumable_recent", "params": {}}
+    )
+
+    ids = [s["session_id"] for s in resp["result"]["sessions"]]
+    assert ids == ["good"]
+
+
+def test_resumable_recent_respects_window_and_limit(monkeypatch):
+    import time as _t
+
+    now = _t.time()
+    rows = [
+        {"id": f"s{i}", "source": "tui", "ended_at": None,
+         "last_active": now - i, "started_at": now - i, "message_count": 1}
+        for i in range(10)
+    ]
+    # One very old session outside the window.
+    rows.append({"id": "stale", "source": "tui", "ended_at": None,
+                 "last_active": now - 999999, "started_at": now - 999999,
+                 "message_count": 1})
+    monkeypatch.setattr(server, "_get_db", lambda: _resumable_db(rows))
+    monkeypatch.setattr(server, "_sessions", {}, raising=False)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resumable_recent",
+         "params": {"limit": 3, "window_hours": 24}}
+    )
+
+    ids = [s["session_id"] for s in resp["result"]["sessions"]]
+    assert ids == ["s0", "s1", "s2"]  # bounded to 3, stale dropped
+
+
+def test_resumable_recent_folds_db_exception_into_empty(monkeypatch):
+    class _BrokenDB:
+        def list_sessions_rich(self, *, limit=200, include_children=False, order_by_last_active=False):
+            raise RuntimeError("db locked")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    monkeypatch.setattr(server, "_sessions", {}, raising=False)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resumable_recent", "params": {}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["sessions"] == []
+
+
+def test_resumable_recent_handles_db_unavailable(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resumable_recent", "params": {}}
+    )
+
+    assert resp["result"]["sessions"] == []
+
+
 # ── browser.manage ───────────────────────────────────────────────────
 
 

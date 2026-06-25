@@ -70,6 +70,13 @@ export interface ConfigDisplayConfig {
    */
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
+  /**
+   * Hussh One Hermes upgrade: restore ALL recently-active human-facing
+   * sessions (every separate chat tab) on TUI startup after a gateway
+   * restart/replace, not just the single most recent one. Implies
+   * tui_auto_resume_recent. Default false.
+   */
+  tui_resume_all_recent?: boolean
   tui_compact?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
@@ -192,6 +199,19 @@ export interface SessionMostRecentResponse {
   source?: string
   started_at?: number
   title?: string
+}
+
+export interface SessionResumableItem {
+  last_active?: number
+  message_count?: number
+  session_id: string
+  source?: string
+  started_at?: number
+  title?: string
+}
+
+export interface SessionResumableRecentResponse {
+  sessions?: SessionResumableItem[]
 }
 
 export interface SessionTitleResponse {

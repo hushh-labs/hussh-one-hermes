@@ -1380,6 +1380,13 @@ DEFAULT_CONFIG = {
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # Hussh One Hermes upgrade: when true, on TUI startup after a gateway
+        # restart/replace, restore ALL recently-active human-facing sessions
+        # (every separate chat tab) as live sessions — not just the single most
+        # recent one. The newest is focused; the rest are re-attached as
+        # background live sessions reachable from the active-session switcher.
+        # Implies the single-session auto-resume behaviour. Default off.
+        "tui_resume_all_recent": False,
         # When true (default), `hermes --tui` drops a one-time hint
         # ("subagents working · /agents to watch live") the first time a turn
         # starts delegating, nudging the user toward the live spawn-tree

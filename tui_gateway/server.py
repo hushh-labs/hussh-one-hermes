@@ -3479,6 +3479,108 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+@method("session.resumable_recent")
+def _(rid, params: dict) -> dict:
+    """Return the set of human-facing sessions to auto-restore after a restart.
+
+    Hussh One Hermes upgrade: when the gateway/dashboard is replaced or
+    respawned, the in-memory ``_sessions`` map is wiped but every session's
+    transcript survives in ``state.db``. A clean shutdown stamps ``ended_at``;
+    a crash/replace does NOT. So sessions with ``ended_at IS NULL`` that were
+    recently active are exactly the live chats the user had open across
+    separate tabs and expects to find still running.
+
+    Contract:
+      params:
+        limit          — max sessions to return (default 8, hard cap 20)
+        window_hours   — only sessions active within this many hours (default 24)
+      result:
+        {"sessions": [{"session_id","title","started_at","last_active",
+                       "source","message_count"}...]}  newest-first.
+
+    Already-live sessions (present in ``_sessions``) are skipped — they don't
+    need restoring. Sub-agent ``tool`` rows and non-TUI sources are excluded so
+    we never resurrect a delegate run or a WhatsApp turn as a TUI tab. Errors
+    fold into an empty list (logged) so the TUI can always fall back to a fresh
+    session.
+    """
+    db = _get_db()
+    if db is None:
+        return _ok(rid, {"sessions": []})
+
+    try:
+        limit = int(params.get("limit", 8))
+    except (TypeError, ValueError):
+        limit = 8
+    limit = max(1, min(limit, 20))
+
+    try:
+        window_hours = float(params.get("window_hours", 24))
+    except (TypeError, ValueError):
+        window_hours = 24.0
+    cutoff = time.time() - max(0.0, window_hours) * 3600.0
+
+    # session_keys already live in this process — don't restore duplicates.
+    try:
+        with _sessions_lock:
+            live_keys = {
+                str(s.get("session_key") or "")
+                for s in _sessions.values()
+                if not s.get("_finalized")
+            }
+    except Exception:
+        live_keys = set()
+
+    # Only restore interactive TUI/CLI surfaces. Never resurrect delegate
+    # sub-agent runs, cron jobs, or other platforms' turns as TUI tabs.
+    allow_sources = {"tui", "cli", "api_server"}
+    deny_sources = {"tool"}
+
+    try:
+        rows = db.list_sessions_rich(
+            limit=200,
+            include_children=False,
+            order_by_last_active=True,
+        )
+    except Exception:
+        logger.exception("session.resumable_recent: list_sessions_rich failed")
+        return _ok(rid, {"sessions": []})
+
+    out: list[dict] = []
+    for row in rows:
+        if len(out) >= limit:
+            break
+        # Only sessions that were NOT cleanly ended = were live at crash/replace.
+        if row.get("ended_at") is not None:
+            continue
+        src = (row.get("source") or "").strip().lower()
+        if src in deny_sources:
+            continue
+        if allow_sources and src not in allow_sources:
+            continue
+        last_active = float(row.get("last_active") or row.get("started_at") or 0)
+        if last_active < cutoff:
+            continue
+        sid = row.get("id")
+        if not sid or sid in live_keys:
+            continue
+        # Skip empty shells — nothing to restore.
+        if int(row.get("message_count") or 0) <= 0:
+            continue
+        out.append(
+            {
+                "session_id": sid,
+                "title": row.get("title") or "",
+                "started_at": float(row.get("started_at") or 0),
+                "last_active": last_active,
+                "source": src,
+                "message_count": int(row.get("message_count") or 0),
+            }
+        )
+
+    return _ok(rid, {"sessions": out})
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")

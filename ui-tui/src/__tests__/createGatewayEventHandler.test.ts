@@ -760,6 +760,102 @@ describe('createGatewayEventHandler', () => {
     expect(resumeById).not.toHaveBeenCalled()
   })
 
+  it('on gateway.ready with resume_all_recent on, restores all sessions (focus newest, background rest)', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+    const resumed: string[] = []
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string, params?: any) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_resume_all_recent: true } } }
+      }
+
+      if (method === 'session.resumable_recent') {
+        return {
+          sessions: [
+            { session_id: 'sess-new' },
+            { session_id: 'sess-mid' },
+            { session_id: 'sess-old' }
+          ]
+        }
+      }
+
+      if (method === 'session.resume') {
+        resumed.push(params.session_id)
+        return { session_id: params.session_id }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    // Newest is focused via resumeById.
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-new'))
+    // The rest are re-attached as background live sessions via session.resume.
+    await vi.waitFor(() => expect(resumed).toEqual(['sess-mid', 'sess-old']))
+    expect(newSession).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with resume_all_recent on but no sessions, falls back to new', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_resume_all_recent: true } } }
+      }
+
+      if (method === 'session.resumable_recent') {
+        return { sessions: [] }
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
+  it('on gateway.ready with resume_all_recent on but RPC rejects, falls back to new', async () => {
+    const appended: Msg[] = []
+    const newSession = vi.fn()
+    const resumeById = vi.fn()
+    const ctx = buildCtx(appended)
+
+    ctx.session.newSession = newSession
+    ctx.session.resumeById = resumeById
+    ctx.session.STARTUP_RESUME_ID = ''
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_resume_all_recent: true } } }
+      }
+
+      if (method === 'session.resumable_recent') {
+        throw new Error('db locked')
+      }
+
+      return null
+    })
+
+    createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
+
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
+    expect(resumeById).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready when config.get rejects, falls back to new session', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
