@@ -36,8 +36,11 @@ request is an independent streamed pipe. It holds one shared httpx.AsyncClient
 This is the repo-canonical source. `scripts/hussh-one-copilot-setup.sh` copies it
 to ~/.hermes/scripts/litellm_auth_shim.py at install time.
 """
+import asyncio
+import logging
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -46,6 +49,8 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+logger = logging.getLogger("litellm_auth_shim")
 
 # ── Config (env-driven; no secrets in source) ────────────────────────────────
 UPSTREAM = os.environ.get("SHIM_UPSTREAM", "http://127.0.0.1:8643").rstrip("/")
@@ -61,6 +66,23 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
 }
+
+# ── Graceful upstream recovery (the whole point of this layer) ────────────────
+# The upstream LiteLLM proxy can die (OOM/jetsam on a big Opus turn) and be
+# respawned by launchd in well under a second. We make that invisible to the
+# client: before the first response byte, a connect/transient failure is RETRIED
+# with bounded backoff instead of surfacing a 502. To retry safely we must be
+# able to re-send the request, so the request body is buffered first.
+#
+# Memory note: buffering the request is cheap and safe. Even a ~1M-token Gemini
+# context is only a few MB of JSON — orders of magnitude smaller than the LiteLLM
+# proxy's own per-call buffering that caused the OOM. The shim never buffers the
+# RESPONSE (still streamed), so long completions stay constant-memory.
+_MAX_BUFFER_BYTES = int(os.environ.get("SHIM_MAX_BUFFER_MB", "64")) * 1024 * 1024
+# Total seconds to keep retrying the INITIAL connect/send before giving up.
+_RETRY_BUDGET_S = float(os.environ.get("SHIM_RETRY_BUDGET_S", "20"))
+# Per-attempt backoff schedule (seconds), clamped to the budget.
+_BACKOFF = (0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 3.0, 3.0)
 
 # Connect quickly, but allow unbounded read/write for large-context first-token
 # and long streamed completions. pool timeout guards against pool exhaustion.
@@ -97,6 +119,72 @@ def _extract_bearer(request: Request) -> str | None:
     return token or None
 
 
+async def _read_body_bounded(request: Request) -> bytes | None:
+    """Buffer the full request body, capped at _MAX_BUFFER_BYTES.
+
+    Returns None if the body exceeds the cap (caller should fall back to a
+    non-retryable streamed passthrough). Buffering is what makes transparent
+    retry possible — we can re-send the exact same bytes on a fresh upstream.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > _MAX_BUFFER_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _is_streaming_request(body: bytes, content_type: str) -> bool:
+    """Best-effort: does this chat request ask for SSE streaming?"""
+    if "application/json" not in (content_type or ""):
+        return False
+    try:
+        import json as _json
+        return bool(_json.loads(body or b"{}").get("stream"))
+    except Exception:
+        return False
+
+
+async def _send_with_retry(method: str, url: str, headers, body: bytes):
+    """Send to upstream, retrying connect/transient failures with bounded
+    backoff UNTIL THE FIRST RESPONSE BYTE. Safe because the body is buffered
+    and we have not yet emitted anything to the client. Once we get a response
+    object back (headers received), we stop retrying — the response is then
+    streamed and any mid-stream death is handled by the body iterator.
+    """
+    assert _client is not None
+    deadline = time.monotonic() + _RETRY_BUDGET_S
+    attempt = 0
+    last_exc: Exception | None = None
+    while True:
+        try:
+            req = _client.build_request(method, url, headers=headers, content=body)
+            resp = await _client.send(req, stream=True)
+            return resp, None
+        except (httpx.ConnectError, httpx.ConnectTimeout,
+                httpx.RemoteProtocolError, httpx.ReadError,
+                httpx.WriteError, httpx.PoolTimeout) as e:
+            # Transient — upstream is down/restarting (launchd is respawning it)
+            # or dropped the connection before sending headers. Retry until the
+            # budget is exhausted.
+            last_exc = e
+            if time.monotonic() >= deadline:
+                return None, last_exc
+            delay = _BACKOFF[min(attempt, len(_BACKOFF) - 1)]
+            delay = min(delay, max(0.0, deadline - time.monotonic()))
+            attempt += 1
+            logger.warning(
+                "shim: upstream unavailable (%s); retry %d in %.2fs (budget %.1fs)",
+                type(e).__name__, attempt, delay, _RETRY_BUDGET_S,
+            )
+            await asyncio.sleep(delay)
+        except httpx.HTTPError as e:
+            # Non-retryable transport error.
+            return None, e
+
+
 async def _proxy(request: Request) -> Response:
     # ── Auth gate (the whole reason this shim exists) ──
     if not MASTER_KEY:
@@ -113,7 +201,6 @@ async def _proxy(request: Request) -> Response:
     if not hmac.compare_digest(token, MASTER_KEY):
         return _unauthorized("Invalid API key.")
 
-    # ── Build upstream request, streaming the body (no buffering) ──
     assert _client is not None
     url = f"{UPSTREAM}{request.url.path}"
     if request.url.query:
@@ -124,25 +211,36 @@ async def _proxy(request: Request) -> Response:
         if k.lower() not in _HOP_BY_HOP
     ]
 
-    upstream_req = _client.build_request(
-        request.method,
-        url,
-        headers=fwd_headers,
-        content=request.stream(),  # async generator → true streaming upload
-    )
+    # Buffer the request so we can retry transparently across an upstream
+    # restart. Cap protects against a pathological body; over the cap we fall
+    # back to a single streamed attempt (still correct, just not retryable).
+    body = await _read_body_bounded(request)
+    content_type = request.headers.get("content-type", "")
+    wants_stream = body is not None and _is_streaming_request(body, content_type)
 
-    try:
-        upstream_resp = await _client.send(upstream_req, stream=True)
-    except httpx.ConnectError:
+    if body is None:
+        # Oversized: single streamed attempt, no retry.
+        try:
+            req = _client.build_request(request.method, url, headers=fwd_headers,
+                                        content=request.stream())
+            upstream_resp = await _client.send(req, stream=True)
+            err = None
+        except httpx.HTTPError as e:
+            upstream_resp, err = None, e
+    else:
+        upstream_resp, err = await _send_with_retry(
+            request.method, url, fwd_headers, body)
+
+    if upstream_resp is None:
+        # Exhausted the retry budget — upstream never came back in time. This is
+        # the rare hard-down case; surface a clean, correctly-typed error.
+        detail = f"upstream proxy unavailable after retries: {type(err).__name__ if err else 'unknown'}"
+        logger.error("shim: %s", detail)
         return JSONResponse(
-            {"error": {"message": "upstream proxy unavailable", "type": "server_error",
+            {"error": {"message": detail, "type": "server_error",
                        "code": "upstream_unavailable"}},
-            status_code=502,
-        )
-    except httpx.HTTPError as e:
-        return JSONResponse(
-            {"error": {"message": f"upstream error: {type(e).__name__}", "type": "server_error"}},
-            status_code=502,
+            status_code=503,  # 503 (try again) is more honest than 502 here
+            headers={"Retry-After": "2"},
         )
 
     resp_headers = [
@@ -151,9 +249,33 @@ async def _proxy(request: Request) -> Response:
     ]
 
     async def _body_iter():
+        """Stream the response. If upstream dies MID-STREAM (after headers, so
+        we can't change the status code), emit a graceful tail instead of a raw
+        truncation: for an SSE stream, a final error event + [DONE]; otherwise
+        just close. This keeps the client from hanging on an incomplete read.
+        """
         try:
             async for chunk in upstream_resp.aiter_raw():
                 yield chunk
+        except (httpx.RemoteProtocolError, httpx.ReadError,
+                httpx.StreamError) as e:
+            logger.error("shim: upstream died mid-stream (%s)", type(e).__name__)
+            if wants_stream:
+                # OpenAI SSE-shaped error so Copilot renders it as a message
+                # rather than a hard transport failure, then a clean terminator.
+                import json as _json
+                payload = _json.dumps({
+                    "error": {
+                        "message": ("upstream interrupted mid-response (proxy "
+                                    "restarted). Please retry — the service is "
+                                    "back up."),
+                        "type": "server_error",
+                        "code": "upstream_interrupted",
+                    }
+                })
+                yield f"\ndata: {payload}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+            # Non-stream: nothing more we can safely append; just stop.
         finally:
             await upstream_resp.aclose()
 
@@ -207,6 +329,10 @@ if __name__ == "__main__":
         print("FATAL: LITELLM_MASTER_KEY not set; refusing to start open relay.",
               file=sys.stderr)
         sys.exit(2)
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     # h11 has no body-size cap by default → large context bodies pass freely.
     uvicorn.run(app, host=LISTEN_HOST, port=LISTEN_PORT, log_level="warning",
                 timeout_keep_alive=75)

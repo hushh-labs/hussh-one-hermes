@@ -98,6 +98,8 @@ Materialized into `~/.hermes/` at install time:
 scripts/hussh-one-copilot-setup.sh [options]
   --project ID    Vertex/GCP project (default: $GOOGLE_CLOUD_PROJECT or gcloud)
   --start         Start/restart proxy + shim, then smoke test
+  --launchd       (macOS) Install launchd KeepAlive agents — instant restart on
+                  crash/OOM/sleep. Recommended; implies --start.
   --no-vscode     Do not write chatLanguageModels.json
   --dry-run       Print actions without mutating the machine
 ```
@@ -113,13 +115,40 @@ re-runs; existing non-Vertex Copilot endpoints (e.g. LM Studio) in
    `global` (Claude is not servable in `us-central1`).
 3. **VS Code** (Insiders or Stable) with Copilot Chat.
 
-## Lifecycle / resilience
+## Graceful resilience — why a proxy death is invisible
 
-Both services are kept alive by the reaper watchdog —
-`ensure_litellm_proxy()` in `~/.hermes/scripts/reap_stale_processes.py` (cron
-every 30 min) probes `8643` and `8644` and respawns whichever is down (proxy
-first, since the shim depends on it). Both are protected from being killed or
-reniced by the reaper's process-signature guard.
+The `:8643` LiteLLM proxy buffers each full request/response, so a large Opus
+agent turn can spike its RSS and get OOM/jetsam-killed by macOS mid-response.
+Without protection that surfaces in VS Code as **"Server error: 502"** and the
+turn is lost. Two coordinated layers make this a sub-second, invisible hiccup:
+
+**1. Instant restart (launchd KeepAlive).** `--launchd` installs two user
+LaunchAgents (`ai.hushh.one.litellm-proxy`, `ai.hushh.one.litellm-shim`) with
+`KeepAlive{SuccessfulExit=false}` + `ThrottleInterval=1`. macOS respawns a dead
+service in ~1s — no waiting on the 30-min reaper. This is the recommended
+backbone; the reaper remains as a slower belt-and-suspenders fallback.
+
+**2. Transparent retry in the shim.** The shim buffers the request body (capped
+at `SHIM_MAX_BUFFER_MB`, default 64 — a 1M-token context is only a few MB) so it
+can re-send safely. On a connect/transient failure **before the first response
+byte**, it retries with bounded backoff for up to `SHIM_RETRY_BUDGET_S`
+(default 20s, schedule 0.25→0.5→1→1.5→2→3s). So a request that lands during the
+restart window simply **waits and succeeds** instead of erroring. The shim still
+never buffers the *response* — completions stay streamed and constant-memory.
+
+**Mid-stream death** (proxy dies after headers, when the status code is already
+committed) can't be turned into a clean retry, so the shim emits a graceful tail:
+for an SSE stream, a final OpenAI-shaped error event + `data: [DONE]` so Copilot
+renders a "retry — service is back up" message instead of hanging on a truncated
+read. The hard-down case (upstream never returns within the budget) returns a
+correctly-typed `503` with `Retry-After`, not a `502`.
+
+Verified end-to-end by hard-killing (`kill -9`) the proxy mid-flight: a
+non-streaming request recovered in 3.7s (200, real answer), a streaming request
+recovered with a clean `[DONE]`, a 45K-token context completed, and a 3×
+rapid-kill restart storm stayed up throughout.
+
+Tunables (env, read at shim launch): `SHIM_MAX_BUFFER_MB`, `SHIM_RETRY_BUDGET_S`.
 
 ## Health check
 

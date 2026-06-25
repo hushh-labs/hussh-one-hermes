@@ -261,12 +261,20 @@ are streamed, never buffered, with no body-size cap and no read timeout — so a
 1M-token Gemini context flows through at constant memory. Verified to 160K-token
 prompts (1.18 MB bodies) and growing multi-turn transcripts.
 
-Both services are kept alive by the reaper watchdog (`ensure_litellm_proxy` in
-`reap_stale_processes.py`, every 30 min) and protected from being killed or
-reniced. The model URLs live in VS Code's `chatLanguageModels.json` under the
-**"Hussh One Vertex ADC"** endpoint; the master key is generated once and stored
-only in the chmod-700 launcher. After setup, run **Developer: Reload Window** in
-VS Code and pick a Vertex model.
+**Graceful resilience (invisible proxy death).** The proxy can be OOM/jetsam-
+killed mid-response on a big Opus turn — which would otherwise surface in VS Code
+as "Server error: 502". Two layers make it a sub-second, invisible hiccup:
+(1) **launchd KeepAlive** (`scripts/hussh-one-copilot-setup.sh --launchd`)
+respawns a dead service in ~1s; (2) the **shim buffers the request and retries
+before the first response byte** (bounded backoff, 20s budget) so a request that
+lands in the restart window just waits and succeeds. Mid-stream death emits a
+graceful SSE error tail + `[DONE]` instead of a hard truncation; true hard-down
+returns `503 Retry-After`, never `502`. The reaper watchdog (`ensure_litellm_proxy`
+in `reap_stale_processes.py`, every 30 min) remains a slower fallback; both
+services are protected from being killed or reniced. The model URLs live in VS
+Code's `chatLanguageModels.json` under the **"Hussh One Vertex ADC"** endpoint;
+the master key is generated once and stored only in the chmod-700 launcher. After
+setup, run **Developer: Reload Window** in VS Code and pick a Vertex model.
 
 The doctor reports BYOK health (`check_copilot_byok`): asset presence + a live
 probe that the shim returns `401` on no-auth and `200` on `/healthz`. Full

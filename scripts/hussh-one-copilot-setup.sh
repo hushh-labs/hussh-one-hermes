@@ -33,6 +33,7 @@ PROJECT="${VERTEX_PROJECT:-}"
 START_SERVICES=0
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 WRITE_VSCODE=1
+USE_LAUNCHD=0
 PROXY_PORT=8643
 SHIM_PORT=8644
 
@@ -43,6 +44,8 @@ Usage: scripts/hussh-one-copilot-setup.sh [options]
 Options:
   --project ID        Vertex/GCP project (default: $GOOGLE_CLOUD_PROJECT or gcloud)
   --start             Start/restart the proxy + shim after setup, then smoke test
+  --launchd           (macOS) Install launchd KeepAlive agents for instant restart
+                      of the proxy + shim on crash/OOM/sleep (recommended)
   --no-vscode         Do not write VS Code chatLanguageModels.json
   --dry-run           Print actions without mutating the machine
   -h, --help          Show this help
@@ -57,6 +60,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) PROJECT="${2:-}"; shift 2 ;;
     --start) START_SERVICES=1; shift ;;
+    --launchd) USE_LAUNCHD=1; shift ;;
     --no-vscode) WRITE_VSCODE=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -260,18 +264,101 @@ fi
 # ── 7. Optional start + smoke test ───────────────────────────────────────────
 listening() { nc -z 127.0.0.1 "$1" >/dev/null 2>&1 || (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
-if [[ "$START_SERVICES" == "1" && "$DRY_RUN" != "1" ]]; then
-  log "Starting proxy + shim ..."
-  nohup_start() {
-    local launcher="$1" logf="$2"
-    ( setsid bash "$launcher" >>"$logf" 2>&1 & ) 2>/dev/null || \
-      ( bash "$launcher" >>"$logf" 2>&1 & )
-  }
-  if ! listening "$PROXY_PORT"; then
-    nohup_start "$LAUNCHER_PROXY" "$HERMES_HOME/logs/litellm-proxy.log"
+# launchd KeepAlive agents → instant (<1s) restart on crash/OOM/sleep. This is
+# the graceful-UX backbone: the shim retries across the restart window, so a
+# proxy OOM becomes a sub-second hiccup the client never sees as an error.
+LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+PROXY_LABEL="ai.hushh.one.litellm-proxy"
+SHIM_LABEL="ai.hushh.one.litellm-shim"
+
+write_launchd_plist() {
+  local label="$1" launcher="$2" logf="$3"
+  local plist="$LAUNCHD_DIR/$label.plist"
+  mkdir -p "$LAUNCHD_DIR"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$launcher</string>
+  </array>
+  <!-- Instant restart on death (OOM/crash) and on any non-zero exit. -->
+  <key>KeepAlive</key>
+  <dict><key>SuccessfulExit</key><false/></dict>
+  <key>RunAtLoad</key><true/>
+  <!-- Throttle restart storms but stay fast (1s). -->
+  <key>ThrottleInterval</key><integer>1</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>$logf</string>
+  <key>StandardErrorPath</key><string>$logf</string>
+</dict>
+</plist>
+EOF
+  echo "$plist"
+}
+
+bootout_label() {  # tolerant unload (ignore "not loaded")
+  local label="$1"
+  launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || \
+    launchctl unload "$LAUNCHD_DIR/$label.plist" >/dev/null 2>&1 || true
+}
+
+bootstrap_label() {
+  local label="$1" plist="$2"
+  launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || \
+    launchctl load "$plist" >/dev/null 2>&1 || true
+}
+
+install_launchd() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    warn "--launchd is macOS-only; falling back to background start."
+    return 1
   fi
-  if ! listening "$SHIM_PORT"; then
-    nohup_start "$LAUNCHER_SHIM" "$HERMES_HOME/logs/litellm-shim.log"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would install launchd agents $PROXY_LABEL and $SHIM_LABEL"
+    return 0
+  fi
+  log "Installing launchd KeepAlive agents (instant restart) ..."
+  # Stop any hand-started copies so launchd owns the ports cleanly.
+  pkill -f "litellm.*--port $PROXY_PORT" >/dev/null 2>&1 || true
+  pkill -f "litellm_auth_shim.py" >/dev/null 2>&1 || true
+  sleep 1
+  local pp sp
+  pp="$(write_launchd_plist "$PROXY_LABEL" "$LAUNCHER_PROXY" "$HERMES_HOME/logs/litellm-proxy.log")"
+  sp="$(write_launchd_plist "$SHIM_LABEL" "$LAUNCHER_SHIM" "$HERMES_HOME/logs/litellm-shim.log")"
+  bootout_label "$PROXY_LABEL"; bootstrap_label "$PROXY_LABEL" "$pp"
+  # Give the proxy a head start so the shim's first health probe sees it.
+  sleep 2
+  bootout_label "$SHIM_LABEL"; bootstrap_label "$SHIM_LABEL" "$sp"
+  return 0
+}
+
+started_via_launchd=0
+if [[ "$USE_LAUNCHD" == "1" ]]; then
+  if install_launchd; then
+    started_via_launchd=1
+    START_SERVICES=1   # imply start so the smoke test runs
+  fi
+fi
+
+if [[ "$START_SERVICES" == "1" && "$DRY_RUN" != "1" ]]; then
+  if [[ "$started_via_launchd" != "1" ]]; then
+    log "Starting proxy + shim ..."
+    nohup_start() {
+      local launcher="$1" logf="$2"
+      ( setsid bash "$launcher" >>"$logf" 2>&1 & ) 2>/dev/null || \
+        ( bash "$launcher" >>"$logf" 2>&1 & )
+    }
+    if ! listening "$PROXY_PORT"; then
+      nohup_start "$LAUNCHER_PROXY" "$HERMES_HOME/logs/litellm-proxy.log"
+    fi
+    if ! listening "$SHIM_PORT"; then
+      nohup_start "$LAUNCHER_SHIM" "$HERMES_HOME/logs/litellm-shim.log"
+    fi
   fi
   # wait up to ~30s for both
   for _ in $(seq 1 30); do
@@ -305,7 +392,13 @@ log "VS Code Copilot BYOK (Vertex ADC) setup complete."
 log "  Endpoint URL : http://127.0.0.1:$SHIM_PORT/v1   (the auth shim)"
 log "  API key      : $KEY"
 log "  Models       : gemini-3.5-flash, claude-sonnet-4-6, claude-opus-4-8"
+if [[ "$started_via_launchd" == "1" ]]; then
+  log "  Resilience   : launchd KeepAlive ($PROXY_LABEL, $SHIM_LABEL) — instant restart"
+fi
 log ""
 log "In VS Code: Developer: Reload Window, choose a 'Hussh One Vertex ADC' model,"
-log "and paste the API key above when prompted. The reaper watchdog keeps both"
-log "services alive (ensure_litellm_proxy)."
+log "and paste the API key above when prompted."
+if [[ "$started_via_launchd" != "1" ]]; then
+  log "Tip: re-run with --launchd for instant crash/OOM restart (recommended). The"
+  log "reaper watchdog (ensure_litellm_proxy) also self-heals both services."
+fi
