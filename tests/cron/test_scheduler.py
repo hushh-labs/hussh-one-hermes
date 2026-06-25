@@ -1306,6 +1306,98 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "all good"
 
+    def test_run_job_iteration_cap_summary_delivers_as_partial_success(self, tmp_path):
+        """A graceful max-iterations summary is NOT a failure.
+
+        When a long autonomous job (e.g. the PR-governance train) hits the
+        tool-call ceiling, run_agent strips tools and asks the model for a final
+        summary. The result has ``completed=False`` but ``failed`` is not True,
+        ``turn_exit_reason`` starts with ``max_iterations_reached`` and there is a
+        substantive ``final_response``. run_job must deliver that summary as a
+        successful PARTIAL run (with a cap banner) instead of raising the report
+        as a RuntimeError that buries it in an error envelope.
+        """
+        job = {
+            "id": "iter-cap-job",
+            "name": "PR Governance Daily Train",
+            "prompt": "drive the train",
+        }
+        fake_db = MagicMock()
+        report = "# Run Report\n\nDrove 91 PRs to terminal. Resumable next run."
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": report,
+                "completed": False,
+                # NOTE: failed flag intentionally absent (graceful cap, not crash)
+                "turn_exit_reason": "max_iterations_reached(90/90)",
+                "api_calls": 90,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        # Delivered as success, not a failure.
+        assert success is True
+        assert error is None
+        # The real report is preserved and carries a clear cap banner.
+        assert "Drove 91 PRs to terminal" in final_response
+        assert "iteration cap" in final_response.lower() or "tool-iteration cap" in final_response.lower()
+        # Output uses the partial template, NOT the FAILED template.
+        assert "(FAILED)" not in output
+        assert "partial" in output.lower()
+
+    def test_run_job_iteration_cap_without_response_still_fails(self, tmp_path):
+        """Guard the boundary: max_iterations exit with an EMPTY final_response
+        is not a deliverable summary — it must still be treated as a failure so
+        the user is notified rather than getting a silent empty 'success'.
+        """
+        job = {"id": "iter-cap-empty", "name": "empty cap", "prompt": "go"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "",
+                "completed": False,
+                "turn_exit_reason": "max_iterations_reached(90/90)",
+                "api_calls": 90,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert "(FAILED)" in output
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

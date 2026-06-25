@@ -1681,8 +1681,22 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations. A job may override the global agent.max_turns via a
+        # per-job ``max_iterations`` field — needed for heavy autonomous jobs
+        # (e.g. the PR-governance train across hundreds of PRs) that legitimately
+        # need a higher tool-call ceiling than the interactive default. Falls
+        # back to agent.max_turns, then 90.
+        _job_max_iter = job.get("max_iterations")
+        try:
+            _job_max_iter = int(_job_max_iter) if _job_max_iter is not None else None
+        except (TypeError, ValueError):
+            _job_max_iter = None
+        max_iterations = (
+            _job_max_iter
+            or _cfg.get("agent", {}).get("max_turns")
+            or _cfg.get("max_turns")
+            or 90
+        )
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})
@@ -1903,6 +1917,56 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # would otherwise be delivered as if it were the agent's reply and the
         # job's `last_status` set to "ok". Raise so the except handler below
         # builds the proper failure tuple. (issue #17855)
+        #
+        # EXCEPTION — graceful iteration-cap summary is NOT a failure. When a
+        # long autonomous job (e.g. the PR-governance train) hits the tool-call
+        # ceiling, run_agent strips tools and asks the model for a final summary
+        # via _handle_max_iterations. That summary IS a real, deliverable report
+        # — the job did useful work and (for idempotent/resumable jobs) the next
+        # run continues cleanly. The result then has completed=False but
+        # failed!=True, turn_exit_reason="max_iterations_reached(...)", and a
+        # substantive final_response. Treat that as a successful PARTIAL run:
+        # deliver the summary with a clear cap banner instead of raising a scary
+        # RuntimeError that buries the report inside an error envelope.
+        _exit_reason = str(result.get("turn_exit_reason") or "")
+        _is_iter_cap_summary = (
+            result.get("failed") is not True
+            and result.get("completed") is False
+            and _exit_reason.startswith("max_iterations_reached")
+            and bool((result.get("final_response") or "").strip())
+        )
+        if _is_iter_cap_summary:
+            _used = result.get("api_calls", 0)
+            logger.warning(
+                "Job '%s' hit the tool-iteration cap (%s) but produced a final "
+                "summary — delivering as a successful partial run (resumable).",
+                job_name, _exit_reason,
+            )
+            final_response = (result.get("final_response") or "").strip()
+            _cap_banner = (
+                "⚠️ _Stopped at the tool-iteration cap after "
+                f"{_used} steps — work is idempotent/resumable; the next "
+                "scheduled run continues from here._\n\n"
+            )
+            final_response = _cap_banner + final_response
+            output = f"""# Cron Job: {job_name} (iteration cap — partial)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+**Exit:** {_exit_reason}
+
+## Prompt
+
+{prompt}
+
+## Response
+
+{final_response}
+"""
+            logger.info("Job '%s' completed (partial — iteration cap)", job_name)
+            return True, output, final_response, None
+
         if result.get("failed") is True or result.get("completed") is False:
             _err_text = (
                 result.get("error")
