@@ -130,9 +130,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setLastUserMsg('')
     setStickyPrompt('')
     composerActions.setPasteSnips([])
-    // Half-prune: new session has new keys, but keep a warm pool in case
-    // the user resumes back to the prior session.
-    evictInkCaches('half')
+    // Full-prune on session reset to completely prevent layout mismatches,
+    // overlapping components, or blank line gaps when switching sessions.
+    evictInkCaches('all')
   }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
 
   const resetVisibleHistory = useCallback(
