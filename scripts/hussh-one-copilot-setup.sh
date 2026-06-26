@@ -247,15 +247,64 @@ print(f"  wrote {target}")
 PY
 }
 
+# ── 6b. VS Code Plan-agent fix (disable auto "Start Implementation" on switch) ─
+# The built-in Copilot "Plan" agent ships a handoff with send:true, so flipping
+# Agent→Plan can auto-fire "Start implementation" to the coding agent without a
+# click. We ship a custom Plan agent (same name → overrides the built-in) whose
+# handoffs use send:false, so implementation only starts when the user clicks.
+write_plan_agent() {
+local user_dir="$1" edition="$2"
+[[ -d "$user_dir" ]] || return 0
+local target="$user_dir/prompts/Plan.agent.md"
+if [[ "$DRY_RUN" == "1" ]]; then
+  log "dry-run: would write $target ($edition)"
+  return 0
+fi
+mkdir -p "$user_dir/prompts"
+cat > "$target" <<'AGENT'
+---
+name: Plan
+description: 'Research and write an implementation plan with read-only tools. Hands off to Agent mode ONLY when you click a button — never auto-sends on mode switch.'
+tools: ['codebase', 'search', 'usages', 'fetch', 'githubRepo', 'findTestFiles', 'searchResults', 'read', 'problems', 'changes']
+handoffs:
+- label: Start Implementation
+  agent: agent
+  prompt: 'Implement the plan above.'
+  send: false
+- label: Continue with Agent Mode
+  agent: agent
+  prompt: 'You are now switching to Agent Mode, where you can read and edit any file in the codebase. Continue with the task without losing the plan context above.'
+  send: false
+---
+You are a PLAN AGENT — a senior engineer who researches the codebase and writes a precise, actionable implementation plan. You operate with read-only tools and DO NOT edit code in this mode.
+
+Your job each turn:
+1. Understand the goal. Ask one clarifying question only if the goal is genuinely ambiguous; otherwise proceed.
+2. Research the actual repository before planning — read the real files, routes, services, and tests involved. Ground every step in paths that exist. Never invent file names or APIs.
+3. Produce a forward-looking plan:
+ - Lead with any Decisions to lock (blocking choices + your recommended default).
+ - Then phased tasks, each with exact target file paths and the concrete change/shape to build.
+ - Include validation steps and risks/guardrails.
+4. Keep the plan tight and concrete — reproduce the shape of existing code, not the whole code.
+
+DO NOT begin editing or implementing. When the plan is ready, stop and let the user review. Implementation happens only after the user explicitly clicks Start Implementation (which hands off to Agent mode). Switching into Plan mode must never itself trigger implementation.
+AGENT
+echo "  wrote $target"
+}
+
 if [[ "$WRITE_VSCODE" == "1" ]]; then
   case "$(uname -s)" in
     Darwin)
       write_vscode_config "$HOME/Library/Application Support/Code - Insiders/User" "Insiders"
       write_vscode_config "$HOME/Library/Application Support/Code/User" "Stable"
+      write_plan_agent "$HOME/Library/Application Support/Code - Insiders/User" "Insiders"
+      write_plan_agent "$HOME/Library/Application Support/Code/User" "Stable"
       ;;
     Linux)
       write_vscode_config "$HOME/.config/Code - Insiders/User" "Insiders"
       write_vscode_config "$HOME/.config/Code/User" "Stable"
+      write_plan_agent "$HOME/.config/Code - Insiders/User" "Insiders"
+      write_plan_agent "$HOME/.config/Code/User" "Stable"
       ;;
     *) warn "Unknown OS; skipping VS Code config. Point Copilot at $url manually." ;;
   esac
