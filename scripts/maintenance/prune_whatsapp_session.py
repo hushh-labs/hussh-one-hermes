@@ -55,6 +55,12 @@ SESSION_DIR = os.path.expanduser(
 )
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7"))
 KEEP_PER_FAMILY = int(os.environ.get("KEEP_PER_FAMILY", "8"))
+# Hard count cap per family, applied REGARDLESS of age. This is what fixes
+# *recent* bloat (thousands of pre-key-*/lid-mapping-* files all < RETENTION_DAYS
+# old that the age-gate alone never catches). Keep the newest MAX_PER_FAMILY of
+# each prunable family; Baileys regenerates pre-keys / sender-keys / lid-maps on
+# demand. 0 disables the cap (age-only behaviour).
+MAX_PER_FAMILY = int(os.environ.get("MAX_PER_FAMILY", "400"))
 
 # Files that must NEVER be deleted (identity / pairing critical).
 _PROTECTED_EXACT = {"creds.json", "bridge.pid"}
@@ -128,9 +134,20 @@ def main() -> int:
     for fam, items in buckets.items():
         # Newest first; always keep the freshest KEEP_PER_FAMILY.
         items.sort(key=lambda t: t[1], reverse=True)
+        # 1) Age-based: delete anything older than cutoff beyond KEEP_PER_FAMILY.
         for fn, mtime in items[KEEP_PER_FAMILY:]:
             if mtime < cutoff:
                 to_delete.append(fn)
+        # 2) Count-cap: regardless of age, keep only the newest MAX_PER_FAMILY
+        #    per family. This is what tames recent bloat (e.g. 4000+ pre-keys
+        #    all < RETENTION_DAYS old). app-state-sync-* and device-list-* are
+        #    small and identity-adjacent — exempt them from the count cap.
+        cap_exempt = fam.startswith("app-state-sync-") or fam.startswith("device-list-")
+        if MAX_PER_FAMILY > 0 and not cap_exempt and len(items) > MAX_PER_FAMILY:
+            already = set(to_delete)
+            for fn, _mtime in items[MAX_PER_FAMILY:]:
+                if fn not in already:
+                    to_delete.append(fn)
 
     deleted = 0
     errors = 0
