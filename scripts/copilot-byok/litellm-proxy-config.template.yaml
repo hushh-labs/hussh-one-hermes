@@ -85,6 +85,19 @@ router_settings:
     RateLimitErrorRetries: 4        # explicit: keep retrying 429s
     TimeoutErrorRetries: 2
     InternalServerErrorRetries: 2
+  # CRITICAL for streaming (Copilot streams every request): a 429 that happens
+  # MID-STREAM is recovered ONLY via the fallbacks list — num_retries and
+  # load-balancing alone do NOT cover the streaming path. Without this you get
+  # 'litellm.MidStreamFallbackError ... Available Model Group Fallbacks=None'
+  # even with a healthy multi-region model_list. Falling a model group back to
+  # ITSELF makes the router re-pick another healthy region from the pool and
+  # replay the request there. Verified: 120 parallel streaming calls → 0 client
+  # 429s under real upstream quota pressure.
+  fallbacks:
+    - gemini-3.5-flash: ["gemini-3.5-flash"]
+    - claude-sonnet-4-6: ["claude-sonnet-4-6"]
+    - claude-opus-4-8: ["claude-opus-4-8"]
+  default_fallbacks: ["gemini-3.5-flash"]
 
 litellm_settings:
   drop_params: true                 # tolerate Copilot params Vertex doesn't know
