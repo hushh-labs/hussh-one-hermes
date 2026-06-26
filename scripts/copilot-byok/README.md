@@ -71,6 +71,28 @@ Verified end-to-end: 60K-token (270 KB) and 160K-token (1.18 MB) prompts, a
 5-turn refilling conversation (prompt_tokens climbing 4K→20K, all `200`), and
 streaming-with-tools (Copilot agent-mode path).
 
+## Scaling: parallel coding agents (multi-region Gemini, 429-proof)
+
+Vertex quota (`RESOURCE_EXHAUSTED` / HTTP 429) is **per-region-per-project**, so
+several concurrent agents all hammering a single region exhaust it fast — the
+classic `MidStreamFallbackError ... RateLimitError ... Available Model Group
+Fallbacks=None`. The proxy config fixes this without raising any quota:
+
+- **Multi-region Gemini pool** — `gemini-3.5-flash` is registered as one
+  `model_name` across every region that actually serves it (verified by live
+  probe: `global, asia-southeast1, asia-northeast1, asia-south1, europe-west2`).
+  The LiteLLM router load-balances across them, so effective QPM ≈ sum of all
+  regions. (Claude opus/sonnet are `global`-only on Vertex, so they stay single
+  region but still get retries + cooldown.)
+- **Retry + cooldown** (`router_settings`) — a region that returns 429 is cooled
+  down for `cooldown_time` seconds and the request is retried (`num_retries`) on
+  another region. Transient spikes never surface to Copilot.
+
+Verified end-to-end: 24 and 60 fully-parallel Gemini calls through the shim →
+**0× 429, 100% `200`** (3.5 s wall for 60). To re-probe regions after a model or
+quota change, fire a tiny completion per candidate region and keep the ones that
+return `200` (not `NotFound`).
+
 ## Files
 
 Repo-canonical assets (source of truth):

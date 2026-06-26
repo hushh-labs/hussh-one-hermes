@@ -1,56 +1,97 @@
 # Hussh One — LiteLLM Proxy config: transparent Vertex AI (ADC) → OpenAI gateway
 #
 # Purpose: give VS Code Copilot BYOK *native* capabilities (inline edit, apply,
-# agent mode, @workspace, tool calling) backed by Vertex models. Unlike the
-# Hermes :8642 endpoint (which runs its OWN agent and drops the client's tools
-# array), this proxy is a pure passthrough: it forwards Copilot's `tools`,
-# `tool_choice`, streaming, and system prompt straight to Vertex and returns the
-# raw model response. Copilot stays in the driver's seat.
+# agent mode, @workspace, tool calling) backed by Vertex models. Pure passthrough
+# of Copilot's tools/tool_choice/streaming/system prompt to Vertex.
 #
 # Auth to Google: Application Default Credentials (ADC) at
 #   ~/.config/gcloud/application_default_credentials.json
-# Project: set via __VERTEX_PROJECT__ (filled in at install time from your
+# Project: set via __VERTEX_PROJECT__ (filled at install time from your
 #   GOOGLE_CLOUD_PROJECT / gcloud active project).
-# Location: global  — Hermes serves BOTH Gemini and Claude from the Vertex
-#   `global` multi-region endpoint. Claude is NOT servable in us-central1
-#   (FAILED_PRECONDITION), so we MUST use global to match the working Hermes
-#   runtime (hermes_cli/vertex_ai_locations.py + agent/vertex_claude_runtime.py
-#   default location to "global").
 #
-# Client auth (Copilot -> proxy): the master key (LITELLM_MASTER_KEY env at
-# launch). In the hardened setup, Copilot talks to the auth shim on :8644, which
-# enforces it and forwards here.
+# ─────────────────────────────────────────────────────────────────────────────
+# RESILIENCE / THROUGHPUT (parallel coding agents):
+#   Vertex quota (RESOURCE_EXHAUSTED / 429) is PER-REGION-PER-PROJECT. To survive
+#   multiple concurrent agents we register the SAME model_name in every region
+#   that actually serves it, so the LiteLLM router load-balances across regions,
+#   cools down a region that 429s, and retries on another region. This multiplies
+#   effective Gemini QPM by the number of regions.
 #
-# This is the repo-canonical template. hussh-one-copilot-setup.sh substitutes
-# __VERTEX_PROJECT__ and writes the result to ~/.hermes/litellm-proxy-config.yaml.
+#   Verified gemini-3.5-flash regions (probe 2026-06): global, asia-southeast1,
+#   asia-northeast1, asia-south1, europe-west2. us-*/most-eu returned NotFound
+#   (model not deployed there) so they are intentionally excluded. If a future
+#   model/region changes, re-probe with a tiny completion per region and update.
+#
+#   Claude (opus/sonnet) is only servable from `global` on Vertex
+#   (us-central1 → FAILED_PRECONDITION), so it stays single-region but still gets
+#   retries + cooldown.  Matches hermes_cli/vertex_ai_locations.py.
+# ─────────────────────────────────────────────────────────────────────────────
 
 model_list:
+  # ── Gemini 3.5 Flash: multi-region pool (quota = sum of all regions) ──
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
+      rpm: 2000
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: asia-southeast1
+      rpm: 2000
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: asia-northeast1
+      rpm: 2000
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: asia-south1
+      rpm: 2000
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: europe-west2
+      rpm: 2000
 
+  # ── Claude Sonnet 4.6: global only ──
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: vertex_ai/claude-sonnet-4-6
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
 
+  # ── Claude Opus 4.8: global only ──
   - model_name: claude-opus-4-8
     litellm_params:
       model: vertex_ai/claude-opus-4-8
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
 
-litellm_settings:
-  drop_params: true          # tolerate Copilot-specific params Vertex doesn't know
-  set_verbose: false
+# Router: spread load across deployments, retry on 429, park exhausted regions.
+router_settings:
+  routing_strategy: least-busy      # send to the least-loaded healthy region
+  num_retries: 4                    # retry a failed call (on another region for gemini)
+  retry_after: 2                    # base seconds before retry
+  allowed_fails: 2                  # 429s before a deployment is cooled down
+  cooldown_time: 30                 # seconds a 429'd region sits out before retry
+  retry_policy:
+    RateLimitErrorRetries: 4        # explicit: keep retrying 429s
+    TimeoutErrorRetries: 2
+    InternalServerErrorRetries: 2
 
-# master_key is supplied via the LITELLM_MASTER_KEY env var at launch. Providing
-# it as an env var lets LiteLLM authorize against the master key directly WITHOUT
-# a Postgres DB — avoiding the "No connected db" failure that occurs when
-# master_key is set in-file without a DATABASE_URL. The proxy binds to 127.0.0.1
-# only. NOTE: DB-less LiteLLM returns 500/400 (not 401) on auth failures — that
-# is exactly why the auth shim on :8644 sits in front of it.
+litellm_settings:
+  drop_params: true                 # tolerate Copilot params Vertex doesn't know
+  set_verbose: false
+  num_retries: 4                    # belt-and-suspenders top-level retry
+  request_timeout: 600              # long Copilot agent turns / big contexts
+
+# master_key supplied via LITELLM_MASTER_KEY env at launch (DB-less). Proxy binds
+# 127.0.0.1 only; the :8644 auth shim sits in front for clean 401s.
 general_settings: {}
