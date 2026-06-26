@@ -232,7 +232,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     
     Configuration:
     - bridge_script: Path to the Node.js bridge script
-    - bridge_port: Port for HTTP communication (default: 3000)
+    - bridge_port: Port for HTTP communication (default: 8473)
     - session_path: Path to store WhatsApp session data
     - dm_policy: "open" | "allowlist" | "disabled" — how DMs are handled (default: "open")
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
@@ -255,7 +255,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         self._bridge_process: Optional[subprocess.Popen] = None
-        self._bridge_port: int = config.extra.get("bridge_port", 3000)
+        self._bridge_port: int = config.extra.get("bridge_port", 8473)
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),

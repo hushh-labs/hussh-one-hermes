@@ -154,7 +154,7 @@ Any agent updating or modifying this codebase must preserve these three critical
             │                                              │      - WHATSAPP_REPLY_PREFIX
             │                                              │      - WHATSAPP_ALLOWED_GROUPS
             │                                              │
-            │  (3) JSON-RPC HTTP Payload (Port 3000)       │
+            │  (3) JSON-RPC HTTP Payload (Port 8473)       │
             ├─────────────────────────────────────────────>│  (4) Injects custom reply_prefix 
             │                                              │      and executes E2EE decryption 
             │                                              │      of historical media files.
@@ -226,7 +226,7 @@ scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-restart.sh
 ```
 
-The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `3000`.
+The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `8473` (a dedicated, conflict-free loopback port — not `3000`, which collides with Next.js / Vite / CRA dev servers).
 
 ### Step 5: VS Code Copilot BYOK (Vertex ADC) — native, optional
 
@@ -292,7 +292,7 @@ injection). The agent may still READ public/outside info (web) and it grows its
 OWN memory scoped to that group only.
 
 ### Why in-process (not a second profile)
-WhatsApp runs as a SINGLE Baileys session on one bridge (port 3000). You cannot
+WhatsApp runs as a SINGLE Baileys session on one bridge (port 8473). You cannot
 run a second gateway under a different `HERMES_PROFILE` bound to the same
 WhatsApp account — they would fight over the session creds. So the container is
 built IN-PROCESS: the gateway detects the capsule JID and, for that session

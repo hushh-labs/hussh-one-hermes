@@ -10,7 +10,7 @@ It is "self-evolving" because it does NOT hardcode a fixed list of things to
 check — it discovers them at runtime from the live system:
 
   * launchd / systemd services       (ai.hermes.gateway, ai.openwebui.hermes, ...)
-  * gateway platform listeners       (WhatsApp bridge :3000, API server :8642, ...)
+  * gateway platform listeners       (WhatsApp bridge :8473, API server :8642, ...)
   * cron jobs                        (~/.hermes/cron/jobs.json — status + last error)
   * provider profiles                (esp. the Vertex Claude gcp_sdk adapter)
   * skills                           (~/.hermes/skills + bundled skills/)
@@ -140,17 +140,17 @@ def probe_services() -> None:
 def probe_listeners() -> None:
     """Probe known gateway listeners; report each that is up/down."""
     harness = "listeners"
-    # WhatsApp Baileys bridge
-    if _port_open("127.0.0.1", 3000):
-        code, body = _http_get("http://127.0.0.1:3000/health")
+    # WhatsApp Baileys bridge (dedicated port 8473 — not 3000, avoids dev-server clashes)
+    if _port_open("127.0.0.1", 8473):
+        code, body = _http_get("http://127.0.0.1:8473/health")
         if code == 200 and ('"connected"' in body or '"status":"connected"' in body):
-            add(harness, "whatsapp-bridge:3000", OK, "health=connected")
+            add(harness, "whatsapp-bridge:8473", OK, "health=connected")
         elif code == 200:
-            add(harness, "whatsapp-bridge:3000", WARN, f"reachable but not connected: {body[:120]}")
+            add(harness, "whatsapp-bridge:8473", WARN, f"reachable but not connected: {body[:120]}")
         else:
-            add(harness, "whatsapp-bridge:3000", WARN, f"port open but /health failed: {body[:120]}")
+            add(harness, "whatsapp-bridge:8473", WARN, f"port open but /health failed: {body[:120]}")
     else:
-        add(harness, "whatsapp-bridge:3000", WARN, "not listening (ok if WhatsApp disabled)")
+        add(harness, "whatsapp-bridge:8473", WARN, "not listening (ok if WhatsApp disabled)")
     # OpenAI-compatible API server
     if _port_open("127.0.0.1", 8642):
         code, body = _http_get("http://127.0.0.1:8642/health")

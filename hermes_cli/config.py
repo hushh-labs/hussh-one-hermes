@@ -1906,6 +1906,11 @@ DEFAULT_CONFIG = {
         # opened to the agent without leaking the owner's private memory,
         # user profile, credentials, or mutation tools. See HUSSH_ONE.md §6.
         "capsules": {},
+        # Dedicated loopback port for the Baileys bridge HTTP control plane.
+        # Default 8473 (uncommon, conflict-free) — NOT 3000, which collides with
+        # Next.js / CRA / Vite and other dev servers. Override only if 8473 is
+        # taken on your host. The Python gateway and bridge.js both read this.
+        "bridge_port": 8473,
     },
 
     # Telegram platform settings (gateway mode)
