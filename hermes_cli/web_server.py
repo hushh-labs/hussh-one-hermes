@@ -10119,4 +10119,17 @@ def start_server(
     uvicorn.run(
         app, host=host, port=port, log_level="warning",
         proxy_headers=bool(app.state.auth_required),
+        # Keepalive tuning so a backgrounded / minimized browser tab does NOT
+        # lose its /api/pty (or /api/ws) WebSocket. The server keeps sending
+        # WS-protocol pings every 20s (the browser's network stack auto-pongs
+        # even while JS timers are throttled/frozen in a hidden tab), which
+        # holds NAT/proxy idle timers warm. Crucially we DISABLE the ping
+        # *timeout* (default 20s) — a throttled tab can pong late, and the
+        # default would force-close that perfectly healthy socket, surfacing
+        # as the "connection lost, reconnecting" churn. None = never drop a
+        # client just for a slow pong; real dead sockets are still caught by
+        # TCP close. timeout_keep_alive is bumped for HTTP keep-alive parity.
+        ws_ping_interval=20.0,
+        ws_ping_timeout=None,
+        timeout_keep_alive=75,
     )

@@ -832,6 +832,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         attempt = 0;
         clearReconnectTimer();
         void connect();
+      } else if (sock && sock.readyState === WebSocket.OPEN) {
+        // Socket survived being backgrounded (server keepalive holds it open).
+        // Don't tear it down — just send an immediate keepalive ping to warm
+        // NAT/proxy timers and let the browser surface a half-open socket
+        // promptly instead of waiting for the next heartbeat tick. A failing
+        // send means it's already on the way down; onclose drives reconnect.
+        try {
+          sock.send("\x1b[PING]");
+        } catch {
+          /* on its way down — onclose will reconnect */
+        }
       }
     };
     const onVisibilityChange = () => {
