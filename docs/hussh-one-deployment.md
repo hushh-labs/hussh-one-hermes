@@ -72,3 +72,24 @@ When running in an air-gapped local environment (`DB_OFFLINE=1` or local-first c
 *   **Coding / Complex Tasks (High Complexity):** **`Qwen 3.6 35B`** (e.g., `qwen3.6-35b-instruct` / `qwen2.5-coder:32b`). Tunneling as the local "Claude Opus," it provides state-of-the-art code generation, precise file editing, system terminal capabilities, and robust local tool execution.
 
 *Note: By setting `GOOGLE_GENAI_USE_VERTEXAI=true` and configuring your active project ID, our system's built-in adapters dynamically map all internal requests to the Vertex AI enterprise API, ensuring other downstream agents can boot and authenticate seamlessly.*
+
+---
+
+## 🔗 Wiki Links Best Practices & Gating Rules
+
+When communicating with users, developers, and third parties over public messaging interfaces (like WhatsApp groups or Slack), we must adhere to the **Sovereign Privacy by Omission** ruleset:
+
+1. **Contextual Alignment:** Any wiki links or referenced documentation provided must align directly with the user's semantic query or conversation topic (e.g., if explaining the core platform, reference PCHP; if explaining the brand, refer to Naming Standards).
+2. **Public-Only Links:** Under no circumstances should private wiki files or internal markdown repository file-system targets (like `.md` file paths) be given out. Only share clean, public reader URLs.
+3. **No File Extensions:** Always strip `.md` file extensions from any public link before sending. Format clean URLs using the base reader: e.g. `https://wiki.hushh.ai/wiki/products/hushh-card` instead of raw `.md` paths.
+4. **Pessimistic Verification:** Always assume a link could be broken or mis-mapped. Programmatically check file locations and mapping files before outputting documentation.
+
+---
+
+## 🚀 Onboarding Evolution (June 2026)
+
+The **🤫 Hussh One** onboarding setup integrates our dual-process memory structures and isolated environments to ensure other developers and agents can be onboarded seamlessly:
+
+1. **Environmental Separation:** The deployment is governed by the `HERMES_PROFILE` environment variable (e.g., `kushal`). All databases, profiles, and transient states are stored strictly under `~/.hermes/profiles/$HERMES_PROFILE/` to guarantee absolute sandbox isolation.
+2. **Self-Healing Watchdog:** The platform includes an automated watchdog that continuously probes backend and frontend listeners (TUI port 9119, API port 8642, and WhatsApp port 8473). If any zombie socket or sync loop degradation is found, the system triggers a graceful self-healing restart, automatically purging session bloat while keeping core credentials safe.
+3. **Capsule Sandboxing:** When deploying group sandboxes (like `one-team` or `three-musketeers`), ensure the isolated capsule memory rules (`skip_global_memory: true`, `skip_global_user_profile: true`, `block_outbound_send: true`) are verified under `/capsules/` configurations inside `config.yaml` to ensure no data leaks.
