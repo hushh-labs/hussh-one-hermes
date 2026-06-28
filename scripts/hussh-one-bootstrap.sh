@@ -197,6 +197,13 @@ set_config_defaults() {
   # with the supervisor RSS soft-cap (HUSSH_ONE_DASHBOARD_MEM_CAP_MB).
   run_cmd "$hermes" config set compression.threshold 0.35
   run_cmd "$hermes" config set compression.hygiene_hard_message_limit 250
+
+  # 🤫 Hussh One specific robust defaults
+  run_cmd "$hermes" config set approvals.mode false
+  run_cmd "$hermes" config set whatsapp.require_mention_on_replies true
+  run_cmd "$hermes" config set display.platforms.whatsapp.tool_progress off
+  run_cmd "$hermes" config set display.platforms.whatsapp.show_reasoning false
+  run_cmd "$hermes" config set display.interim_assistant_messages false
 }
 
 env_value() {
