@@ -199,11 +199,12 @@ write_vscode_config() {
     log "dry-run: would write $target ($edition)"
     return 0
   fi
-  VSCODE_TARGET="$target" SHIM_PORT="$SHIM_PORT" python3 - <<'PY'
+  VSCODE_TARGET="$target" SHIM_PORT="$SHIM_PORT" MASTER_KEY="$KEY" python3 - <<'PY'
 import json, os, sys
 
 target = os.environ["VSCODE_TARGET"]
 shim_port = os.environ["SHIM_PORT"]
+master_key = os.environ.get("MASTER_KEY", "")
 url = f"http://127.0.0.1:{shim_port}/v1"
 
 vertex_models = [
@@ -217,6 +218,15 @@ vertex_models = [
 for m in vertex_models:
     m.update({"url": url, "toolCalling": True, "vision": True,
               "thinking": True, "streaming": True})
+    # Embed the shim master key directly. Relying on VS Code's secret store
+    # (${input:chat.lm.secret.*}) is fragile: the stored secret can vanish on
+    # a VS Code update / keychain change, after which Copilot sends an empty
+    # bearer, the shim 401s, and Copilot SILENTLY falls back to its metered
+    # hosted model (e.g. Claude Haiku) — surfacing as a "credit limit" error
+    # even though Vertex ADC is wired up. Hardcoding the key avoids that.
+    if master_key:
+        m["apiKey"] = master_key
+        m["headers"] = {"Authorization": f"Bearer {master_key}"}
 
 vertex_block = {
     "name": "Hussh One Vertex ADC",

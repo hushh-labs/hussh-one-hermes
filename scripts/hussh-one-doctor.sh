@@ -406,6 +406,51 @@ PY
   else
     warn "Copilot BYOK shim not responding correctly on :8644; start it: scripts/hussh-one-copilot-setup.sh --start (the reaper also self-heals it)"
   fi
+
+  # Guard the silent-fallback regression: VS Code's chatLanguageModels.json must
+  # carry a literal key on the Vertex ADC models, NOT a ${input:...} secret-store
+  # reference. If the secret evaporates (VS Code update / keychain change),
+  # Copilot sends an empty bearer, the shim 401s, and Copilot silently falls back
+  # to its metered hosted model — surfacing as a bogus "credit limit" error.
+  local want_key="${KEY:-}"
+  [[ -z "$want_key" ]] && want_key="$(grep -o 'LITELLM_MASTER_KEY="[^"]*"' "$proxy_launcher" 2>/dev/null | cut -d'"' -f2 || true)"
+  local vs_dir
+  for vs_dir in \
+    "$HOME/Library/Application Support/Code - Insiders/User" \
+    "$HOME/Library/Application Support/Code/User" \
+    "$HOME/.config/Code - Insiders/User" \
+    "$HOME/.config/Code/User"; do
+    local cfg="$vs_dir/chatLanguageModels.json"
+    [[ -f "$cfg" ]] || continue
+    if WANT_KEY="$want_key" CFG="$cfg" "$py" - <<'PY'
+import json, os, sys
+cfg = os.environ["CFG"]; want = os.environ.get("WANT_KEY", "")
+try:
+    data = json.load(open(cfg))
+except Exception:
+    sys.exit(2)
+vertex = [b for b in data if isinstance(b, dict) and b.get("name") == "Hussh One Vertex ADC"]
+if not vertex:
+    sys.exit(3)  # endpoint absent — not configured here
+for b in vertex:
+    for m in b.get("models", []):
+        k = m.get("apiKey", "")
+        if not k or "${input:" in str(k):
+            sys.exit(1)  # missing/placeholder key — the silent-fallback trap
+        if want and k != want:
+            sys.exit(4)  # stale key — won't match the shim
+sys.exit(0)
+PY
+    then
+      pass "VS Code Vertex ADC key present & matches shim ($(basename "$(dirname "$vs_dir")"))"
+    else
+      case $? in
+        3) : ;;  # endpoint not in this edition — silent
+        4) warn "VS Code Vertex ADC key STALE in $cfg (won't match shim); re-run: scripts/hussh-one-copilot-setup.sh" ;;
+        *) warn "VS Code Vertex ADC key MISSING/placeholder in $cfg — Copilot will silently fall back to a metered model (bogus 'credit limit'). Re-run: scripts/hussh-one-copilot-setup.sh" ;;
+      esac
+    fi
+  done
 }
 
 check_branch_and_remote
