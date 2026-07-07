@@ -45,6 +45,22 @@ scripts/hussh-one-guard.sh
 
 Keep secrets in `$HERMES_HOME/.env` or your shell. `.env.example` only documents non-secret Vertex selectors such as `GOOGLE_CLOUD_PROJECT`, `GCP_PROJECT`, and `GOOGLE_CLOUD_LOCATION`.
 
+## VS Code Copilot BYOK (optional, recommended for coding machines)
+
+One command wires official VS Code Copilot Chat to Vertex via ADC — no API keys:
+
+```bash
+scripts/hussh-one-copilot-setup.sh --start          # + --launchd on macOS for KeepAlive
+```
+
+This installs the LiteLLM passthrough proxy (`:8643`), the auth shim Copilot
+actually points at (`:8644`), and writes `chatLanguageModels.json` with the
+**live-probed** context windows (all Vertex Claudes: 1M in / 128k out natively;
+gemini-3.5-flash: 1,048,576 in / 65,536 out). Copilot's rolling-window and
+summarization heuristics key off these values, so keep them accurate — details
+and the probe method in `scripts/copilot-byok/README.md`. Multi-region Gemini
+fallback pools make parallel Copilot agent chats 429-proof.
+
 ---
 
 ## Developer Onboarding & Multi-Agent Integration Reference

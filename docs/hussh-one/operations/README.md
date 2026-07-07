@@ -11,6 +11,7 @@ under `scripts/hussh-one-*`.
 | `hussh-one-doctor.sh` | Health check; `--require-services` for strict mode |
 | `hussh-one-guard.sh` | Post-merge invariant guard (branding, header, capsule, dashboard) |
 | `hussh-one-restart.sh` | Convenience restart wrapper |
+| `hussh-one-copilot-setup.sh` | VS Code Copilot BYOK: LiteLLM proxy (:8643) + auth shim (:8644) + `chatLanguageModels.json` with live-probed context windows (see `scripts/copilot-byok/README.md`) |
 
 ## Bootstrapping a new machine
 ```bash
@@ -68,6 +69,17 @@ scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-guard.sh
 python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsapp_*.py -q
 ```
+
+## Cron job conventions
+- **Silent runs**: agent-driven jobs suppress delivery by replying with the
+  canonical `[SILENT]` marker. The scheduler also accepts a bare `SILENT`
+  token defensively (regression 2026-07-06: a job prompt said "reply with
+  exactly: SILENT" and the literal word was delivered to the user's chat),
+  but **job prompts should always instruct `[SILENT]`** — bracketed.
+  Prose that merely contains the word "silent" still delivers.
+- **Delivery guardrail**: cron jobs deliver only to `local`, `origin`, or the
+  owner's own DM. Never fan out to groups.
+- Tests: `tests/cron/test_scheduler.py::TestSilentDelivery`.
 
 ## See also
 - [Crash resilience — dashboard OOM & session-model persistence](./crash-resilience.md)

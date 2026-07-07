@@ -26,6 +26,21 @@ questions, negations, and injection-shaped phrases ("ignore previous", "system p
 Vertex Claude switches run a live access check before mutating the session; stale Vertex
 runtimes normalize back to the `google-vertex-claude` adapter.
 
+## Vertex Claude catalog (live-probed, Jul 2026)
+Four Claude models are enabled in `hushh-pda-uat` via ADC — all accept **1M-token
+prompts natively** (no beta header) and cap output at **128k**:
+
+| Model | Region | Aliases understood |
+|-------|--------|--------------------|
+| claude-opus-4-8 | global | "opus", "opus 4.8" |
+| claude-sonnet-4-6 | global | "sonnet 4.6" |
+| claude-sonnet-5 | global | "sonnet 5" |
+| claude-fable-5 | **global only** | "fable", "fable 5" |
+
+`gemini-3.5-flash` (the Hussh One default): 1,048,576 in / 65,536 out.
+The same limits are mirrored to VS Code Copilot BYOK by
+`scripts/hussh-one-copilot-setup.sh` — see `scripts/copilot-byok/README.md`.
+
 ## TUI model popover sync
 The model picker popover (opened by clicking/selecting the status-bar model) opens
 **reflecting the live session model**, not a stale snapshot:

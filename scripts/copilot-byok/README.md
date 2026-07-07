@@ -34,10 +34,30 @@ VS Code Copilot
 └──────────────────────────┘
       │  Vertex AI (global), ADC
       ▼
-  gemini-3.5-flash · claude-sonnet-4-6 · claude-opus-4-8
+  gemini-3.5-flash · claude-sonnet-4-6 · claude-opus-4-8 · claude-sonnet-5 · claude-fable-5
 ```
 
 Both services bind to `127.0.0.1` only.
+
+## Context windows & output caps (live-probed, Jul 2026)
+
+`hussh-one-copilot-setup.sh` writes these into `chatLanguageModels.json`. They
+were **empirically probed against Vertex** (oversized requests, reading the
+rejection boundaries), not copied from docs — keep them accurate: Copilot uses
+`maxInputTokens` to drive its rolling-window/summarization heuristics, so
+understating it truncates agent context early, while overstating it causes
+hard 400s mid-conversation.
+
+| Model | maxInputTokens | maxOutputTokens | Notes |
+|-------|---------------|-----------------|-------|
+| gemini-3.5-flash | 1,048,576 | 65,536 | output limit is `65537 (exclusive)` |
+| claude-sonnet-4-6 | 1,000,000 | 128,000 | 1M native on Vertex — **no beta header needed** |
+| claude-opus-4-8 | 1,000,000 | 128,000 | same |
+| claude-sonnet-5 | 1,000,000 | 128,000 | same |
+| claude-fable-5 | 1,000,000 | 128,000 | GLOBAL region only |
+
+Probe method (repeatable): send `max_tokens: 2000000` → error message states the
+real output cap; send a >1M-token prompt → error states the real input cap.
 
 ## Why two services (and why Copilot points at 8644, not 8643)
 
