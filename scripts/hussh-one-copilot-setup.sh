@@ -207,13 +207,25 @@ shim_port = os.environ["SHIM_PORT"]
 master_key = os.environ.get("MASTER_KEY", "")
 url = f"http://127.0.0.1:{shim_port}/v1"
 
+# Context/output limits below are LIVE-PROBED against Vertex ADC (Jul 2026):
+# all four Claudes natively accept 1M-token prompts on Vertex (no beta header;
+# rejected only above 1,000,000: "prompt is too long: N > 1000000 maximum")
+# and cap output at exactly 128,000 ("max_tokens: N > 128000"). Gemini 3.5
+# Flash: 1,048,576 in / 65,536 out (65537 exclusive). Keeping these accurate
+# matters: Copilot uses maxInputTokens to drive its rolling-window /
+# summarization heuristics — understating it makes the agent truncate context
+# 5x too early; overstating it causes hard API 400s mid-conversation.
 vertex_models = [
     {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash (Vertex ADC)",
-     "maxInputTokens": 1048576, "maxOutputTokens": 16000},
+     "maxInputTokens": 1048576, "maxOutputTokens": 65536},
     {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Vertex ADC)",
-     "maxInputTokens": 200000, "maxOutputTokens": 16000},
+     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
     {"id": "claude-opus-4-8", "name": "Claude Opus 4.8 (Vertex ADC)",
-     "maxInputTokens": 200000, "maxOutputTokens": 16000},
+     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
+    {"id": "claude-sonnet-5", "name": "Claude Sonnet 5 (Vertex ADC)",
+     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
+    {"id": "claude-fable-5", "name": "Claude Fable 5 (Vertex ADC)",
+     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
 ]
 for m in vertex_models:
     m.update({"url": url, "toolCalling": True, "vision": True,

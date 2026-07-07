@@ -78,16 +78,20 @@ ADAPTIVE_EFFORT_MAP = {
 # xhigh as a distinct level between high and max; older adaptive-thinking
 # models (4.6) reject it with a 400.  Keep this substring list in sync with
 # the Anthropic migration guide as new model families ship.
-_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
+_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
 
 # Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
 # is the only supported mode; 4.7 additionally forbids manual thinking entirely
 # and drops temperature/top_p/top_k).
-_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8")
+# Named next-gen models (5-series) don't carry a 4.x version token, so match
+# them by family name.  Do NOT use a bare "-5" substring: it would wrongly
+# match the legacy claude-3-5-haiku / claude-3-5-sonnet, which do not support
+# adaptive thinking.
+_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
 
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8")
+_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -95,6 +99,10 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude Fable 5 (2026-06-09) — 1M in / 128k out
+    "claude-fable-5":    128_000,
+    # Claude Sonnet 5 (2026-06-24) — 1M in / 128k out
+    "claude-sonnet-5":   128_000,
     # Claude 4.8
     "claude-opus-4-8":   128_000,
     # Claude 4.7

@@ -34,6 +34,8 @@ google_vertex_claude = GoogleVertexClaudeProfile(
     supports_health_check=False,
     default_aux_model="claude-sonnet-4-6",
     fallback_models=(
+        "claude-fable-5",
+        "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",

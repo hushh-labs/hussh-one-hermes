@@ -1999,6 +1999,33 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
+    def test_bare_silent_token_suppresses_delivery(self):
+        """Regression (2026-07-06): agent replied bare 'SILENT' (no brackets)
+        because the job prompt said "reply with exactly: SILENT". The literal
+        word was delivered to the user's chat. Bare SILENT must suppress."""
+        for variant in ("SILENT", "silent", " Silent ", "[silent]"):
+            with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", variant, None)), \
+                 patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+                 patch("cron.scheduler._deliver_result") as deliver_mock, \
+                 patch("cron.scheduler.mark_job_run"):
+                from cron.scheduler import tick
+                tick(verbose=False)
+            deliver_mock.assert_not_called(), f"variant {variant!r} was delivered"
+
+    def test_prose_containing_word_silent_still_delivers(self):
+        """A real report that merely CONTAINS the word 'silent' in prose must
+        NOT be suppressed — only exact bare tokens or the [SILENT] marker."""
+        response = "Gateway restarted; the logs were silent about the root cause."
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
     def test_silent_trailing_suppresses_delivery(self):
         """Agent appended [SILENT] after explanation text — must still suppress."""
         response = "2 deals filtered out (like<10, reply<15).\n\n[SILENT]"

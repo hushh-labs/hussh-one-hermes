@@ -110,6 +110,12 @@ def _canonical_model(text: str) -> str:
         .replace("five", "5")
     )
 
+    if re.search(r"\bfable(?:[-\s]*5)?\b", normalized):
+        return "claude-fable-5"
+
+    if re.search(r"\b(?:claude[-\s]*)?sonnet[-\s]*5\b", normalized):
+        return "claude-sonnet-5"
+
     if re.search(r"\b(?:claude[-\s]*)?opus(?:[-\s]*4(?:[.\-\s]*8)?)?\b", normalized):
         return "claude-opus-4-8"
 

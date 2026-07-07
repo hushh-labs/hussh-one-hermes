@@ -332,6 +332,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-20250514",
         "claude-haiku-4-5-20251001",
     ],
+    # Vertex AI Claude (ADC / gcp_sdk). No REST /models endpoint, so this static
+    # catalog drives the picker + /model switching. Verified live on Vertex
+    # (project hushh-pda-uat): fable-5 + sonnet-5 released 2026-06; fable-5 is
+    # GLOBAL-ONLY and requires Anthropic publisher data-sharing enabled.
+    "google-vertex-claude": [
+        "claude-fable-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ],
     "deepseek": [
         "deepseek-v4-pro",
         "deepseek-v4-flash",

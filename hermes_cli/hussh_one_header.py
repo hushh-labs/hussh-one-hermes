@@ -47,6 +47,7 @@ _DISPLAY_MODEL_RULES: tuple[tuple[str, str], ...] = (
     ("gemini", "Gemini 3.5 Flash"),
     ("gemma", "Gemma 4"),
     ("qwen", "Qwen 3.6 35B"),
+    ("fable", "Claude Fable"),
     ("opus", "Claude Opus"),
     ("sonnet", "Claude Sonnet"),
     ("haiku", "Claude Haiku"),
@@ -71,15 +72,25 @@ def display_model_name(model: Optional[str]) -> str:
         return f"Gemini {v} {variant}".strip()
 
     # 2. Claude Family
-    if "claude" in short or any(w in short for w in ["opus", "sonnet", "haiku"]):
-        variant = "Opus" if "opus" in short else "Sonnet" if "sonnet" in short else "Haiku" if "haiku" in short else ""
+    if "claude" in short or any(w in short for w in ["opus", "sonnet", "haiku", "fable"]):
+        variant = (
+            "Opus" if "opus" in short
+            else "Sonnet" if "sonnet" in short
+            else "Haiku" if "haiku" in short
+            else "Fable" if "fable" in short
+            else ""
+        )
         # Extract version like 4.8 or 3.5
         v_match = re.search(r"(\d+)[-.](\d+)", short)
         if v_match:
             v = f"{v_match.group(1)}.{v_match.group(2)}"
         else:
-            v_match_single = re.search(r"claude-(\d+)", short)
-            v = v_match_single.group(1) if v_match_single else "4.8" if variant == "Opus" else "3.5"
+            # Single-digit generational IDs (e.g. claude-fable-5, claude-sonnet-5)
+            v_match_single = re.search(r"(?:fable|sonnet|opus|haiku|claude)-(\d+)\b", short)
+            if v_match_single:
+                v = v_match_single.group(1)
+            else:
+                v = "4.8" if variant == "Opus" else "3.5"
         return f"Claude {variant} {v}".strip()
 
     # 3. Gemma Family

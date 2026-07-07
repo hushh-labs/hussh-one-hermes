@@ -74,6 +74,32 @@ model_list:
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
 
+  # ── Claude Sonnet 5 (2026-06-24): global primary + US/EU spread ──
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: vertex_ai/claude-sonnet-5
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: vertex_ai/claude-sonnet-5
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: us-east5
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: vertex_ai/claude-sonnet-5
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: europe-west1
+
+  # ── Claude Fable 5 (2026-06-09): global only. REQUIRES Anthropic publisher
+  #    data-sharing enabled on the project (Console → Model Garden → Claude
+  #    Fable 5 → enable data sharing) or predict returns 403 PERMISSION_DENIED. ──
+  - model_name: claude-fable-5
+    litellm_params:
+      model: vertex_ai/claude-fable-5
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+
 # Router: spread load across deployments, retry on 429, park exhausted regions.
 router_settings:
   routing_strategy: least-busy      # send to the least-loaded healthy region
@@ -97,6 +123,8 @@ router_settings:
     - gemini-3.5-flash: ["gemini-3.5-flash"]
     - claude-sonnet-4-6: ["claude-sonnet-4-6"]
     - claude-opus-4-8: ["claude-opus-4-8"]
+    - claude-sonnet-5: ["claude-sonnet-5"]
+    - claude-fable-5: ["claude-fable-5"]
   default_fallbacks: ["gemini-3.5-flash"]
 
 litellm_settings:

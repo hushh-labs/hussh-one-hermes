@@ -35,6 +35,19 @@ def candidate_locations_for_vertex_claude(model: str, preferred: str = "") -> li
     if "opus-4-8" in normalized:
         # Google lists Opus 4.8 on global plus US/EU multi-region endpoints.
         supported = ["global", "us", "eu"]
+    elif "fable-5" in normalized:
+        # Claude Fable 5 (released 2026-06-09) is GLOBAL-ONLY on Vertex — verified
+        # live on hushh-pda-uat: global serves 200; the us/eu multi-region aliases
+        # return 501 UNIMPLEMENTED. Requires Anthropic publisher data-sharing to be
+        # enabled on the project (data_sharing_enabled_provider=ANTHROPIC via
+        # setPublisherModelConfig, or Console → Model Garden → Claude Fable 5),
+        # else predict returns 403 PERMISSION_DENIED.
+        supported = ["global"]
+    elif "sonnet-5" in normalized:
+        # Claude Sonnet 5 (released 2026-06-24). Verified live on hushh-pda-uat:
+        # global serves 200; us-east5 + europe-west1 serve but are quota-limited
+        # (429). Global is primary; regional endpoints are load-spread fallbacks.
+        supported = ["global", "us-east5", "europe-west1"]
     elif "sonnet-4-6" in normalized:
         supported = ["global", "us-east5", "europe-west1", "asia-southeast1"]
     else:

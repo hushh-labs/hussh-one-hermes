@@ -2171,7 +2171,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
                 should_deliver = bool(deliver_content.strip())
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                # Silent detection must accept BOTH the canonical "[SILENT]"
+                # marker and a bare "SILENT" token. Job prompts sometimes
+                # instruct "reply with exactly: SILENT" (unbracketed); the old
+                # substring-only check missed that and delivered a literal
+                # "SILENT" message to the user's chat (observed 2026-07-06).
+                _normalized_response = deliver_content.strip().upper()
+                _is_silent = (
+                    SILENT_MARKER in _normalized_response
+                    or _normalized_response.strip("[]").strip() == "SILENT"
+                )
+                if should_deliver and success and _is_silent:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
