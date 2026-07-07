@@ -147,6 +147,106 @@ def _is_streaming_request(body: bytes, content_type: str) -> bool:
         return False
 
 
+# ── Transcript scrub (fixes the "[System: Empty message content …]" loop) ────
+# LiteLLM's Anthropic prompt factory replaces EMPTY message content with the
+# literal placeholder below (factory.py: _sanitize_empty_text_content) because
+# the Anthropic API rejects empty text blocks. Copilot's agent mode routinely
+# produces assistant turns with empty content (tool-call-only "Edited file"
+# turns), so on Claude models the placeholder gets injected into the model's
+# context, the model starts ECHOING it in its visible output, the echo lands
+# in the next transcript, and the loop amplifies. We fix it at the source:
+#  * strip placeholder echoes wherever they appear (breaks the feedback loop),
+#  * assistant turns with tool_calls + empty content → content: null (LiteLLM
+#    builds pure tool_use blocks for those; no text block, no sanitizer),
+#  * assistant turns with NO tool_calls and no content → dropped (carry no
+#    information; Anthropic rejects them),
+#  * empty user turns → "." (inert; sanitizer never fires).
+_LITELLM_EMPTY_PLACEHOLDER = (
+    "[System: Empty message content sanitised to satisfy protocol]"
+)
+
+
+def _scrub_chat_body(body: bytes, content_type: str) -> bytes:
+    """Sanitize an OpenAI-format chat body so LiteLLM's Anthropic empty-text
+    placeholder never enters the model context. Fails open — any parse issue
+    returns the body untouched."""
+    if "application/json" not in (content_type or ""):
+        return body
+    try:
+        import json as _json
+        data = _json.loads(body)
+        msgs = data.get("messages")
+        if not isinstance(msgs, list):
+            return body
+        changed = False
+        out: list = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                out.append(m)
+                continue
+            role = m.get("role")
+            content = m.get("content")
+
+            # 1) Strip placeholder echoes (string + list-of-blocks shapes).
+            if isinstance(content, str) and _LITELLM_EMPTY_PLACEHOLDER in content:
+                content = content.replace(_LITELLM_EMPTY_PLACEHOLDER, "").strip()
+                m = {**m, "content": content}
+                changed = True
+            elif isinstance(content, list):
+                new_blocks = []
+                block_changed = False
+                for blk in content:
+                    if (isinstance(blk, dict)
+                            and isinstance(blk.get("text"), str)
+                            and _LITELLM_EMPTY_PLACEHOLDER in blk["text"]):
+                        text = blk["text"].replace(_LITELLM_EMPTY_PLACEHOLDER, "").strip()
+                        block_changed = True
+                        if text:
+                            new_blocks.append({**blk, "text": text})
+                        # empty after strip → drop the block
+                    else:
+                        new_blocks.append(blk)
+                if block_changed:
+                    m = {**m, "content": new_blocks}
+                    content = new_blocks
+                    changed = True
+
+            def _is_empty(c) -> bool:
+                if c is None:
+                    return True
+                if isinstance(c, str):
+                    return not c.strip()
+                if isinstance(c, list):
+                    return not any(
+                        (isinstance(b, dict)
+                         and (b.get("type") != "text"
+                              or (isinstance(b.get("text"), str) and b["text"].strip())))
+                        for b in c
+                    )
+                return False
+
+            # 2) Normalize empty-content turns so LiteLLM's sanitizer never fires.
+            if role == "assistant" and _is_empty(content):
+                if m.get("tool_calls"):
+                    if content is not None:
+                        m = {**m, "content": None}
+                        changed = True
+                else:
+                    changed = True
+                    continue  # informationless — drop
+            elif role == "user" and _is_empty(content):
+                m = {**m, "content": "."}
+                changed = True
+
+            out.append(m)
+        if not changed:
+            return body
+        data["messages"] = out
+        return _json.dumps(data).encode("utf-8")
+    except Exception:
+        return body
+
+
 async def _send_with_retry(method: str, url: str, headers, body: bytes):
     """Send to upstream, retrying connect/transient failures with bounded
     backoff UNTIL THE FIRST RESPONSE BYTE. Safe because the body is buffered
@@ -216,6 +316,12 @@ async def _proxy(request: Request) -> Response:
     # back to a single streamed attempt (still correct, just not retryable).
     body = await _read_body_bounded(request)
     content_type = request.headers.get("content-type", "")
+    if body is not None:
+        # Scrub the transcript so LiteLLM's Anthropic empty-content placeholder
+        # never enters (or re-enters) the model context. No-op for non-chat
+        # bodies; fails open on parse errors. httpx recomputes content-length
+        # from the (possibly shorter) scrubbed bytes.
+        body = _scrub_chat_body(body, content_type)
     wants_stream = body is not None and _is_streaming_request(body, content_type)
 
     if body is None:
