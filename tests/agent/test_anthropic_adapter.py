@@ -1282,7 +1282,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 64_000
+        assert kwargs["max_tokens"] == 128_000
 
     def test_default_max_tokens_date_stamped_model(self):
         """Date-stamped model IDs should resolve via substring match."""
@@ -1342,14 +1342,14 @@ class TestBuildAnthropicKwargs:
     def test_context_length_no_clamp_when_larger(self):
         """No clamping when context_length exceeds output limit."""
         kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-6",  # 64K output
+            model="claude-sonnet-4-6",  # 128K output (live-probed on Vertex 2026-07-07)
             messages=[{"role": "user", "content": "Hi"}],
             tools=None,
             max_tokens=None,
             reasoning_config=None,
             context_length=200000,
         )
-        assert kwargs["max_tokens"] == 64_000
+        assert kwargs["max_tokens"] == 128_000
 
 
 # ---------------------------------------------------------------------------
@@ -1368,7 +1368,7 @@ class TestGetAnthropicMaxOutput:
 
     def test_sonnet_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
-        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 128_000
 
     def test_sonnet_4_date_stamped(self):
         from agent.anthropic_adapter import _get_anthropic_max_output

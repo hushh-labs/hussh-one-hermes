@@ -109,7 +109,11 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-opus-4-7":   128_000,
     # Claude 4.6
     "claude-opus-4-6":   128_000,
-    "claude-sonnet-4-6":  64_000,
+    # sonnet-4-6: live-probed on Vertex 2026-07-07 — oversized max_tokens
+    # request returns "> 128000, which is the maximum allowed number of
+    # output tokens for claude-sonnet-4-6". Previously 64_000 (the 4.5-era
+    # value), which silently halved the output budget.
+    "claude-sonnet-4-6": 128_000,
     # Claude 4.5
     "claude-opus-4-5":    64_000,
     "claude-sonnet-4-5":  64_000,

@@ -329,7 +329,7 @@ class TestMinimaxMaxOutput:
     def test_claude_output_unaffected(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
         # Sanity: Claude limits are not broken by the MiniMax entry
-        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 128_000
 
 
 class TestMinimaxPreserveDots:
