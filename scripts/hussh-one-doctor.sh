@@ -136,6 +136,7 @@ check_required_files() {
   local files=(
     HUSSH_ONE.md
     docs/hussh-one-upstream-maintenance.md
+    docs/hussh-one/CHANGELOG.md
     hermes_cli/brand.py
     hermes_cli/skins/hussh-one.yaml
     hermes_cli/dashboard_themes/hussh-one.yaml
@@ -144,6 +145,7 @@ check_required_files() {
     scripts/hussh-one-supervisor.sh
     scripts/hussh-one-doctor.sh
     scripts/hussh-one-guard.sh
+    scripts/hussh-one-changelog-check.py
   )
   local missing=0
   for file in "${files[@]}"; do
@@ -453,6 +455,26 @@ PY
   done
 }
 
+check_changelog_freshness() {
+  # docs/hussh-one/CHANGELOG.md is the crystal-clear, dated index of every
+  # Hussh-One-only capability (WhatsApp/capsules, Vertex ADC, Copilot BYOK,
+  # Open WebUI, ...). Stale = the whole point of the index is defeated, so
+  # this is a doctor check, not just a health-index probe.
+  local checker="scripts/hussh-one-changelog-check.py"
+  if [[ ! -f "$checker" ]]; then
+    warn "changelog freshness checker missing: $checker"
+    return 0
+  fi
+  local python_bin="${PYTHON:-python3}"
+  if "$python_bin" "$checker" >/tmp/hussh-one-changelog.$$ 2>&1; then
+    pass "changelog current ($(tail -1 /tmp/hussh-one-changelog.$$))"
+  else
+    warn "changelog stale — undocumented Hussh-One commits found:"
+    sed 's/^/  /' /tmp/hussh-one-changelog.$$ >&2
+  fi
+  rm -f /tmp/hussh-one-changelog.$$
+}
+
 check_branch_and_remote
 check_required_files || true
 check_legacy_branding
@@ -461,6 +483,7 @@ check_supervisor_status
 check_dashboard_chat
 check_whatsapp_health
 check_vertex_profile
+check_changelog_freshness
 run_live_vertex_smoke
 check_copilot_byok
 

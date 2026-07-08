@@ -6,6 +6,14 @@
 > docs live in [`docs/hussh-one/`](./docs/hussh-one/README.md) — overview, brand,
 > architecture, per-feature pages, operations runbooks, contracts, and roadmap.
 > This file remains the dense machine-readable spec.
+>
+> 📅 **Changelog:** [`docs/hussh-one/CHANGELOG.md`](./docs/hussh-one/CHANGELOG.md)
+> is the crystal-clear, dated index of every Hussh-One-only capability we
+> maintain on top of upstream Hermes — WhatsApp/capsules, Vertex ADC routing,
+> VS Code Copilot BYOK, Open WebUI, dashboard/TUI reliability, branding infra.
+> Check it first when onboarding a new machine or picking up work after a gap;
+> `scripts/hussh-one-changelog-check.py` (wired into the doctor + health index)
+> flags any commit that should have a row but doesn't.
 
 ---
 

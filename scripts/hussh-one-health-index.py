@@ -243,6 +243,30 @@ def probe_vertex_auth() -> None:
         add(harness, "gcloud-adc", WARN, f"ADC probe error: {e}")
 
 
+def probe_changelog_freshness() -> None:
+    """The changelog is the crystal-clear index of every Hussh-One-only
+    capability (WhatsApp/capsules, Vertex ADC, Copilot BYOK, Open WebUI, ...).
+    A stale changelog defeats its purpose, so this is checked on every run."""
+    harness = "docs"
+    checker = REPO_ROOT / "scripts" / "hussh-one-changelog-check.py"
+    if not checker.exists():
+        add(harness, "changelog", INFO, "hussh-one-changelog-check.py not present")
+        return
+    try:
+        r = subprocess.run(
+            [sys.executable, str(checker), "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+        data = json.loads(r.stdout or "{}")
+        if data.get("clean"):
+            add(harness, "changelog", OK, f"{data.get('checked', 0)} Hussh-One commits, all documented")
+        else:
+            n = len(data.get("undocumented", []))
+            add(harness, "changelog", WARN, f"{n} undocumented Hussh-One commit(s) — run the checker for the list")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "changelog", WARN, f"could not run checker: {e}")
+
+
 def _count_dir(path: Path, pattern: str = "*") -> int:
     try:
         return sum(1 for _ in path.glob(pattern))
@@ -379,6 +403,7 @@ def main() -> int:
         probe_vertex_auth,
         probe_skills_plugins,
         probe_session_bloat,
+        probe_changelog_freshness,
     ]
     for p in probes:
         try:

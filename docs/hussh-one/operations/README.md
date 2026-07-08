@@ -68,7 +68,32 @@ Then verify: `tail ~/.hermes/logs/gateway.log` for `✓ whatsapp connected`.
 scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-guard.sh
 python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsapp_*.py -q
+python3 scripts/hussh-one-changelog-check.py
 ```
+
+## Onboarding checklist (new machine or new session)
+Run these, in order, whenever standing up a fresh Hussh One instance or
+resuming work on one after a gap:
+
+1. **Confirm remotes + branch.** `git remote -v` → `origin` = `hushh-labs/hussh-one-hermes`,
+   `upstream` = `NousResearch/hermes-agent`; `git branch --show-current` → `main`.
+2. **Check upstream drift** (informational, don't merge yet):
+   `git fetch upstream --quiet && git rev-list --left-right --count HEAD...upstream/main`.
+   Large drift (500+) → read [`upgrading.md`](./upgrading.md) and the
+   `fork-upstream-merge-maintenance` playbook before merging.
+3. **Run the doctor.** `scripts/hussh-one-doctor.sh --require-services` — surfaces branding,
+   config, supervisor, WhatsApp, Vertex, Copilot BYOK, and **changelog freshness** in one pass.
+4. **Read [`CHANGELOG.md`](../CHANGELOG.md)** — the dated index of everything Hussh One adds on
+   top of upstream (WhatsApp/capsules, Vertex ADC, Copilot BYOK, Open WebUI, dashboard/TUI
+   reliability, branding infra). This is the fastest way to get oriented on what's *ours* vs
+   what's stock Hermes before touching anything.
+5. **Check the feature catalog.** [`features/README.md`](../features/README.md) — one row per
+   shipped capability, links to the deep-dive page for each.
+6. **Verify contracts.** [`contracts/README.md`](../contracts/README.md) — the machine-checkable
+   invariants; run the command block at the bottom.
+7. **If you ship anything new touching a Hussh-One-only surface**, add a row to
+   `CHANGELOG.md` in the same commit/session — re-run
+   `python3 scripts/hussh-one-changelog-check.py` before calling the work done.
 
 ## Cron job conventions
 - **Silent runs**: agent-driven jobs suppress delivery by replying with the
@@ -82,6 +107,7 @@ python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsap
 - Tests: `tests/cron/test_scheduler.py::TestSilentDelivery`.
 
 ## See also
+- [Changelog — dated index of every Hussh-One capability](../CHANGELOG.md)
 - [Crash resilience — dashboard OOM & session-model persistence](./crash-resilience.md)
 - [Upgrading from upstream](./upgrading.md)
 - [`docs/hussh-one-deployment.md`](../../hussh-one-deployment.md)

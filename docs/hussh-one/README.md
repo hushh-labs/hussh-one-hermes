@@ -25,6 +25,7 @@ Hermes Agent to create **hussh 🤫 One**. It is designed to be:
 | [`operations/`](./operations/) | Bootstrapping, supervising, upgrading, doctor/guard runbooks |
 | [`contracts/`](./contracts/) | Machine-readable invariants every build must satisfy |
 | [`roadmap/`](./roadmap/) | What's next; how we evolve without breaking determinism |
+| [`CHANGELOG.md`](./CHANGELOG.md) | **Dated, categorized history** of every Hussh-One-only capability — the crystal-clear index of what we ship on top of upstream (WhatsApp/capsules, Vertex ADC, Copilot BYOK, Open WebUI, and more) |
 
 > The dense machine-readable spec still lives at the repo root in
 > [`HUSSH_ONE.md`](../../HUSSH_ONE.md). This `docs/hussh-one/` tree is the
@@ -40,6 +41,7 @@ Hermes Agent to create **hussh 🤫 One**. It is designed to be:
 | WhatsApp layer | adapter, capsule, bridge.js, memory/send tools | ✅ intact |
 | Reliability | session-model resume, Vertex-Claude pinning, dashboard OOM guard | ✅ shipped |
 | Ops scripts | bootstrap, supervisor, doctor, guard, restart | ✅ intact |
+| Docs | Feature catalog, contracts, **changelog** — all self-checking | ✅ intact |
 | Tests | branding, header, scripts, capsule, gating, prefix, resume-model | ✅ passing |
 | Stale legacy brand data | — | ✅ none found |
 
@@ -48,6 +50,7 @@ Re-run the audit anytime with:
 ```bash
 bash scripts/hussh-one-guard.sh
 python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsapp_*.py -q
+python3 scripts/hussh-one-changelog-check.py   # is the changelog current?
 ```
 
 ---
