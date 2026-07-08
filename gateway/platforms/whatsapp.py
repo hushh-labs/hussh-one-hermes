@@ -506,6 +506,30 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
         return cleaned.strip() or text
 
+    def _capsule_trigger_regex(self, chat_id: str):
+        """Return a compiled regex of THIS capsule's own trigger token(s), or
+        None if ``chat_id`` isn't a configured capsule / declares no tokens.
+
+        Capsules must be strictly scoped to their own dedicated @-handle
+        (e.g. "@OneTeam" for the One Team group). Falling through to the
+        shared/global mention_patterns or "mentioned the owner's own WhatsApp
+        identity" (self-chat mode's bot == the owner's number) would let ANY
+        of the global trigger handles — or a plain native @-mention of the
+        owner by name — wake a capsule that is supposed to answer ONLY to its
+        own configured handle.
+        """
+        try:
+            from gateway.whatsapp_capsule import resolve_capsule
+            capsule = resolve_capsule(self.config, chat_id)
+        except Exception:
+            capsule = None
+        if not capsule or not capsule.trigger_tokens:
+            return None
+        escaped = [re.escape(t.strip()) for t in capsule.trigger_tokens if t.strip()]
+        if not escaped:
+            return None
+        return re.compile(rf"(?:{'|'.join(escaped)})(?![\w-])", re.IGNORECASE)
+
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
         chat_id_raw = str(data.get("chatId") or "")
         # WhatsApp uses pseudo-chats for Status updates (Stories) and
@@ -527,12 +551,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
         # Group messages: check mention / free-response settings
         chat_id = str(data.get("chatId") or "")
+        body = str(data.get("body") or "").strip()
+        if body.startswith("/"):
+            return True
+
+        # A configured capsule is scoped to ONLY its own dedicated trigger
+        # handle(s) — never the global mention_patterns / free-response list,
+        # and never "a native @-mention of the owner's own WhatsApp identity"
+        # (self-chat mode's bot_id IS the owner's number, so tagging the
+        # owner by name must not itself wake the capsule).
+        capsule_regex = self._capsule_trigger_regex(chat_id)
+        if capsule_regex is not None:
+            return bool(capsule_regex.search(body))
+
         if chat_id in self._whatsapp_free_response_chats():
             return True
         if not self._whatsapp_require_mention():
-            return True
-        body = str(data.get("body") or "").strip()
-        if body.startswith("/"):
             return True
         if self._message_is_reply_to_bot(data):
             if not self._whatsapp_require_mention_on_replies():

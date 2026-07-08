@@ -88,6 +88,12 @@ class CapsuleConfig:
     )
     block_outbound_send: bool = True
     system_prompt: str = _DEFAULT_CAPSULE_SYSTEM_PROMPT
+    # Dedicated @-handle(s) for THIS capsule (e.g. ["@OneTeam"]). This is the
+    # single source of truth for "which handle wakes this specific group" —
+    # both the bridge (non-owner trigger gate) and the Python adapter
+    # (post-forward mention gate) must resolve it from here, not from the
+    # shared/global whatsapp.trigger_tokens or mention_patterns.
+    trigger_tokens: List[str] = field(default_factory=list)
 
 
 def _capsules_block(config: Any) -> Dict[str, Any]:
@@ -131,6 +137,7 @@ def resolve_capsule(config: Any, chat_jid: Optional[str]) -> Optional[CapsuleCon
 
     enabled = _as_list(raw.get("enabled_toolsets"))
     disabled = _as_list(raw.get("disabled_toolsets"))
+    trigger_tokens = _as_list(raw.get("trigger_tokens")) or []
 
     return CapsuleConfig(
         jid=str(chat_jid),
@@ -142,4 +149,5 @@ def resolve_capsule(config: Any, chat_jid: Optional[str]) -> Optional[CapsuleCon
         disabled_toolsets=disabled if disabled is not None else list(DEFAULT_CAPSULE_DISABLED_TOOLSETS),
         block_outbound_send=_as_bool(raw.get("block_outbound_send"), True),
         system_prompt=str(raw.get("system_prompt") or _DEFAULT_CAPSULE_SYSTEM_PROMPT).strip(),
+        trigger_tokens=trigger_tokens,
     )

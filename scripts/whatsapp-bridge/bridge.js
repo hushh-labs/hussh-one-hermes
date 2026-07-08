@@ -57,6 +57,47 @@ const ALLOWED_GROUPS = (process.env.WHATSAPP_ALLOWED_GROUPS || '1203630409680354
 // the Python side runs them under a restricted capsule (no personal data, no
 // outbound send, limited toolsets). Non-capsule groups stay 100% owner-only.
 const CAPSULE_GROUPS = (process.env.WHATSAPP_CAPSULE_GROUPS || '120363405517552679@g.us').split(',').map(g => g.trim()).filter(Boolean);
+// Per-capsule dedicated @-handle override (e.g. { "<jid>": ["@OneTeam"] }).
+// Forwarded by gateway/platforms/whatsapp.py from whatsapp.capsules.<jid>.trigger_tokens
+// as a JSON map. A capsule WITHOUT its own entry here falls back to the
+// shared owner-trigger regex below — but a capsule WITH its own dedicated
+// handle(s) must ONLY respond to those, never the shared @One/@husshOne/
+// @hussh-one family. Without this, every capsule group answers to a bare
+// "@One" typed by anyone (or a native @-mention of the owner's own number
+// in self-chat mode), even when the group config declares "@OneTeam" as its
+// unique wake word — the exact cross-talk bug this map exists to prevent.
+let GROUP_TRIGGER_TOKENS = {};
+try {
+  const _raw = process.env.WHATSAPP_GROUP_TRIGGER_TOKENS;
+  if (_raw) {
+    const _parsed = JSON.parse(_raw);
+    if (_parsed && typeof _parsed === 'object') GROUP_TRIGGER_TOKENS = _parsed;
+  }
+} catch (err) {
+  console.error('Failed to parse WHATSAPP_GROUP_TRIGGER_TOKENS (ignoring, falling back to shared triggers):', err);
+}
+
+// Build (and cache) a per-group trigger regex. Escapes each token, matches
+// case-insensitively, and requires a trailing non-word/non-hyphen boundary
+// so "@OneTeam" never accidentally matches a message merely containing "@One"
+// as a substring (and vice versa).
+const _groupTriggerRegexCache = new Map();
+function getGroupTriggerRegex(chatId) {
+  if (_groupTriggerRegexCache.has(chatId)) return _groupTriggerRegexCache.get(chatId);
+  const tokens = Array.isArray(GROUP_TRIGGER_TOKENS[chatId]) ? GROUP_TRIGGER_TOKENS[chatId] : null;
+  let regex;
+  if (tokens && tokens.length > 0) {
+    const escaped = tokens.map(t => String(t).trim()).filter(Boolean).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    regex = escaped.length > 0
+      ? new RegExp(`(?:${escaped.join('|')})(?![\\w-])`, 'i')
+      : /@One\b|@husshOne\b|@hussh-one\b/i; // empty override list — fall back
+  } else {
+    // No dedicated handle configured for this group — shared owner triggers.
+    regex = /@One\b|@husshOne\b|@hussh-one\b/i;
+  }
+  _groupTriggerRegexCache.set(chatId, regex);
+  return regex;
+}
 // Rate limiting for non-owner (capsule) invocations — purely an anti-DOS / anti-spam
 // safeguard so a runaway loop of @One mentions can't burn compute/cost. Generous by
 // design: real back-and-forth conversation should never hit it. Owner messages are
@@ -422,7 +463,11 @@ async function startSocket() {
             tempBody = tempContent.videoMessage.caption || '';
           }
           const cleanBody = tempBody.trim();
-          const hasTrigger = cleanBody.startsWith('/') || /@One\b|@husshOne\b|@hussh-one\b/i.test(cleanBody);
+          // Use THIS group's dedicated trigger handle(s) if configured (e.g.
+          // "@OneTeam" for One Team), never the shared owner @One/@husshOne/
+          // @hussh-one family — otherwise every capsule answers to a bare
+          // "@One" typed by any member, defeating per-group isolation.
+          const hasTrigger = cleanBody.startsWith('/') || getGroupTriggerRegex(chatId).test(cleanBody);
           if (!hasTrigger) {
             try {
               console.log(JSON.stringify({
