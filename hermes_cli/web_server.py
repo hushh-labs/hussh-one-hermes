@@ -10116,20 +10116,30 @@ def start_server(
     # OAuth gate is active we are explicitly running behind a TLS terminator
     # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
     # we flip proxy_headers on for that mode.
+    # Loopback binds (the Hussh One Desktop case: single local client, no
+    # reverse proxy in front) get the ws protocol ping DISABLED entirely.
+    # uvicorn's keepalive ping runs on the SAME event loop as agent turns —
+    # a single synchronous, GIL-holding call on a worker thread (a regex/scrub
+    # over a large model output, a long delegate_task subagent turn, heavy
+    # tool activity) can starve that loop for minutes. The loop then can't
+    # process the incoming pong in time, uvicorn wrongly declares the socket
+    # dead, and force-closes an otherwise perfectly healthy local connection —
+    # this is the exact "tab freezes until manual refresh" failure mode
+    # (upstream NousResearch/hermes-agent #53773: "event loop stalled 226.3s";
+    # see also #48445/#50005). The ping exists to detect *half-open*
+    # connections (reverse-proxy 524s, dropped tunnels) — impossible on
+    # loopback, since there is no network/proxy in the path and a dead local
+    # client tears the socket down with a real FIN/RST that starlette
+    # surfaces as WebSocketDisconnect regardless of the ping. So on loopback
+    # the ping provides ~no liveness value while actively killing recoverable
+    # stalls. Non-loopback binds (Hussh One's Fly.io/Cloudflare Tunnel path,
+    # idle timeout ~100s) keep the 20/20 ping to detect half-open sockets
+    # promptly and stay under the tunnel's idle window.
+    _is_loopback = host in ("127.0.0.1", "localhost", "::1")
     uvicorn.run(
         app, host=host, port=port, log_level="warning",
         proxy_headers=bool(app.state.auth_required),
-        # Keepalive tuning so a backgrounded / minimized browser tab does NOT
-        # lose its /api/pty (or /api/ws) WebSocket. The server keeps sending
-        # WS-protocol pings every 20s (the browser's network stack auto-pongs
-        # even while JS timers are throttled/frozen in a hidden tab), which
-        # holds NAT/proxy idle timers warm. Crucially we DISABLE the ping
-        # *timeout* (default 20s) — a throttled tab can pong late, and the
-        # default would force-close that perfectly healthy socket, surfacing
-        # as the "connection lost, reconnecting" churn. None = never drop a
-        # client just for a slow pong; real dead sockets are still caught by
-        # TCP close. timeout_keep_alive is bumped for HTTP keep-alive parity.
-        ws_ping_interval=20.0,
-        ws_ping_timeout=None,
+        ws_ping_interval=None if _is_loopback else 20.0,
+        ws_ping_timeout=None if _is_loopback else 20.0,
         timeout_keep_alive=75,
     )

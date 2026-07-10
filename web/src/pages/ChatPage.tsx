@@ -693,7 +693,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
+      // Upstream fix (NousResearch/hermes-agent, "NS-591"): a mobile socket
+      // (or a desktop one riding a flaky VPN/Wi-Fi handoff) can wedge in
+      // CONNECTING forever and never fire onopen OR onclose — no browser
+      // event at all. Neither `existing.readyState === CONNECTING` above nor
+      // scheduleReconnect can recover a socket that never reports a
+      // terminal state. Force-close it after a bounded wait so the
+      // resulting onclose (synthetic, but real from WebSocket's point of
+      // view) drives the normal reconnect path instead of silently hanging
+      // this tab until a manual reload.
+      const CONNECTING_TIMEOUT_MS = 10000;
+      const connectingTimer = setTimeout(() => {
+        if (wsRef.current === ws && ws.readyState === WebSocket.CONNECTING) {
+          console.warn(
+            "[chat] PTY WebSocket wedged in CONNECTING; force-closing to recover",
+          );
+          try {
+            ws.close();
+          } catch {
+            /* already tearing down */
+          }
+        }
+      }, CONNECTING_TIMEOUT_MS);
+
       ws.onopen = () => {
+        clearTimeout(connectingTimer);
         connecting = false;
         attempt = 0;
         setBanner(null);
@@ -723,6 +747,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       };
 
       ws.onclose = (ev) => {
+        clearTimeout(connectingTimer);
         connecting = false;
         stopHeartbeat();
         if (wsRef.current === ws) wsRef.current = null;

@@ -265,6 +265,67 @@ check_supervisor_status() {
   rm -f /tmp/hussh-one-supervisor.$$ /tmp/hussh-one-supervisor-err.$$
 }
 
+check_boot_persistence() {
+  # "Is it running now" (check_supervisor_status) is not the same claim as
+  # "will it come back after a restart". A plist that lost RunAtLoad (bad
+  # edit, accidental re-write, upstream merge) still shows a running
+  # process today and only reveals the gap on the NEXT reboot — exactly
+  # the blind spot this check closes.
+  if [[ "$MANAGER" != "launchd" && "$MANAGER" != "auto" ]]; then
+    warn "boot-persistence check only implemented for launchd; manager=$MANAGER skipped"
+    return 0
+  fi
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    warn "boot-persistence check is macOS/launchd-specific; skipped on $(uname -s)"
+    return 0
+  fi
+  if ! command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
+    warn "PlistBuddy unavailable; boot-persistence check skipped"
+    return 0
+  fi
+
+  local agents_dir="$HOME/Library/LaunchAgents"
+  # label:plist pairs as a flat list (macOS ships bash 3.2 — no `declare -A`
+  # associative arrays available, so this must stay portable). LaunchAgents
+  # fire at user LOGIN, not raw power-on; without autologin that means "log
+  # back in after restart", which is the accurate claim to make, not
+  # "survives a cold boot before anyone signs in".
+  local pairs=(
+    "ai.hermes.gateway:ai.hermes.gateway.plist"
+    "ai.hussh-one.dashboard:ai.hussh-one.dashboard.plist"
+    "ai.hushh.one.litellm-proxy:ai.hushh.one.litellm-proxy.plist"
+    "ai.hushh.one.litellm-shim:ai.hushh.one.litellm-shim.plist"
+    "ai.openwebui.hermes:ai.openwebui.hermes.plist"
+  )
+
+  local pair label plist_file plist_path run_at_load
+  for pair in "${pairs[@]}"; do
+    label="${pair%%:*}"
+    plist_file="${pair##*:}"
+    plist_path="$agents_dir/$plist_file"
+
+    if [[ ! -f "$plist_path" ]]; then
+      warn "boot-persistence: $plist_file missing at $plist_path (not installed on this machine)"
+      continue
+    fi
+
+    run_at_load="$(/usr/libexec/PlistBuddy -c "Print :RunAtLoad" "$plist_path" 2>/dev/null || echo "MISSING")"
+    if [[ "$run_at_load" != "true" ]]; then
+      fail "boot-persistence: $plist_file has RunAtLoad=$run_at_load (expected true) — will NOT auto-start after reboot/re-login"
+      continue
+    fi
+
+    # RunAtLoad=true alone doesn't survive a reboot if the job was never
+    # bootstrapped into launchd's persistent DB (e.g. plist edited by hand
+    # and never (re)loaded). Confirm launchd actually knows about the label.
+    if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+      pass "boot-persistence: $label — RunAtLoad=true, registered with launchd"
+    else
+      fail "boot-persistence: $plist_file has RunAtLoad=true but launchd has no record of '$label' — run: launchctl bootstrap gui/\$(id -u) $plist_path"
+    fi
+  done
+}
+
 check_dashboard_chat() {
   if ! command -v curl >/dev/null 2>&1; then
     if [[ "$REQUIRE_SERVICES" == "1" ]]; then
@@ -480,6 +541,7 @@ check_required_files || true
 check_legacy_branding
 check_config
 check_supervisor_status
+check_boot_persistence
 check_dashboard_chat
 check_whatsapp_health
 check_vertex_profile
