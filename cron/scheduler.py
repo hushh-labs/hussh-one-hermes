@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -721,6 +722,23 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _is_transient_whatsapp_error(error: str) -> bool:
+    """True for WhatsApp bridge errors that are expected to self-heal quickly.
+
+    Baileys connections cycle through brief disconnected/reconnecting states
+    during normal operation (network blips, laptop sleep/wake). These are
+    NOT actionable failures — retrying once after a short delay avoids
+    surfacing noise to the user for something that resolves itself in a
+    few seconds. See gateway/platforms/whatsapp.py's own debounced health
+    watchdog for the matching philosophy on the bridge-process side.
+    """
+    lowered = (error or "").lower()
+    return any(
+        marker in lowered
+        for marker in ("not connected", "connection closed", "connection terminated", "reconnecting")
+    )
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -902,6 +920,39 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 logger.error("Job '%s': %s", job["id"], msg)
                 delivery_errors.append(msg)
                 continue
+
+            # WhatsApp bridge errors are frequently transient (Baileys
+            # reconnecting after a network blip, laptop sleep/wake, etc. —
+            # bridge.js self-heals these within seconds on its own). A single
+            # failed poll used to surface immediately as a raw delivery
+            # error (e.g. "Connection Closed") on every cron job that fired
+            # during that window — noisy and usually resolves itself before
+            # a human could act on it anyway. Give it one short retry before
+            # reporting, same debounce philosophy as the bridge's own health
+            # watchdog (see gateway/platforms/whatsapp.py _poll_messages).
+            if (
+                result and result.get("error")
+                and platform_name.lower() == "whatsapp"
+                and _is_transient_whatsapp_error(result["error"])
+            ):
+                logger.info(
+                    "Job '%s': transient WhatsApp error (%s), retrying once after backoff",
+                    job["id"], result["error"],
+                )
+                time.sleep(5)
+                try:
+                    result = asyncio.run(
+                        _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+                    )
+                except RuntimeError:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files),
+                        )
+                        result = future.result(timeout=30)
+                except Exception as e:
+                    result = {"error": str(e)}
 
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"

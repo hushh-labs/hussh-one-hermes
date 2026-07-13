@@ -1362,6 +1362,26 @@ class WhatsAppAdapter(BasePlatformAdapter):
         last_health_check = time.time()
         health_check_interval = 120  # check every 2 minutes
 
+        # ── Debounced unhealthy-bridge watchdog ─────────────────────────────
+        # Baileys/WhatsApp connections routinely cycle through a transient
+        # "disconnected" state during normal operation (network blips, laptop
+        # sleep/wake, WA mobile app going idle, multi-device re-handshake).
+        # bridge.js has its OWN auto-reconnect logic for exactly this (see its
+        # `connection === 'close'` handler, including graceful handling of the
+        # 515 "restart requested" code). A single unhealthy poll used to
+        # trigger an immediate SIGKILL here, which raced the bridge's own
+        # recovery and forced a full cold restart (session reload) instead of
+        # letting the few-second self-heal finish. That produced a kill every
+        # ~30-90 min in practice — a self-inflicted crash loop, not a real
+        # outage. Require CONSECUTIVE unhealthy polls (with a grace window)
+        # before concluding the bridge is truly stuck and needs a hard kill.
+        UNHEALTHY_KILL_THRESHOLD = 3   # consecutive bad polls (~= 3 health_check_interval spans)
+        consecutive_unhealthy = 0
+
+        def _reset_unhealthy():
+            nonlocal consecutive_unhealthy
+            consecutive_unhealthy = 0
+
         while self._running:
             if not self._http_session:
                 break
@@ -1374,6 +1394,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             now = time.time()
             if now - last_health_check > health_check_interval:
                 last_health_check = now
+                unhealthy_reason = None
                 try:
                     async with self._http_session.get(
                         f"http://127.0.0.1:{self._bridge_port}/health",
@@ -1381,18 +1402,36 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     ) as hresp:
                         if hresp.status == 200:
                             hdata = await hresp.json()
-                            if hdata.get("status") != "connected":
-                                print(f"[{self.name}] ⚠️ Bridge reported unhealthy status: {hdata.get('status')}. Killing zombie bridge.")
-                                if self._bridge_process and self._bridge_process.poll() is None:
-                                    self._bridge_process.kill()
+                            status = hdata.get("status")
+                            if status == "connected":
+                                _reset_unhealthy()
+                            else:
+                                unhealthy_reason = f"bridge reported status={status!r}"
                         else:
-                            print(f"[{self.name}] ⚠️ Bridge health endpoint returned status {hresp.status}. Killing unresponsive bridge.")
-                            if self._bridge_process and self._bridge_process.poll() is None:
-                                self._bridge_process.kill()
+                            unhealthy_reason = f"health endpoint returned HTTP {hresp.status}"
                 except Exception as he:
-                    print(f"[{self.name}] ⚠️ Bridge health check failed: {he}. Killing unresponsive bridge.")
-                    if self._bridge_process and self._bridge_process.poll() is None:
-                        self._bridge_process.kill()
+                    unhealthy_reason = f"health check failed ({he})"
+
+                if unhealthy_reason:
+                    consecutive_unhealthy += 1
+                    if consecutive_unhealthy < UNHEALTHY_KILL_THRESHOLD:
+                        # Give bridge.js's own reconnect logic a chance to
+                        # self-heal before we escalate to a hard kill.
+                        logger.info(
+                            "[%s] Bridge unhealthy (%s) — %d/%d consecutive, "
+                            "waiting for self-heal before restart.",
+                            self.name, unhealthy_reason, consecutive_unhealthy,
+                            UNHEALTHY_KILL_THRESHOLD,
+                        )
+                    else:
+                        print(
+                            f"[{self.name}] ⚠️ Bridge unhealthy for "
+                            f"{consecutive_unhealthy} consecutive checks "
+                            f"({unhealthy_reason}). Restarting bridge."
+                        )
+                        if self._bridge_process and self._bridge_process.poll() is None:
+                            self._bridge_process.kill()
+                        _reset_unhealthy()
 
             try:
                 async with self._http_session.get(

@@ -428,7 +428,7 @@ async function startSocket() {
             tempBody = tempContent.videoMessage.caption || '';
           }
           const cleanBody = tempBody.trim();
-          const hasTrigger = cleanBody.startsWith('/') || /@One\b|@husshOne\b|@hussh-one\b/i.test(cleanBody);
+          const hasTrigger = cleanBody.startsWith('/') || /@One\b|@OneTeam\b|@husshOne\b|@hussh-one\b/i.test(cleanBody);
           if (!hasTrigger) {
             continue;
           }

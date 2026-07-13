@@ -1135,6 +1135,30 @@ async def _send_slack(token, chat_id, message, thread_ts=None):
         return _error(f"Slack send failed: {e}")
 
 
+def _friendly_whatsapp_bridge_error(status: int, body: str) -> str:
+    """Translate a raw WhatsApp bridge HTTP error into a short, actionable message.
+
+    The bridge (Baileys) surfaces low-level connection-state errors as raw
+    JSON/HTTP bodies (e.g. ``{"error":"Connection Closed"}``). Those used to
+    be forwarded verbatim to cron delivery-error fields and, in some paths,
+    the user's own chat — which reads as noisy internal-error spam rather
+    than something a user can act on. Map the common, expected transient
+    states to one clear line; fall back to a bounded raw excerpt for
+    anything unrecognized so real bugs are still diagnosable.
+    """
+    lowered = (body or "").lower()
+    if status == 503 or "not connected" in lowered:
+        return "WhatsApp bridge is reconnecting — message will retry automatically shortly."
+    if "connection closed" in lowered or "connection terminated" in lowered:
+        return "WhatsApp connection dropped mid-send (self-healing) — message will retry automatically."
+    if status == 429 or "rate" in lowered:
+        return "WhatsApp is rate-limiting sends right now — message will retry shortly."
+    # Unrecognized failure — keep enough detail to debug, but bounded so a
+    # stack trace or HTML error page doesn't flood the user's chat.
+    excerpt = (body or "").strip().replace("\n", " ")[:200]
+    return f"WhatsApp bridge error (HTTP {status}): {excerpt}"
+
+
 async def _send_whatsapp(extra, chat_id, message):
     """Send via the local WhatsApp bridge HTTP API."""
     try:
@@ -1150,7 +1174,19 @@ async def _send_whatsapp(extra, chat_id, message):
         logger.warning("Failed to apply WhatsApp header in send_message_tool (non-fatal): %s", e)
 
     try:
-        bridge_port = extra.get("bridge_port", 3000)
+        # 8473 matches gateway.platforms.whatsapp.WhatsAppAdapter's default
+        # bridge_port and config.yaml's whatsapp.bridge_port. Port 3000 is a
+        # bare default that commonly collides with local dev servers (Next.js,
+        # etc.) — if that happens, sends silently hit the wrong process's
+        # /send endpoint instead of erroring, which is far worse than a
+        # missing-config error would be. Fail loud instead of guessing.
+        bridge_port = extra.get("bridge_port") if extra else None
+        if not bridge_port:
+            return _error(
+                "WhatsApp bridge_port not configured (expected whatsapp.bridge_port "
+                "in config.yaml, e.g. 8473). Refusing to guess a port to avoid "
+                "silently hitting an unrelated local service."
+            )
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
@@ -1166,7 +1202,7 @@ async def _send_whatsapp(extra, chat_id, message):
                         "message_id": data.get("messageId"),
                     }
                 body = await resp.text()
-                return _error(f"WhatsApp bridge error ({resp.status}): {body}")
+                return _error(_friendly_whatsapp_bridge_error(resp.status, body))
     except Exception as e:
         return _error(f"WhatsApp send failed: {e}")
 

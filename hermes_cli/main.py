@@ -2259,10 +2259,13 @@ def cmd_whatsapp(args):
             print("  └─────────────────────────────────────────────────┘")
         else:
             save_env_value("WHATSAPP_MODE", "self-chat")
+            save_env_value("WHATSAPP_ALLOW_ALL_USERS", "true")
             wa_mode = "self-chat"
             print("  ✓ Mode: personal number (self-chat)")
     else:
         wa_mode = current_mode
+        if wa_mode == "self-chat" and (get_env_value("WHATSAPP_ALLOW_ALL_USERS") or "").lower() != "true":
+            save_env_value("WHATSAPP_ALLOW_ALL_USERS", "true")
         mode_label = (
             "separate bot number" if wa_mode == "bot" else "personal number (self-chat)"
         )
@@ -2409,6 +2412,70 @@ def cmd_whatsapp(args):
         # bridge timeout + queueing the platform for indefinite retries.
         save_env_value("WHATSAPP_ENABLED", "true")
         print("✓ WhatsApp paired successfully!")
+        print()
+
+        # ── Step 7.5: Group Intelligence Onboarding ──────────────────────
+        print("  Group Intelligence Config (Optional)")
+        print("  ───────────────────────────────────")
+        print("  Would you like to configure Group Intelligence (WhatsApp Capsule Groups)")
+        print("  to safely handle incoming messages from specific WhatsApp groups?")
+        print()
+        try:
+            configure_capsule = input("  Configure Group Intelligence? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            configure_capsule = "n"
+
+        if configure_capsule in {"y", "yes"}:
+            print()
+            print("  Let's add a Capsule Group to your config.yaml.")
+            try:
+                group_jid = input("    Enter WhatsApp Group JID (e.g. 120363425605838730@g.us): ").strip()
+                if group_jid:
+                    group_name = input("    Enter Capsule Name (e.g. one-team): ").strip() or "one-team"
+                    trigger_token = input("    Enter Trigger Word/Token (e.g. @OneTeam): ").strip() or "@OneTeam"
+                    system_prompt = input("    Enter system prompt for this group: ").strip() or f"You are operating inside the {group_name} social group capsule."
+                    
+                    # Update config.yaml with this capsule
+                    import yaml
+                    config_path = get_hermes_home() / "config.yaml"
+                    config_data = {}
+                    if config_path.exists():
+                        try:
+                            config_data = yaml.safe_load(config_path.read_text()) or {}
+                        except Exception:
+                            pass
+                    
+                    if "whatsapp" not in config_data:
+                        config_data["whatsapp"] = {}
+                    if "capsules" not in config_data["whatsapp"]:
+                        config_data["whatsapp"]["capsules"] = {}
+                    
+                    config_data["whatsapp"]["capsules"][group_jid] = {
+                        "name": group_name,
+                        "trigger_tokens": [trigger_token],
+                        "system_prompt": system_prompt,
+                        "enabled_toolsets": ["web", "vision"],
+                        "memory_dir": f"capsules/{group_name}",
+                        "skip_global_memory": True,
+                        "skip_global_user_profile": True,
+                        "block_outbound_send": True
+                    }
+                    
+                    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False))
+                    print()
+                    print(f"  ✓ Group Intelligence capsule configured for group '{group_name}'!")
+                    
+                    # Update WHATSAPP_ALLOWED_GROUPS in .env as well
+                    current_groups = get_env_value("WHATSAPP_ALLOWED_GROUPS") or ""
+                    groups_list = [g.strip() for g in current_groups.split(",") if g.strip()]
+                    if group_jid not in groups_list:
+                        groups_list.append(group_jid)
+                        save_env_value("WHATSAPP_ALLOWED_GROUPS", ",".join(groups_list))
+                    
+                    print(f"  ✓ Group JID added to WHATSAPP_ALLOWED_GROUPS in .env.")
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Group Intelligence onboarding cancelled.")
+
         print()
         if wa_mode == "bot":
             print("  Next steps:")
