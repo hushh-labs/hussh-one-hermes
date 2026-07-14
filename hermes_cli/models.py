@@ -235,14 +235,20 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-pro",
     ],
     "gemini": [
+        "gemini-3.1-pro",
         "gemini-3.1-pro-preview",
+        "gemini-3-pro",
         "gemini-3-pro-preview",
+        "gemini-3-flash",
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
+        "gemini-3.1-pro",
         "gemini-3.1-pro-preview",
+        "gemini-3-pro",
         "gemini-3-pro-preview",
+        "gemini-3-flash",
         # Code Assist serves two flash slugs with different access gates
         # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
         # that subscription/free-tier OAuth users actually reach, while

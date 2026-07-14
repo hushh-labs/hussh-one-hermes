@@ -247,6 +247,134 @@ def _scrub_chat_body(body: bytes, content_type: str) -> bytes:
         return body
 
 
+# ── Gemini tool-schema sanitizer (fixes hard 400s on Vertex function calling) ─
+# Vertex's Gemini function-calling API rejects ANY tool whose `parameters`
+# schema carries a ROOT-LEVEL `anyOf` / `oneOf` / `allOf` — even when
+# `type: "object"` is also present — with a hard, non-retryable 400:
+#   "functionDeclaration parameters schema should be of type OBJECT"
+# Claude (via the same Vertex proxy, same shim) accepts this shape natively.
+# MCP servers routinely emit root-level `anyOf` to express conditional
+# requirements ("provide `scope` OR `request_id`") — e.g. the real
+# `hushh-consent` MCP server's `check_consent_status` and `request_consent`
+# tools both do this. Without this fix, EVERY Gemini model in the BYOK
+# lineup 400s on any turn where Copilot includes one of these tools in its
+# `tools` array — even if the model never calls it — because Vertex validates
+# the full tool manifest up front, not per-call.
+#
+# Fix: for Gemini-bound requests only (Claude is untouched — it doesn't need
+# this and we never want to silently reshape a schema more than necessary),
+# strip the root-level anyOf/oneOf/allOf and fold its meaning into the tool
+# description as a plain-English constraint, so Gemini can still read intent
+# even though the JSON Schema conditional is gone. Never touches nested
+# anyOf inside `properties` (Vertex's schema builder already handles those
+# — see litellm's `_build_vertex_schema`/`process_schema`).
+def _is_gemini_model(model: str) -> bool:
+    return isinstance(model, str) and "gemini" in model.lower()
+
+
+def _describe_requirement_group(group: dict) -> str | None:
+    """Turn a single anyOf/oneOf branch like {"required": ["scope"]} into a
+    readable fragment ("scope"). Returns None for branches we can't describe
+    simply (composite/nested) — caller falls back to a generic note."""
+    if not isinstance(group, dict):
+        return None
+    required = group.get("required")
+    if isinstance(required, list) and required and all(isinstance(r, str) for r in required):
+        return " and ".join(required)
+    return None
+
+
+def _sanitize_gemini_tool_schema(schema: dict) -> dict:
+    """Strip root-level anyOf/oneOf/allOf from a single tool's parameters
+    schema, folding the constraint into an appended note on the schema's
+    (or the tool's) description where we can express it simply."""
+    if not isinstance(schema, dict):
+        return schema
+    out = dict(schema)
+    removed_notes: list[str] = []
+    for key in ("anyOf", "oneOf"):
+        branches = out.pop(key, None)
+        if not branches or not isinstance(branches, list):
+            continue
+        descs = [_describe_requirement_group(b) for b in branches]
+        if all(descs):
+            joiner = " or " if key == "anyOf" else " (exactly one of) "
+            removed_notes.append(
+                f"Must also provide {joiner.join(f'`{d}`' for d in descs)}."
+            )
+        else:
+            removed_notes.append(
+                "This tool has additional conditional field requirements not "
+                "expressible in this schema — check the tool description."
+            )
+    # allOf on parameters is rare and usually just a merge — drop it too if
+    # present, since Vertex applies the same "must be OBJECT" restriction to
+    # any composition keyword at the root, not anyOf/oneOf specifically.
+    if "allOf" in out:
+        out.pop("allOf", None)
+        removed_notes.append(
+            "This tool composes additional schema constraints not "
+            "expressible here — check the tool description."
+        )
+    if removed_notes:
+        note = " ".join(removed_notes)
+        existing_desc = out.get("description")
+        out["description"] = (
+            f"{existing_desc.rstrip()} {note}" if isinstance(existing_desc, str) and existing_desc.strip()
+            else note
+        )
+    return out
+
+
+def _scrub_tools_for_gemini(body: bytes, content_type: str) -> bytes:
+    """If this is a Gemini-bound chat request carrying a `tools` array,
+    strip any root-level anyOf/oneOf/allOf from each tool's parameters
+    schema so Vertex's function-calling validator accepts the manifest.
+    No-op (fails open) for non-Gemini models, missing tools, or parse
+    errors — Claude requests are never touched by this path."""
+    if "application/json" not in (content_type or ""):
+        return body
+    try:
+        import json as _json
+        data = _json.loads(body)
+        if not _is_gemini_model(data.get("model", "")):
+            return body
+        tools = data.get("tools")
+        if not isinstance(tools, list) or not tools:
+            return body
+        changed = False
+        new_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                new_tools.append(tool)
+                continue
+            fn = tool.get("function")
+            if not isinstance(fn, dict):
+                new_tools.append(tool)
+                continue
+            params = fn.get("parameters")
+            if not isinstance(params, dict) or not any(
+                k in params for k in ("anyOf", "oneOf", "allOf")
+            ):
+                new_tools.append(tool)
+                continue
+            sanitized_params = _sanitize_gemini_tool_schema(params)
+            new_tools.append({**tool, "function": {**fn, "parameters": sanitized_params}})
+            changed = True
+            logger.warning(
+                "shim: stripped root-level anyOf/oneOf/allOf from tool "
+                "'%s' for Gemini model '%s' (Vertex rejects this shape); "
+                "folded constraint into description.",
+                fn.get("name", "<unnamed>"), data.get("model", ""),
+            )
+        if not changed:
+            return body
+        data["tools"] = new_tools
+        return _json.dumps(data).encode("utf-8")
+    except Exception:
+        return body
+
+
 async def _send_with_retry(method: str, url: str, headers, body: bytes):
     """Send to upstream, retrying connect/transient failures with bounded
     backoff UNTIL THE FIRST RESPONSE BYTE. Safe because the body is buffered
@@ -295,10 +423,22 @@ async def _proxy(request: Request) -> Response:
         )
     token = _extract_bearer(request)
     if token is None:
+        raw_auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        # Redact: log only whether a header was present and its scheme/length,
+        # never the raw value — a malformed header can still contain a real
+        # (if truncated/garbled) credential, and this log file is not a secret
+        # store. Full header dump likewise dropped for the same reason.
+        auth_shape = (
+            "absent" if raw_auth is None
+            else f"present (len={len(raw_auth)}, scheme={raw_auth.split(None, 1)[0]!r})" if raw_auth
+            else "empty"
+        )
+        logger.error(f"Auth failed: token is None. Authorization header: {auth_shape}.")
         return _unauthorized("Missing or malformed Authorization header. Expected: 'Bearer <key>'.")
     # Constant-time compare to avoid timing oracles on the key.
     import hmac
     if not hmac.compare_digest(token, MASTER_KEY):
+        logger.error(f"Auth failed: token mismatch (received len={len(token)}, expected len={len(MASTER_KEY)}).")
         return _unauthorized("Invalid API key.")
 
     assert _client is not None
@@ -322,6 +462,12 @@ async def _proxy(request: Request) -> Response:
         # bodies; fails open on parse errors. httpx recomputes content-length
         # from the (possibly shorter) scrubbed bytes.
         body = _scrub_chat_body(body, content_type)
+        # Strip root-level anyOf/oneOf/allOf from tool schemas on Gemini-bound
+        # requests — Vertex's function-calling validator hard-400s on this
+        # shape (real MCP tools like hushh-consent's check_consent_status
+        # use it). No-op for Claude / non-tool requests. Order doesn't matter
+        # relative to the scrub above — they touch disjoint JSON keys.
+        body = _scrub_tools_for_gemini(body, content_type)
     wants_stream = body is not None and _is_streaming_request(body, content_type)
 
     if body is None:

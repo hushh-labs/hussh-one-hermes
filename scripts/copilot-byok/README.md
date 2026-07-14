@@ -34,7 +34,7 @@ VS Code Copilot
 └──────────────────────────┘
       │  Vertex AI (global), ADC
       ▼
-  gemini-3.5-flash · claude-sonnet-4-6 · claude-opus-4-8 · claude-sonnet-5 · claude-fable-5
+  gemini-3.5-flash · gemini-3.1-pro-preview · claude-sonnet-4-6 · claude-opus-4-8 · claude-sonnet-5 · claude-fable-5
 ```
 
 Both services bind to `127.0.0.1` only.
@@ -51,6 +51,7 @@ hard 400s mid-conversation.
 | Model | maxInputTokens | maxOutputTokens | Notes |
 |-------|---------------|-----------------|-------|
 | gemini-3.5-flash | 1,048,576 | 65,536 | output limit is `65537 (exclusive)` |
+| gemini-3.1-pro-preview | 2,097,152 | 65,536 | adaptive thinking (low/medium/high) |
 | claude-sonnet-4-6 | 1,000,000 | 128,000 | 1M native on Vertex — **no beta header needed** |
 | claude-opus-4-8 | 1,000,000 | 128,000 | same |
 | claude-sonnet-5 | 1,000,000 | 128,000 | same |
@@ -192,6 +193,131 @@ rapid-kill restart storm stayed up throughout.
 
 Tunables (env, read at shim launch): `SHIM_MAX_BUFFER_MB`, `SHIM_RETRY_BUDGET_S`.
 
+## Onboarding a new model — graceful by construction
+
+Adding a model to this stack (new `model_name` in the proxy config, a shim
+edit, or both) goes through the **same safe path every time** — a bad entry
+can never leave the live proxy broken or Copilot silently stuck on a stale
+model:
+
+1. **Render, don't overwrite.** The generated proxy config and shim are
+   written to a `*.new` scratch file first — the live `litellm-proxy-config.yaml`
+   / `litellm_auth_shim.py` are never touched by an unvalidated candidate.
+2. **Validate before swap.** The candidate config must parse as YAML
+   (`yaml.safe_load`); a candidate shim must compile (`python3 -m py_compile`).
+   A validation failure aborts the run with the real parser error — nothing is
+   swapped in.
+3. **Snapshot before swap.** If a live file already exists, it's copied to
+   `*.bak` immediately before the validated candidate replaces it — so there's
+   always a last-known-good fallback on disk.
+4. **Restart + smoke test.** `--start` restarts both services and runs the
+   auth/chat smoke test (`401` no-auth, `200` authed chat) against the new
+   config.
+5. **Automatic rollback on failure.** If the smoke test fails, the script
+   restores `*.bak` for both the config and the shim, restarts again, and
+   re-verifies. Only if the rollback restart *also* fails does the script
+   exit non-zero with a manual-attention pointer — a single bad model add can
+   never take down the other five working models.
+6. **Native tool-calling gate (two schema shapes, every model).** Once the
+   base smoke test passes, every registered model is sent TWO real
+   OpenAI-format `tools` requests: one with a **property-level** `anyOf`
+   (a value can be one of several types) and one with a **root-level**
+   `anyOf` (a conditional "provide field A OR field B" — the actual shape
+   real MCP tools use, see the section below). Each model must return a
+   valid `tool_calls[].function.name` for both, or the run prints a loud
+   `FAIL` per model+shape (non-blocking — one model failing doesn't take
+   the others down with it, but it can never ship silently).
+
+Live-verified (2026-07-14): injected deliberately broken YAML into the
+template, re-ran the installer — validation caught it, the live config stayed
+byte-identical (`md5` before/after), and both services stayed up throughout
+with zero manual intervention. Separately, all 6 registered models pass both
+tool-calling gate shapes (12/12 PASS: `gemini-3.5-flash`, `gemini-3.1-pro-preview`,
+`claude-sonnet-4-6`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5` ×
+property-anyOf and root-anyOf).
+
+**When you add a new model, this is the checklist:**
+1. Add a `model_list` entry to `scripts/copilot-byok/litellm-proxy-config.template.yaml`.
+2. Add its id + context/output caps to the `vertex_models` list in
+   `hussh-one-copilot-setup.sh` (`write_vscode_config()`).
+3. Add it to `SMOKE_MODELS` near the bottom of `hussh-one-copilot-setup.sh` so
+   the tool-calling gate covers it automatically.
+4. If it's also reachable via the native `gemini` / `google-vertex-claude`
+   Hermes providers, add it to `hermes_cli/models.py` (`_PROVIDER_MODELS`) and
+   `hermes_cli/natural_model_switch.py` (`_canonical_model()`) so natural-
+   language switching ("switch to \<model\>") works without slash syntax —
+   match on the **bare version number**, not just the full name, so "switch to
+   gemini 3.1" resolves the same as "switch to gemini 3.1 pro".
+5. Run `scripts/hussh-one-copilot-setup.sh --start` and confirm both smoke
+   tests print `PASS` before considering the model shipped.
+6. If the new model is Gemini-family, confirm `_is_gemini_model()` in
+   `litellm_auth_shim.py` matches its id (it matches on `"gemini" in id`, so
+   this should be automatic — verify with the root-anyOf gate anyway).
+
+## Real MCP tool compatibility — the Gemini root-`anyOf` schema bug
+
+**This is the class of bug that broke real Copilot sessions in production.**
+VS Code Copilot's actual configured MCP servers (see `.mcp.json` /
+`.vscode/mcp.json` in this repo and sibling repos — `shadcn`, `next-devtools`,
+`plaid`, `hushh-consent`) expose tools with real, non-trivial JSON schemas.
+Two of the `hushh-consent` MCP server's tools — `check_consent_status` and
+`request_consent` — use a **root-level `anyOf`** to express a conditional
+requirement ("must provide `scope` OR `request_id`"):
+
+```json
+{
+  "type": "object",
+  "properties": { "user_id": {"type": "string"}, "scope": {"type": "string"}, "request_id": {"type": "string"} },
+  "required": ["user_id"],
+  "anyOf": [{"required": ["scope"]}, {"required": ["request_id"]}]
+}
+```
+
+**Vertex's Gemini function-calling validator hard-rejects this** with a
+non-retryable `400`:
+```
+"Unable to submit request because `check_consent_status` functionDeclaration
+parameters schema should be of type OBJECT."
+```
+even though `type: "object"` IS present — Vertex's Gemini backend simply
+can't parse a root-level composition keyword (`anyOf`/`oneOf`/`allOf`)
+alongside it. **Claude on the exact same Vertex proxy accepts this shape
+natively — this is Gemini-specific.** And because Vertex validates the
+*entire* `tools` manifest up front (not per-call), this 400 fires on **every**
+Gemini turn where Copilot includes the tool in its manifest — even if the
+model never calls it. From Copilot's side this surfaces as an opaque agent
+error with no obvious cause.
+
+**Fix — `_scrub_tools_for_gemini()` in `litellm_auth_shim.py`:** for
+Gemini-bound requests only (detected via `_is_gemini_model()` — never touches
+Claude), every tool's `parameters` schema is checked for a root-level
+`anyOf`/`oneOf`/`allOf`. If found, the composition keyword is stripped and
+its meaning is folded into the schema's `description` as a plain-English
+note (e.g. `"Must also provide `scope` or `request_id`."`) so Gemini still
+understands the constraint even though the JSON Schema conditional is gone.
+**Property-level `anyOf`** (e.g. a `location` field that can be a `string` or
+`integer`) is a *different*, Vertex-safe shape and is left completely
+untouched — only root-level composition on the tool's top-level parameters
+object is rewritten.
+
+Verified live end-to-end against the exact real `hushh-consent` tool schemas:
+`check_consent_status` and `request_consent`, both models
+(`gemini-3.5-flash`, `gemini-3.1-pro-preview`), both returned a correct
+`200` with a valid `tool_calls[].function` after the fix (previously a hard
+`400` on every attempt). Unit-tested in
+`tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py` (17
+tests) and covered by the `hussh-one-copilot-setup.sh` tool-calling gate's
+`root-anyOf` case on every setup run — see the checklist above.
+
+**If you add a new MCP server / tool with a conditional-requirement schema**
+(anything using `anyOf`/`oneOf`/`allOf` at the schema root to say "one of
+these fields is required"), it's automatically covered by this fix — no
+action needed on the MCP-server side. If Gemini still fails on a new tool
+shape, check the shim log for `"stripped root-level anyOf/oneOf/allOf"` to
+confirm the sanitizer fired, then inspect the raw Vertex error for a
+different validation issue (the sanitizer only handles this one specific
+composition-keyword rejection).
+
 ## Health check
 
 `scripts/hussh-one-doctor.sh` runs `check_copilot_byok`:
@@ -208,16 +334,16 @@ optional per machine.
 ```bash
 KEY=$(grep -o 'LITELLM_MASTER_KEY="[^"]*"' ~/.hermes/scripts/start_litellm_proxy.sh | cut -d'"' -f2)
 
-# no auth → 401
+# no auth -> 401
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8644/v1/models
 
-# correct key → 200 + models
-curl -s http://127.0.0.1:8644/v1/models -H "Authorization: Bearer $KEY"
+# correct key -> 200 + models
+curl -s http://127.0.0.1:8644/v1/models -H "Authorization: Bearer ${KEY}"
 
 # chat with native tool call
 curl -s http://127.0.0.1:8644/v1/chat/completions \
-  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"gemini-3.5-flash","messages":[{"role":"user","content":"hi"}]}'
+  -H "Authorization: Bearer ${KEY}" -H 'Content-Type: application/json' \
+  -d '{"model":"gemini-3.1-pro-preview","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ## Troubleshooting
@@ -229,5 +355,24 @@ curl -s http://127.0.0.1:8644/v1/chat/completions \
   Point Copilot at `:8644` (the shim), not `:8643` — the setup does this for you.
 - **403 PERMISSION_DENIED from Vertex**: ADC project lacks model access, or you
   used a non-`global` location. Re-run with `--project <vertex-enabled-project>`.
+- **Gemini agent turn fails/errors with an opaque agent-side message
+  (route/step-type garbage, blank tool result, or the agent claims a tool
+  "doesn't exist") while Claude works fine on the same tool**: almost
+  certainly the root-`anyOf` schema bug (see "Real MCP tool compatibility"
+  above) — check the raw upstream response for `functionDeclaration
+  parameters schema should be of type OBJECT`. Confirm the shim log shows
+  `"stripped root-level anyOf/oneOf/allOf"` for that tool/model; if it
+  doesn't appear, the sanitizer isn't running (stale shim process — bootout +
+  bootstrap the `ai.hushh.one.litellm-shim` launchd agent, or re-run
+  `hussh-one-copilot-setup.sh --start`, and verify the PID actually changed).
 - **Key mismatch**: the shim reads its key from the proxy launcher; re-running
   the setup keeps them in sync. Don't hand-edit one launcher's key only.
+- **New model shows `tool_call=FAIL` in the setup output**: the model doesn't
+  support (or mishandles) native OpenAI-format tool calling on Vertex. Don't
+  wire it into Copilot's agent-mode workflows until this passes — check the
+  raw response body for a schema-translation error vs. a genuine
+  no-tool-support model.
+- **A model add broke the whole stack**: it shouldn't — `hussh-one-copilot-setup.sh`
+  auto-rolls-back to the last-known-good config/shim on smoke-test failure. If
+  you see `"New config was broken and has been rolled back"`, fix the model
+  entry in the template and re-run; the live stack is already safe again.

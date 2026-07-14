@@ -45,6 +45,7 @@ if [[ -x "scripts/run_tests.sh" ]]; then
     tests/hermes_cli/test_model_switch*.py \
     tests/gateway/test_whatsapp_reply_prefix.py \
     tests/hermes_cli/test_hussh_one_branding.py \
+    tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py \
     -- -q
 else
   if [[ -x ".venv/bin/pytest" ]]; then
@@ -58,6 +59,7 @@ else
     tests/hermes_cli/test_model_switch*.py \
     tests/gateway/test_whatsapp_reply_prefix.py \
     tests/hermes_cli/test_hussh_one_branding.py \
+    tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py \
     -q
 fi
 

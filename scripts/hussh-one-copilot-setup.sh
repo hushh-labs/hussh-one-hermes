@@ -139,16 +139,59 @@ else
   log "LiteLLM venv present."
 fi
 
-# ── 5. Materialize assets into ~/.hermes ─────────────────────────────────────
+# ── 5. Materialize assets into ~/.hermes (graceful: validate → backup → swap) ─
+# Every model/config addition goes through this same safe path so a bad model
+# entry (typo'd Vertex model id, malformed YAML, broken shim edit) can NEVER
+# leave a running proxy replaced by one that won't boot or won't auth. We only
+# ever touch the LIVE files after the CANDIDATE has proven itself:
+#   1. render candidate into a *.new scratch file (never touch the live file)
+#   2. validate candidate (YAML parses / Python compiles)
+#   3. snapshot the current live file to *.bak (only if a live file exists)
+#   4. atomically mv candidate -> live
+#   5. (later, step 7) start/restart + smoke test; on smoke-test FAILURE,
+#      automatically restore *.bak and restart again — see rollback path below.
 PROXY_CONFIG="$HERMES_HOME/litellm-proxy-config.yaml"
 SHIM_DST="$HERMES_HOME/scripts/litellm_auth_shim.py"
 LAUNCHER_SHIM="$HERMES_HOME/scripts/start_litellm_shim.sh"
+PROXY_CONFIG_BAK="$PROXY_CONFIG.bak"
+SHIM_DST_BAK="$SHIM_DST.bak"
 
-# proxy config (substitute project)
+validate_yaml() {  # $1 = path
+  python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$1" 2>&1
+}
+
+validate_py() {  # $1 = path
+  python3 -m py_compile "$1" 2>&1
+}
+
+# proxy config (substitute project) — render to scratch, validate, then swap.
 if [[ "$DRY_RUN" != "1" ]]; then
-  sed "s/__VERTEX_PROJECT__/$PROJECT/g" "$ASSETS/litellm-proxy-config.template.yaml" > "$PROXY_CONFIG"
+  PROXY_CONFIG_NEW="$PROXY_CONFIG.new"
+  sed "s/__VERTEX_PROJECT__/$PROJECT/g" "$ASSETS/litellm-proxy-config.template.yaml" > "$PROXY_CONFIG_NEW"
+  if ! yaml_err="$(validate_yaml "$PROXY_CONFIG_NEW")"; then
+    err "Generated litellm-proxy-config.yaml is not valid YAML — refusing to touch the live config."
+    err "$yaml_err"
+    rm -f "$PROXY_CONFIG_NEW"
+    exit 1
+  fi
+  if [[ -f "$PROXY_CONFIG" ]]; then
+    cp "$PROXY_CONFIG" "$PROXY_CONFIG_BAK"
+  fi
+  mv "$PROXY_CONFIG_NEW" "$PROXY_CONFIG"
   chmod 600 "$PROXY_CONFIG"
-  cp "$ASSETS/litellm_auth_shim.py" "$SHIM_DST"
+
+  SHIM_DST_NEW="$SHIM_DST.new"
+  cp "$ASSETS/litellm_auth_shim.py" "$SHIM_DST_NEW"
+  if ! py_err="$(validate_py "$SHIM_DST_NEW")"; then
+    err "Generated litellm_auth_shim.py failed to compile — refusing to touch the live shim."
+    err "$py_err"
+    rm -f "$SHIM_DST_NEW"
+    exit 1
+  fi
+  if [[ -f "$SHIM_DST" ]]; then
+    cp "$SHIM_DST" "$SHIM_DST_BAK"
+  fi
+  mv "$SHIM_DST_NEW" "$SHIM_DST"
   chmod 755 "$SHIM_DST"
 else
   log "dry-run: would write $PROXY_CONFIG and $SHIM_DST"
@@ -218,6 +261,8 @@ url = f"http://127.0.0.1:{shim_port}/v1"
 vertex_models = [
     {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash (Vertex ADC)",
      "maxInputTokens": 1048576, "maxOutputTokens": 65536},
+    {"id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview (Vertex ADC)",
+     "maxInputTokens": 2097152, "maxOutputTokens": 65536},
     {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Vertex ADC)",
      "maxInputTokens": 1000000, "maxOutputTokens": 128000},
     {"id": "claude-opus-4-8", "name": "Claude Opus 4.8 (Vertex ADC)",
@@ -417,13 +462,30 @@ if [[ "$USE_LAUNCHD" == "1" ]]; then
 fi
 
 if [[ "$START_SERVICES" == "1" && "$DRY_RUN" != "1" ]]; then
+  restart_services() {
+    if [[ "$started_via_launchd" == "1" ]]; then
+      bootout_label "$PROXY_LABEL"; bootstrap_label "$PROXY_LABEL" "$LAUNCHD_DIR/$PROXY_LABEL.plist"
+      sleep 2
+      bootout_label "$SHIM_LABEL"; bootstrap_label "$SHIM_LABEL" "$LAUNCHD_DIR/$SHIM_LABEL.plist"
+    else
+      pkill -f "litellm.*--port $PROXY_PORT" >/dev/null 2>&1 || true
+      pkill -f "litellm_auth_shim.py" >/dev/null 2>&1 || true
+      sleep 1
+      nohup_start "$LAUNCHER_PROXY" "$HERMES_HOME/logs/litellm-proxy.log"
+      nohup_start "$LAUNCHER_SHIM" "$HERMES_HOME/logs/litellm-shim.log"
+    fi
+    for _ in $(seq 1 30); do
+      if listening "$PROXY_PORT" && listening "$SHIM_PORT"; then break; fi
+      sleep 1
+    done
+  }
+  nohup_start() {
+    local launcher="$1" logf="$2"
+    ( setsid bash "$launcher" >>"$logf" 2>&1 & ) 2>/dev/null || \
+      ( bash "$launcher" >>"$logf" 2>&1 & )
+  }
   if [[ "$started_via_launchd" != "1" ]]; then
     log "Starting proxy + shim ..."
-    nohup_start() {
-      local launcher="$1" logf="$2"
-      ( setsid bash "$launcher" >>"$logf" 2>&1 & ) 2>/dev/null || \
-        ( bash "$launcher" >>"$logf" 2>&1 & )
-    }
     if ! listening "$PROXY_PORT"; then
       nohup_start "$LAUNCHER_PROXY" "$HERMES_HOME/logs/litellm-proxy.log"
     fi
@@ -437,7 +499,8 @@ if [[ "$START_SERVICES" == "1" && "$DRY_RUN" != "1" ]]; then
     sleep 1
   done
   log "Smoke test (auth + chat through shim) ..."
-  SMOKE_KEY="$KEY" SMOKE_PORT="$SHIM_PORT" python3 - <<'PY'
+  smoke_test() {
+    SMOKE_KEY="$KEY" SMOKE_PORT="$SHIM_PORT" python3 - <<'PY'
 import json, os, urllib.request, urllib.error
 key = os.environ["SMOKE_KEY"]; port = os.environ["SMOKE_PORT"]
 base = f"http://127.0.0.1:{port}"
@@ -456,13 +519,160 @@ ok = (noauth == 401 and chat == 200)
 print(f"  no-auth->{noauth} (want 401), chat->{chat} (want 200): {'PASS' if ok else 'FAIL'}")
 raise SystemExit(0 if ok else 1)
 PY
+  }
+  # ── Tool-calling smoke test — every model registered on the endpoint must
+  # natively round-trip an OpenAI-format `tools` request the way VS Code
+  # Copilot's MCP tool-calling path sends them (function name + JSON-schema
+  # parameters in, `tool_calls[].function` back). This is what "onboarding a
+  # new model" must prove before it ships, so a model that silently drops
+  # tool support (or mangles the schema) never reaches Copilot unannounced.
+  tool_call_smoke_test() {
+    SMOKE_KEY="$KEY" SMOKE_PORT="$SHIM_PORT" python3 - <<'PY'
+import json, os, sys, urllib.request, urllib.error
+key = os.environ["SMOKE_KEY"]; port = os.environ["SMOKE_PORT"]
+base = f"http://127.0.0.1:{port}"
+
+def call(model, tool, prompt):
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "tools": [tool],
+        "tool_choice": "auto",
+        "max_tokens": 300,
+    }).encode()
+    req = urllib.request.Request(base + "/v1/chat/completions", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", "Bearer " + key)
+    with urllib.request.urlopen(req, timeout=45) as r:
+        data = json.loads(r.read().decode())
+        msg = data.get("choices", [{}])[0].get("message", {})
+        calls = msg.get("tool_calls") or []
+        return [c.get("function", {}).get("name") for c in calls]
+
+# Test 1: property-level anyOf (a value can be one of several types) — the
+# shape Vertex has always handled fine on both Gemini and Claude.
+property_anyof_tool = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather for a location.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "anyOf": [{"type": "string"}, {"type": "integer"}],
+                    "description": "City name or postal code",
+                }
+            },
+            "required": ["location"],
+        },
+    },
+}
+
+# Test 2: ROOT-LEVEL anyOf (conditional "provide field A OR field B")  — the
+# real shape used by production MCP tools (e.g. hushh-consent's
+# check_consent_status: "must provide scope OR request_id"). Vertex's Gemini
+# function-calling validator hard-400s on this UNLESS the shim's
+# _scrub_tools_for_gemini() strips it first (see litellm_auth_shim.py). This
+# is the regression that broke real Copilot sessions in production — this
+# test exists specifically so it can never reach Copilot silently again.
+root_anyof_tool = {
+    "type": "function",
+    "function": {
+        "name": "check_consent_status",
+        "description": "Check consent status for a user/scope pair or a specific request id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "The user id"},
+                "scope": {"type": "string", "description": "The scope requested"},
+                "request_id": {"type": "string", "description": "The request id"},
+            },
+            "required": ["user_id"],
+            "anyOf": [{"required": ["scope"]}, {"required": ["request_id"]}],
+        },
+    },
+}
+
+models = os.environ.get("SMOKE_MODELS", "").split(",")
+models = [m for m in models if m.strip()]
+failures = []
+for model in models:
+    try:
+        names = call(model, property_anyof_tool, "What's the weather in Tokyo right now? Use the tool.")
+        ok = "get_weather" in names
+        print(f"  {model:<28} property-anyOf  tool_call={'PASS' if ok else 'FAIL'} names={names}")
+        if not ok:
+            failures.append(f"{model}:property-anyOf")
+    except Exception as e:
+        print(f"  {model:<28} property-anyOf  tool_call=FAIL exception={type(e).__name__}: {e}")
+        failures.append(f"{model}:property-anyOf")
+
+    try:
+        names = call(model, root_anyof_tool, "Check consent status for user 12345, scope=basic_profile. Use the tool.")
+        ok = "check_consent_status" in names
+        print(f"  {model:<28} root-anyOf      tool_call={'PASS' if ok else 'FAIL'} names={names}")
+        if not ok:
+            failures.append(f"{model}:root-anyOf")
+    except Exception as e:
+        print(f"  {model:<28} root-anyOf      tool_call=FAIL exception={type(e).__name__}: {e}")
+        failures.append(f"{model}:root-anyOf")
+if failures:
+    print(f"  Tool-calling FAILED for: {', '.join(failures)}")
+    sys.exit(1)
+PY
+  }
+  if ! smoke_test; then
+    # ── Graceful rollback: the new model/config broke the stack. Restore the
+    # last-known-good proxy config + shim (if a backup exists) and retry once
+    # before giving up, so a single bad model entry never leaves Copilot dead.
+    rolled_back=0
+    if [[ -f "$PROXY_CONFIG_BAK" ]]; then
+      warn "Smoke test failed — rolling back litellm-proxy-config.yaml to last known good."
+      cp "$PROXY_CONFIG_BAK" "$PROXY_CONFIG"
+      rolled_back=1
+    fi
+    if [[ -f "$SHIM_DST_BAK" ]]; then
+      warn "Smoke test failed — rolling back litellm_auth_shim.py to last known good."
+      cp "$SHIM_DST_BAK" "$SHIM_DST"
+      rolled_back=1
+    fi
+    if [[ "$rolled_back" == "1" ]]; then
+      warn "Restarting proxy + shim on the rolled-back config ..."
+      restart_services
+      if smoke_test; then
+        err "New config was broken and has been rolled back. Fix the model entry (check $ASSETS/litellm-proxy-config.template.yaml) and re-run."
+        exit 1
+      else
+        err "Rollback restart ALSO failed the smoke test — services may need manual attention (check $HERMES_HOME/logs/litellm-proxy.log and litellm-shim.log)."
+        exit 1
+      fi
+    else
+      err "Smoke test failed and no backup was available to roll back to. Check $HERMES_HOME/logs/litellm-proxy.log and litellm-shim.log."
+      exit 1
+    fi
+  fi
+  # ── Tool-calling gate (runs only once the base smoke test has passed) ──────
+  # Every model we ship to Copilot must prove native OpenAI-format tool
+  # calling round-trips correctly through shim -> LiteLLM -> Vertex, using
+  # the same anyOf-bearing schema shape Copilot's real MCP tools send. This
+  # is the "graceful onboarding" gate for tool support specifically — it
+  # never blocks setup (a single flaky/no-tool-support model shouldn't take
+  # down every other model), but any FAIL is surfaced loudly so a model
+  # that can't do native tool calling is never silently handed to Copilot.
+  SMOKE_MODELS="gemini-3.5-flash,gemini-3.1-pro-preview,claude-sonnet-4-6,claude-opus-4-8,claude-sonnet-5,claude-fable-5"
+  log "Tool-calling smoke test (native OpenAI tools -> tool_calls, anyOf schema) ..."
+  if ! SMOKE_MODELS="$SMOKE_MODELS" tool_call_smoke_test; then
+    warn "One or more models FAILED native tool calling — see above. Setup continues,"
+    warn "but do NOT rely on that model for MCP tool use in Copilot until fixed."
+  fi
 fi
 
 log ""
 log "VS Code Copilot BYOK (Vertex ADC) setup complete."
 log "  Endpoint URL : http://127.0.0.1:$SHIM_PORT/v1   (the auth shim)"
 log "  API key      : $KEY"
-log "  Models       : gemini-3.5-flash, claude-sonnet-4-6, claude-opus-4-8"
+log "  Models       : gemini-3.5-flash, gemini-3.1-pro-preview, claude-sonnet-4-6, claude-opus-4-8"
 if [[ "$started_via_launchd" == "1" ]]; then
   log "  Resilience   : launchd KeepAlive ($PROXY_LABEL, $SHIM_LABEL) — instant restart"
 fi

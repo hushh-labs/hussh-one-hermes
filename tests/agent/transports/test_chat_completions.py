@@ -352,7 +352,7 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
             "include_thoughts": True,
-            "thinking_level": "low",
+            "thinking_level": "medium",
         }
 
     def test_gemini_native_disabled_reasoning_hides_thoughts(self, transport):

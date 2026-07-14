@@ -125,6 +125,9 @@ def _canonical_model(text: str) -> str:
     if re.search(r"\b(?:claude[-\s]*)?haiku(?:[-\s]*4(?:[.\-\s]*5)?)?\b", normalized):
         return "claude-haiku-4-5"
 
+    if re.search(r"\bgemini[-\s]*3(?:[.\-\s]*1)\b[-\s]*(?:pro(?:[-\s]*preview)?)?", normalized):
+        return "gemini-3.1-pro-preview"
+
     if re.search(r"\bgemini(?:[-\s]*3(?:[.\-\s]*5)?)?[-\s]*flash\b", normalized):
         return "gemini-3.5-flash"
 

@@ -60,6 +60,19 @@ model_list:
       vertex_location: europe-west2
       rpm: 2000
 
+  # ── Gemini 3.1 Pro Preview: global only ──
+  - model_name: gemini-3.1-pro-preview
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+
   # ── Claude Sonnet 4.6: global only ──
   - model_name: claude-sonnet-4-6
     litellm_params:
@@ -121,6 +134,8 @@ router_settings:
   # 429s under real upstream quota pressure.
   fallbacks:
     - gemini-3.5-flash: ["gemini-3.5-flash"]
+    - gemini-3.1-pro-preview: ["gemini-3.1-pro-preview"]
+    - gemini-3.1-pro: ["gemini-3.1-pro"]
     - claude-sonnet-4-6: ["claude-sonnet-4-6"]
     - claude-opus-4-8: ["claude-opus-4-8"]
     - claude-sonnet-5: ["claude-sonnet-5"]
@@ -132,6 +147,15 @@ litellm_settings:
   set_verbose: false
   num_retries: 4                    # belt-and-suspenders top-level retry
   request_timeout: 600              # long Copilot agent turns / big contexts
+  vertex_ai_safety_settings:
+    - category: HARM_CATEGORY_HATE_SPEECH
+      threshold: BLOCK_NONE
+    - category: HARM_CATEGORY_HARASSMENT
+      threshold: BLOCK_NONE
+    - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+      threshold: BLOCK_NONE
+    - category: HARM_CATEGORY_DANGEROUS_CONTENT
+      threshold: BLOCK_NONE
 
 # master_key supplied via LITELLM_MASTER_KEY env at launch (DB-less). Proxy binds
 # 127.0.0.1 only; the :8644 auth shim sits in front for clean 401s.

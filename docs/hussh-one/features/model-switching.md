@@ -37,7 +37,22 @@ prompts natively** (no beta header) and cap output at **128k**:
 | claude-sonnet-5 | global | "sonnet 5" |
 | claude-fable-5 | **global only** | "fable", "fable 5" |
 
-`gemini-3.5-flash` (the Hussh One default): 1,048,576 in / 65,536 out.
+## Gemini catalog (native `gemini` provider + Vertex ADC)
+| Model | Aliases understood | Context | Thinking levels |
+|-------|--------------------|---------|------------------|
+| gemini-3.5-flash (default) | "gemini 3.5", "gemini 3.5 flash", "flash" | 1,048,576 in / 65,536 out | low / medium / high |
+| gemini-3.1-pro-preview | "gemini 3.1", "gemini 3.1 pro", "gemini 3.1 pro preview" | 2,097,152 in / 65,536 out | low / medium / high |
+
+`gemini-3.1-pro` and `gemini-3.1-pro-preview` both resolve to the same model —
+`gemini-3.1-pro` is not a separately-servable Vertex slug yet, so the proxy config
+and CLI catalog point it at `gemini-3.1-pro-preview` until GA drops a stable id.
+
+`_canonical_model()` in `hermes_cli/natural_model_switch.py` matches "gemini 3.1"
+**without** requiring the word "pro" — bare version-number switches ("switch to
+gemini 3.1") resolve the same as "switch to gemini 3.1 pro". This pattern must be
+extended for every future Gemini/Claude minor version so version-only phrasing
+never silently falls through to `None` (no-op).
+
 The same limits are mirrored to VS Code Copilot BYOK by
 `scripts/hussh-one-copilot-setup.sh` — see `scripts/copilot-byok/README.md`.
 

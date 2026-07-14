@@ -20,6 +20,7 @@ Baileys bridge, with owner-only triggering and sandboxed social-group capsules.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-12 | `daaaa3070` | **Group Intelligence onboarding** — self-chat auto-all-users mode, debounced bridge watchdog, cron/scheduler + `send_message` tool support for the new flow. |
 | 2026-07-08 | `2faade147` | **Per-capsule dedicated trigger handles.** Each capsule (e.g. "One Team") now scopes to its OWN `@`-handle via `whatsapp.capsules.<jid>.trigger_tokens`, forwarded to the bridge as `WHATSAPP_GROUP_TRIGGER_TOKENS`. Fixes cross-talk where any global `@One`/`@husshOne` tag — or a native @-mention of the owner's own number in self-chat mode — incorrectly woke every capsule group. |
 | 2026-06-25 | `1904dd513` | Count-capped WhatsApp session prune (`MAX_PER_FAMILY`) — bounds Baileys session-dir bloat. |
 | 2026-06-25 | `75a14bcf9` | Moved WhatsApp bridge to a dedicated port **8473** (off 3000) — avoids clashing with dev servers. |
@@ -49,6 +50,7 @@ GCP project, not a personal subscription token.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-14 | *pending* | **Gemini 3.1 Pro Preview onboarded** end-to-end: native `gemini` provider, `google-gemini-cli`, Vertex ADC (Copilot BYOK), and adaptive thinking (`low`/`medium`/`high`) extended to the full Gemini 3/3.1/3.5 family (was Pro-only `low`/`high`, Flash-only `low`/`medium`/`high` — now unified). Natural-language switch ("switch to gemini 3.1", "gemini 3.1 pro") added to `natural_model_switch.py`. Context window: 2,097,152 in / 65,536 out (live-probed). |
 | 2026-07-07 | `a717f82fb` | Vertex ADC context-window corrections; fixed a bare `SILENT` token leaking to user chat. |
 | 2026-07-07 | `f32dce090` | Live-probed: `claude-sonnet-4-6` output cap is **128k**, not 64k. |
 | 2026-06-26 | `3c6a06b5a` | Streaming fallbacks to kill a mid-stream Vertex `429` cleanly instead of hanging. |
@@ -72,6 +74,7 @@ API keys.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-14 | *pending* | **Gemini 3.1 Pro Preview added to the BYOK model list**; graceful onboarding hardening — every future model/config add now goes through validate→backup→atomic-swap→smoke-test→auto-rollback (a bad model entry can no longer leave Copilot's proxy dead), plus a **native tool-calling gate** (two schema shapes: property-level and root-level `anyOf`, both run against every registered model on every setup). **Fixed a real production bug**: Vertex's Gemini function-calling validator hard-400s on any tool schema with a root-level `anyOf`/`oneOf`/`allOf` (real MCP tools use this to express "provide field A OR field B" — e.g. hushh-consent's `check_consent_status`/`request_consent`); Claude accepted the same shape fine. New shim-side sanitizer (`_scrub_tools_for_gemini`) strips the composition keyword for Gemini-bound requests only and folds the constraint into the tool description — 17 new unit tests, live-verified against the real hushh-consent schemas (400→200). Auth-shim debug logging redacted (no more raw bearer/header dumps to disk). |
 | 2026-07-07 | `3ec880250` | Scrub LiteLLM's empty-content placeholder from Claude transcripts (Copilot compatibility fix). |
 | 2026-07-04 | `67749df95` | Embedded the literal shim key directly in the VS Code BYOK config + added a doctor guard for drift. |
 | 2026-06-26 | `962c9cfee` | Keep the PTY/WS session alive when the dashboard tab is backgrounded/minimized (adjacent reliability fix landed same wave). |
@@ -165,6 +168,7 @@ Brand story: [overview/brand.md](./overview/brand.md)
 ## 📚 Documentation Infrastructure
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-08 | `7da566c3c` | **This changelog + its self-checking freshness guard shipped** (`scripts/hussh-one-changelog-check.py`), wired into `hussh-one-health-index.py` and `hussh-one-doctor.sh`. |
 | 2026-07-07 | `635c0e7e7` | Synced onboarding + docs with live-probed Vertex context windows and cron `[SILENT]` conventions. |
 | 2026-06-22 | `d368c5db6` / `613a0fbdf` | Documented session-model resume, dashboard crash resilience, and the Open WebUI variant. |
 | 2026-06-05 | `29aaf420b` | **Scaffolded this entire `docs/hussh-one/` nested documentation tree** (overview / architecture / features / operations / contracts / roadmap). |
