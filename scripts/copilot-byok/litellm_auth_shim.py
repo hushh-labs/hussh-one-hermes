@@ -457,6 +457,23 @@ async def _proxy(request: Request) -> Response:
     body = await _read_body_bounded(request)
     content_type = request.headers.get("content-type", "")
     if body is not None:
+        # DEBUG CAPTURE (temporary, env-gated, zero cost when unset): dump the
+        # raw pre-sanitization body of any Gemini request carrying `tools` so
+        # we can inspect the REAL schema VS Code Copilot sends for its native
+        # built-in tools (copilot_replaceString, run_in_terminal, etc.) — not
+        # just MCP server tools. Controlled by HUSSH_SHIM_CAPTURE_TOOLS=1.
+        if os.environ.get("HUSSH_SHIM_CAPTURE_TOOLS") == "1":
+            try:
+                import json as _json
+                _peek = _json.loads(body)
+                if _is_gemini_model(_peek.get("model", "")) and _peek.get("tools"):
+                    import time as _time
+                    _cap_path = f"/tmp/hussh_shim_capture_{int(_time.time()*1000)}.json"
+                    with open(_cap_path, "wb") as _f:
+                        _f.write(body)
+                    logger.warning("shim: captured Gemini tools request to %s", _cap_path)
+            except Exception:
+                pass
         # Scrub the transcript so LiteLLM's Anthropic empty-content placeholder
         # never enters (or re-enters) the model context. No-op for non-chat
         # bodies; fails open on parse errors. httpx recomputes content-length

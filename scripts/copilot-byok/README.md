@@ -254,6 +254,83 @@ property-anyOf and root-anyOf).
    `litellm_auth_shim.py` matches its id (it matches on `"gemini" in id`, so
    this should be automatic — verify with the root-anyOf gate anyway).
 
+## Real MCP / native-tool compatibility — investigating the Gemini `anyOf` theory
+
+**Correction (2026-07-14, same day as the original write-up below):** the
+original version of this section claimed a confirmed production bug — Vertex
+Gemini hard-400ing on root-level `anyOf` in MCP tool schemas — based on a
+schema shape *inferred* from documentation, not from a captured real request.
+That theory did not hold up under direct verification and is preserved below
+only as a record of the investigation, followed by what verification actually
+showed.
+
+**What we verified directly**, with a live debug capture on the shim
+(`HUSSH_SHIM_CAPTURE_TOOLS=1`, temporary — do not leave this on, it writes
+full raw request bodies including conversation content to `/tmp`):
+
+1. Captured ONE real, live VS Code Copilot agent-mode request against
+   `gemini-3.1-pro-preview`, carrying Copilot's actual **86-tool manifest** —
+   every native built-in tool (`run_in_terminal`, `read_file`, `create_file`,
+   `replace_string_in_file`, `list_dir`, `grep_search`, `manage_todo_list`,
+   `insert_edit_into_file`, etc.) plus every live MCP tool
+   (`mcp_hushh-consent_*`, `mcp_hussh-wiki_*`, `mcp_next-devtools_*`,
+   `mcp_plaid_*`, `mcp_shadcn_*`).
+2. Scanned all 86 tool schemas for root-level `anyOf`/`oneOf`/`allOf`:
+   **zero found.** The real, live `mcp_hushh-consent_check_consent_status`
+   schema Copilot actually sends has **no `anyOf` at all** — VS Code's own
+   tool-schema translation layer had already flattened the conditional
+   requirement away before the request ever reached the model API. (One
+   tool, `edit_notebook_file`, has a **property-level** `anyOf` — a value
+   that can be `string` or `array` — which is the Vertex-safe shape, not the
+   root-level one.)
+3. Replayed that exact real captured 86-tool request against both
+   `gemini-3.5-flash` and `gemini-3.1-pro-preview` through the live shim:
+   **both returned `200 OK` with a correct `tool_calls: ["run_in_terminal"]`.**
+   No 400, no schema rejection, no error of any kind.
+4. Searched every VS Code chat session transcript on this machine for the
+   actual Vertex error string (`functionDeclaration ... schema should be of
+   type OBJECT`): **zero real occurrences.** The user-reported error
+   (`route=/ria/;...ui_step_type=;ui_error=;error=`) that prompted this
+   investigation turned out to be unrelated — it's a diagnostic string format
+   from `hushh-research`'s own app-level e2e/smoke-test harness
+   (`bootstrap_state`/`ui_flow`/`ui_step_type` fields), surfaced via
+   `run_in_terminal` output while running native route tests. It has nothing
+   to do with tool-calling schemas, Gemini, or Vertex.
+
+**Conclusion:** as of 2026-07-14, Copilot's native built-in tools AND all
+live MCP tools work correctly against Gemini through this BYOK stack, with
+no schema-compatibility issue found. The `_scrub_tools_for_gemini()`
+sanitizer in `litellm_auth_shim.py` and its test coverage remain in place as
+a defense-in-depth safety net — they are harmless no-ops on schemas that
+don't need them, and they protect against a real, documented category of
+Vertex incompatibility that could reappear if a future MCP server or Copilot
+version ever does emit a root-level composition keyword. But do not treat
+the write-up below as a confirmed incident — it was a hypothesis that did
+not survive contact with real captured traffic.
+
+**If you hit a genuine tool-calling failure on Gemini in the future**, the
+fastest path to ground truth is the same debug capture used here:
+1. Temporarily add `export HUSSH_SHIM_CAPTURE_TOOLS="1"` to
+   `~/.hermes/scripts/start_litellm_shim.sh`, restart the shim
+   (`launchctl bootout` + `bootstrap` the `ai.hushh.one.litellm-shim`
+   launchd job — a plain restart via the setup script won't pick up an env
+   var change).
+2. Trigger the failing Copilot turn once in VS Code.
+3. Check `/tmp/hussh_shim_capture_*.json` for the raw request that failed —
+   inspect its exact `tools` array against the real Vertex error message in
+   `~/.hermes/logs/litellm-proxy.log`.
+4. **Remove the `HUSSH_SHIM_CAPTURE_TOOLS` line and restart again once done**
+   — it writes full raw request bodies (including conversation content) to
+   `/tmp`, which is not something to leave running.
+
+---
+
+## Historical write-up (superseded by the correction above)
+
+The section below is preserved for context but its central claim (a
+confirmed production 400 from real MCP tool schemas) was not substantiated
+by direct verification — see the correction above.
+
 ## Real MCP tool compatibility — the Gemini root-`anyOf` schema bug
 
 **This is the class of bug that broke real Copilot sessions in production.**
