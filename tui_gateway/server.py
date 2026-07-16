@@ -130,7 +130,7 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
-_sessions_lock = threading.Lock()
+_sessions_lock = threading.RLock()
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
@@ -202,10 +202,22 @@ atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
 
+
+class _DropTransport:
+    """Detached WebSocket sink that keeps sessions resumable without output."""
+
+    def write(self, obj: dict) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+
 # Module-level stdio transport — fallback sink when no transport is bound via
 # contextvar or session. Stream resolved through a lambda so runtime monkey-
 # patches of `_real_stdout` (used extensively in tests) still land correctly.
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
+_detached_ws_transport = _DropTransport()
 
 
 class _SlashWorker:
@@ -311,7 +323,7 @@ def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
 
 
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
-    """Best-effort finalize hook + memory commit for a session."""
+    """Persist a closing session and notify lifecycle hooks exactly once."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
@@ -326,11 +338,43 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             history = list(session.get("history", []))
     else:
         history = list(session.get("history", []))
+
+    if agent is not None and hasattr(agent, "_persist_session"):
+        snapshot = getattr(agent, "_session_messages", None) or history
+        if snapshot:
+            try:
+                agent._persist_session(snapshot, conversation_history=history)
+            except Exception:
+                pass
+
+    if agent is not None:
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            invoke_hook(
+                "on_session_end",
+                session_id=getattr(agent, "session_id", None)
+                or session.get("session_key", ""),
+                completed=False,
+                interrupted=True,
+                model=getattr(agent, "model", "unknown"),
+                platform=getattr(agent, "platform", None) or "tui",
+            )
+        except Exception:
+            pass
+
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         try:
             agent.commit_memory_session(history)
         except Exception:
             pass
+
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
@@ -349,7 +393,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
 
-def _teardown_session(session: dict | None) -> None:
+def _teardown_session(
+    session: dict | None, *, end_reason: str = "tui_close"
+) -> None:
     """Fully tear down a session: finalize, unregister, close agent + worker.
 
     Shared by ``session.close`` and the orphaned-WS-session reaper so the
@@ -359,7 +405,7 @@ def _teardown_session(session: dict | None) -> None:
     """
     if not session:
         return
-    _finalize_session(session)
+    _finalize_session(session, end_reason=end_reason)
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -372,27 +418,30 @@ def _teardown_session(session: dict | None) -> None:
             agent.close()
     except Exception:
         pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+
+
+def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+    """Idempotently remove and tear down a live TUI session by its ID."""
+    with _sessions_lock:
+        session = _sessions.pop(sid, None)
+    if session is None:
+        return False
+    _teardown_session(session, end_reason=end_reason)
+    return True
 
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
     After ``handle_ws`` detaches a disconnected client it points the session
-    at ``_stdio_transport``. In the dashboard's in-process gateway there is no
-    real stdio peer reading those frames, so a session left on the stdio
-    transport (and not mid-turn) is genuinely orphaned and safe to reap.
+    at a drop transport. A session left there (and not mid-turn) is genuinely
+    orphaned and safe to reap.
     """
     if not session or session.get("_finalized"):
         return False
     if session.get("running"):
         return False
-    return session.get("transport") is _stdio_transport
+    return session.get("transport") is _detached_ws_transport
 
 
 def _schedule_ws_orphan_reap(sid: str) -> None:
@@ -407,18 +456,47 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
 
     def _reap() -> None:
         with _session_resume_lock:
-            session = _sessions.get(sid)
-            if not _ws_session_is_orphaned(session):
+            if not _ws_session_is_orphaned(_sessions.get(sid)):
                 return
-            _sessions.pop(sid, None)
-        try:
-            _teardown_session(session)
-        except Exception:
-            pass
+            _close_session_by_id(sid, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True
     timer.start()
+
+
+def _close_sessions_for_transport(
+    transport, *, end_reason: str = "ws_disconnect"
+) -> tuple[int, int]:
+    """Clean up or detach every TUI session owned by a closed WS transport.
+
+    Dashboard-sidecar sessions can opt into immediate close; resumable sessions
+    are detached and given the normal grace window for a reconnect.
+    """
+    with _sessions_lock:
+        owned = [
+            (sid, session)
+            for sid, session in _sessions.items()
+            if session.get("transport") is transport
+        ]
+
+    reaped = 0
+    detached = 0
+    for sid, session in owned:
+        if session.get("close_on_disconnect"):
+            if _close_session_by_id(sid, end_reason=end_reason):
+                reaped += 1
+            continue
+        with _sessions_lock:
+            if _sessions.get(sid) is not session:
+                continue
+            session["transport"] = _detached_ws_transport
+        detached += 1
+        try:
+            _schedule_ws_orphan_reap(sid)
+        except Exception:
+            pass
+    return reaped, detached
 
 
 def _shutdown_sessions() -> None:
@@ -983,13 +1061,37 @@ def _ensure_session_db_row(session: dict) -> None:
         # claude-opus-4-8), NOT the global config default. Using _resolve_model()
         # here stamped every TUI row with the config default (gemini-3.5-flash),
         # so on resume the wrong model was restored/displayed in the chrome.
+        override = session.get("model_override")
+        override = override if isinstance(override, dict) else {}
         _agent = session.get("agent")
-        _row_model = (getattr(_agent, "model", "") or "").strip() or _resolve_model()
+        _row_model = (
+            str(override.get("model") or "").strip()
+            or (getattr(_agent, "model", "") or "").strip()
+            or _resolve_model()
+        )
+        model_config = {
+            field: str(override[field])
+            for field in ("model", "provider", "base_url", "api_mode")
+            if override.get(field)
+        }
+        if model_config.get("provider", "").lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                model_config["provider"] = (
+                    canonical_custom_identity(
+                        base_url=model_config.get("base_url") or None
+                    )
+                    or "custom"
+                )
+            except Exception:
+                pass
         db.create_session(
             key,
             source="tui",
             model=_row_model,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+            model_config=model_config,
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
@@ -999,6 +1101,95 @@ def _ensure_session_db_row(session: dict) -> None:
                 db.close()
             except Exception:
                 pass
+
+
+_BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
+
+
+def _stored_session_runtime_overrides(row: dict | None) -> dict:
+    """Recover the routable runtime identity recorded in a session row."""
+    if not row:
+        return {}
+    raw_config = row.get("model_config")
+    if isinstance(raw_config, dict):
+        model_config = raw_config
+    else:
+        try:
+            model_config = json.loads(raw_config) if raw_config else {}
+        except Exception:
+            model_config = {}
+    if not isinstance(model_config, dict):
+        model_config = {}
+
+    model = str(row.get("model") or model_config.get("model") or "").strip()
+    provider = str(model_config.get("provider") or "").strip()
+    billing_provider = str(
+        model_config.get("billing_provider") or row.get("billing_provider") or ""
+    ).strip()
+    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
+        provider = billing_provider
+    base_url = str(model_config.get("base_url") or "").strip()
+    api_mode = str(model_config.get("api_mode") or "").strip()
+
+    if provider.lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            provider = canonical_custom_identity(base_url=base_url or None) or ""
+        except Exception:
+            provider = "" if not base_url else provider
+
+    overrides: dict = {}
+    if model:
+        overrides["model_override"] = {
+            "model": model,
+            "provider": provider or None,
+            "base_url": base_url or None,
+            "api_mode": api_mode or None,
+        }
+    if provider:
+        overrides["provider_override"] = provider
+    reasoning_config = model_config.get("reasoning_config")
+    if isinstance(reasoning_config, dict):
+        overrides["reasoning_config_override"] = reasoning_config
+    if service_tier := str(model_config.get("service_tier") or "").strip():
+        overrides["service_tier_override"] = service_tier
+    return overrides
+
+
+def _runtime_model_config(agent, existing: dict | None = None) -> dict:
+    """Persist an agent runtime without losing named custom-provider identity."""
+    config = dict(existing or {})
+    model = str(getattr(agent, "model", "") or "").strip()
+    provider = str(getattr(agent, "provider", "") or "").strip()
+    base_url = str(getattr(agent, "base_url", "") or "").strip()
+    api_mode = str(getattr(agent, "api_mode", "") or "").strip()
+    if model:
+        config["model"] = model
+    if provider:
+        if provider.lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                provider = canonical_custom_identity(base_url=base_url or None) or provider
+            except Exception:
+                pass
+        config["provider"] = provider
+    if base_url:
+        config["base_url"] = base_url
+    else:
+        config.pop("base_url", None)
+    if api_mode:
+        config["api_mode"] = api_mode
+    else:
+        config.pop("api_mode", None)
+    for name in ("reasoning_config", "service_tier"):
+        value = getattr(agent, name, None)
+        if isinstance(value, dict) or value:
+            config[name] = value
+        else:
+            config.pop(name, None)
+    return config
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
@@ -2820,9 +3011,15 @@ def _make_agent(
                         if not isinstance(_custom_provs, list):
                             _custom_provs = None
 
+                        _model_cfg = _cfg.get("model") or {}
+                        _configured_provider = (
+                            str(_model_cfg.get("provider") or "").strip()
+                            if isinstance(_model_cfg, dict)
+                            else ""
+                        )
                         _sw = _switch_model(
                             raw_input=stored_model,
-                            current_provider="openrouter",
+                            current_provider=_configured_provider or "auto",
                             current_model="",
                             current_base_url="",
                             current_api_key="",
@@ -2851,10 +3048,25 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
-        runtime = resolve_runtime_provider(
-            requested=requested_provider,
-            target_model=model or None,
-        )
+        if str(requested_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+
+                requested_provider = canonical_custom_identity(
+                    base_url=str(override_base_url or "") or None
+                ) or requested_provider
+            except Exception:
+                pass
+        runtime_args = {
+            "requested": requested_provider,
+            "target_model": model or None,
+        }
+        if (
+            str(requested_provider or "").strip().lower() == "custom"
+            and override_base_url
+        ):
+            runtime_args["explicit_base_url"] = str(override_base_url)
+        runtime = resolve_runtime_provider(**runtime_args)
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
         # resolution would pick a different one.
