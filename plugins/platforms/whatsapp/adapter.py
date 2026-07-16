@@ -1647,3 +1647,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+
+def register(ctx) -> None:
+    """Register the bundled WhatsApp platform with the 0.18 plugin registry."""
+    ctx.register_platform(
+        name="whatsapp",
+        label="WhatsApp",
+        adapter_factory=lambda config: WhatsAppAdapter(config),
+        check_fn=check_whatsapp_requirements,
+        required_env=["WHATSAPP_ENABLED"],
+        install_hint="WhatsApp requires the bundled Node.js bridge.",
+    )
