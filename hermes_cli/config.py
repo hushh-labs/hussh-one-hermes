@@ -5240,6 +5240,27 @@ def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:
     return {str(key): str(value) for key, value in extra_headers.items() if value is not None}
 
 
+def write_platform_config_field(
+    platform_key: str,
+    field_key: str,
+    value: Any,
+    *,
+    raw: bool = False,
+) -> None:
+    """Persist one scalar field under ``platforms.<platform_key>``."""
+    config = read_raw_config() if raw else load_config()
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+    platform_config = platforms.setdefault(platform_key, {})
+    if not isinstance(platform_config, dict):
+        platform_config = {}
+        platforms[platform_key] = platform_config
+    platform_config[field_key] = value
+    save_config(config)
+
+
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
     """Refuse to replace an existing config.yaml that cannot be read."""
     if config_path is None:
