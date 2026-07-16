@@ -28,7 +28,6 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@nous-research/ui/ui/components/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
-import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 
@@ -47,8 +46,6 @@ interface RpcEnvelope {
   method?: string;
   params?: { type?: string; payload?: unknown };
 }
-
-const TOOL_LIMIT = 20;
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "idle",
@@ -86,7 +83,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [state, setState] = useState<ConnectionState>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
-  const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -306,74 +302,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           if (payload) {
             setInfo((prev) => ({ ...prev, ...(payload as SessionInfo) }));
           }
-        } else if (type === "tool.start") {
-          const p = payload as
-            | { tool_id?: string; name?: string; context?: string }
-            | undefined;
-          const toolId = p?.tool_id;
-
-          if (!toolId) {
-            return;
-          }
-
-          setTools((prev) =>
-            [
-              ...prev,
-              {
-                kind: "tool" as const,
-                id: `tool-${toolId}-${prev.length}`,
-                tool_id: toolId,
-                name: p?.name ?? "tool",
-                context: p?.context,
-                status: "running" as const,
-                startedAt: Date.now(),
-              },
-            ].slice(-TOOL_LIMIT),
-          );
-        } else if (type === "tool.progress") {
-          const p = payload as
-            | { name?: string; preview?: string }
-            | undefined;
-
-          if (!p?.name || !p.preview) {
-            return;
-          }
-
-          setTools((prev) =>
-            prev.map((t) =>
-              t.status === "running" && t.name === p.name
-                ? { ...t, preview: p.preview }
-                : t,
-            ),
-          );
-        } else if (type === "tool.complete") {
-          const p = payload as
-            | {
-                tool_id?: string;
-                summary?: string;
-                error?: string;
-                inline_diff?: string;
-              }
-            | undefined;
-
-          if (!p?.tool_id) {
-            return;
-          }
-
-          setTools((prev) =>
-            prev.map((t) =>
-              t.tool_id === p.tool_id
-                ? {
-                    ...t,
-                    status: p.error ? "error" : "done",
-                    summary: p.summary,
-                    error: p.error,
-                    inline_diff: p.inline_diff,
-                    completedAt: Date.now(),
-                  }
-                : t,
-            ),
-          );
         }
       });
     };
@@ -392,7 +320,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
   const reconnect = useCallback(() => {
     setError(null);
-    setTools([]);
     setVersion((v) => v + 1);
   }, []);
 
@@ -472,22 +399,6 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           </div>
         </Card>
       )}
-
-      <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
-        <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
-          tools
-        </div>
-
-        <div className="flex min-h-0 flex-col gap-1.5">
-          {tools.length === 0 ? (
-            <div className="px-2 py-4 text-center text-xs text-text-secondary">
-              no tool calls yet
-            </div>
-          ) : (
-            tools.map((t) => <ToolCall key={t.id} tool={t} />)
-          )}
-        </div>
-      </Card>
 
       {modelOpen && canPickModel && sessionId && (
         <ModelPickerDialog
