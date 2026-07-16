@@ -260,6 +260,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
         )
+        if not self._bridge_script or not Path(self._bridge_script).is_file():
+            self._bridge_script = str(self._DEFAULT_BRIDGE_DIR / "bridge.js")
         self._session_path: Path = Path(config.extra.get(
             "session_path",
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
