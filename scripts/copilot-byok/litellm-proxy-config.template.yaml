@@ -132,10 +132,18 @@ router_settings:
   # ITSELF makes the router re-pick another healthy region from the pool and
   # replay the request there. Verified: 120 parallel streaming calls → 0 client
   # 429s under real upstream quota pressure.
+  # gemini-3.1-pro-preview is GLOBAL-ONLY on Vertex (all other regions 404 —
+  # verified by live probe Jul 2026), so it CANNOT self-recover across regions
+  # like the multi-region Flash pool. A mid-stream 429 on its single global
+  # endpoint falling back to itself hits the just-cooled-down deployment →
+  # "No deployments available" → Copilot renders the dead stream as a broken
+  # tool call. Chain its fallback to the multi-region gemini-3.5-flash pool so a
+  # 429 recovers onto a healthy region instead of dying. (Flash's tool-calling
+  # is schema-compatible — verified against Copilot's real 86-tool manifest.)
   fallbacks:
     - gemini-3.5-flash: ["gemini-3.5-flash"]
-    - gemini-3.1-pro-preview: ["gemini-3.1-pro-preview"]
-    - gemini-3.1-pro: ["gemini-3.1-pro"]
+    - gemini-3.1-pro-preview: ["gemini-3.1-pro-preview", "gemini-3.5-flash"]
+    - gemini-3.1-pro: ["gemini-3.1-pro", "gemini-3.5-flash"]
     - claude-sonnet-4-6: ["claude-sonnet-4-6"]
     - claude-opus-4-8: ["claude-opus-4-8"]
     - claude-sonnet-5: ["claude-sonnet-5"]

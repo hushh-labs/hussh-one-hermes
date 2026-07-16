@@ -514,6 +514,17 @@ PY
       esac
     fi
   done
+
+  # Guard the smart-tool-usage steering file. BYOK models (Vertex Claude/Gemini)
+  # aren't tuned for Copilot's tool ecosystem, so without this always-on user
+  # instructions file they over-spawn subagents and shell out `cat`/`sed`
+  # instead of using native read/edit tools. Ships via write_copilot_instructions().
+  local instr="$HOME/.copilot/instructions/hussh-one-tooling.instructions.md"
+  if [[ -f "$instr" ]] && grep -q "Smart tool usage" "$instr" 2>/dev/null; then
+    pass "Copilot smart-tool-usage instructions present (~/.copilot/instructions)"
+  else
+    warn "Copilot smart-tool-usage instructions MISSING — BYOK models will over-delegate & use 'cat' instead of native tools. Re-run: scripts/hussh-one-copilot-setup.sh"
+  fi
 }
 
 check_changelog_freshness() {

@@ -359,7 +359,70 @@ AGENT
 echo "  wrote $target"
 }
 
+# ── 6c. Smart-tool-usage custom instructions (native tools > shell/subagents) ─
+# BYOK models (Vertex Claude / Gemini) are NOT Copilot's default GPT models and
+# aren't tuned for Copilot's tool ecosystem, so in agent mode they tend to
+# (a) over-spawn subagents for routine work and (b) shell out `cat`/`sed`/`grep`
+# instead of using the native read/edit/search tools. We ship an ALWAYS-ON
+# user-level custom instructions file (highest priority per VS Code's instruction
+# precedence) that steers every agent/model toward smart native-tool usage.
+#
+# Location: ~/.copilot/instructions/ is a documented VS Code user-profile
+# instructions location (scanned by default; also read by the Copilot CLI). One
+# home-level file covers BOTH editions and ALL workspaces — no per-edition dupes.
+# applyTo: '**' makes it always-on. This is advisory steering, not a hard tool
+# restriction, so it never breaks a legitimate workflow.
+write_copilot_instructions() {
+  local dst_dir="$HOME/.copilot/instructions"
+  local target="$dst_dir/hussh-one-tooling.instructions.md"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: would write $target"
+    return 0
+  fi
+  mkdir -p "$dst_dir"
+  cat > "$target" <<'INSTR'
+---
+name: Hussh One — Smart Tool Usage
+description: Native-tool-first behavior for all agents and models (esp. BYOK Vertex Claude/Gemini via Copilot).
+applyTo: '**'
+---
+# Smart tool usage (always on)
+
+You are in agent mode, often on a BYOK model (Vertex Claude / Gemini) that is
+NOT Copilot's default model and is NOT tuned for this tool ecosystem. Use the
+RIGHT built-in tool for each job. Do not fall back to shell commands or
+subagents for work a native tool does better.
+
+## Read/search with native tools, never the terminal
+- View file contents with the built-in read/file tool.
+- NEVER run `cat`, `head`, `tail`, `less`, `more`, or `type` to read a file.
+- Find files with the file-search / glob tool, not `ls` or `find`.
+- Search code with the codebase / text-search tool, not `grep` or `rg`.
+
+## Edit with the edit / apply-patch tools, never the shell
+- Apply changes with the built-in edit / apply-patch / insert-edit tools.
+- NEVER edit files via `sed`, `awk`, `echo >`, `cat <<EOF`, or `tee`.
+- Reserve the terminal for what genuinely needs a shell: builds, installs,
+  running tests, git, package managers, starting/stopping processes.
+
+## Do not over-delegate to subagents
+- Handle routine work (reading a file, making one edit, running one command)
+  YOURSELF in the main thread. Do NOT spawn a subagent/delegate for it.
+- Delegate ONLY when work is large, independent, and parallelizable — several
+  unrelated investigations that each need their own context.
+- One well-scoped tool call beats a subagent round-trip. Prefer the direct path.
+
+## General
+- Pick the most specific tool available before reaching for a general one.
+- Batch independent tool calls; don't serialize what can run in parallel.
+- Be deterministic and verify results; never claim success without checking output.
+INSTR
+  echo "  wrote $target"
+}
+
 if [[ "$WRITE_VSCODE" == "1" ]]; then
+  # Home-level, edition- and OS-independent — write once.
+  write_copilot_instructions
   case "$(uname -s)" in
     Darwin)
       write_vscode_config "$HOME/Library/Application Support/Code - Insiders/User" "Insiders"
