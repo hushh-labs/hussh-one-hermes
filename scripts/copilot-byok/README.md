@@ -3,8 +3,9 @@
 Native VS Code Copilot Custom Endpoints (BYOK) backed by Google Vertex AI
 through Application Default Credentials (ADC). Gives Copilot's chat, inline
 edit, apply, `@workspace`, and **agent-mode tool calling** the same Vertex
-models Hussh One uses — no third-party extension, no API keys pasted into a
-cloud service.
+models Hussh One uses — no third-party extension and no Google/Vertex API key.
+The installer generates a separate local bearer key solely for VS Code to
+authenticate to the loopback-only auth shim; it is not sent to Vertex.
 
 ## TL;DR
 
@@ -19,7 +20,7 @@ scripts/hussh-one-copilot-setup.sh --start
 
 ```
 VS Code Copilot
-      │  http://127.0.0.1:8644/v1   (Bearer <master key>)
+      │  http://127.0.0.1:8644/v1   (generated local bearer key)
       ▼
 ┌──────────────────────────┐   :8644
 │  auth shim               │   litellm_auth_shim.py (Starlette + httpx)
@@ -38,6 +39,20 @@ VS Code Copilot
 ```
 
 Both services bind to `127.0.0.1` only.
+
+### Authentication boundary
+
+There are deliberately two credentials in this local chain:
+
+| Hop | Credential | Purpose |
+| --- | --- | --- |
+| VS Code → `127.0.0.1:8644` | Installer-generated LiteLLM master key | Prevents another local process from using the proxy. It remains local. |
+| Auth shim/proxy → Vertex AI | Google ADC access token | Authorizes the actual Gemini/Claude request and is minted/refreshed automatically. |
+
+The first is the API key visible in VS Code's custom-endpoint configuration.
+The second is the Vertex authentication mechanism. Do not substitute a Google
+AI Studio key for ADC: that key only works against the separate direct Gemini
+API, not the Vertex endpoint.
 
 ## Context windows & output caps (live-probed, Jul 2026)
 

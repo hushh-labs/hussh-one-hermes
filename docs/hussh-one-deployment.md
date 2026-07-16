@@ -47,7 +47,8 @@ Keep secrets in `$HERMES_HOME/.env` or your shell. `.env.example` only documents
 
 ## VS Code Copilot BYOK (optional, recommended for coding machines)
 
-One command wires official VS Code Copilot Chat to Vertex via ADC — no API keys:
+One command wires official VS Code Copilot Chat to Vertex via ADC — no Google
+or Vertex API key is required:
 
 ```bash
 scripts/hussh-one-copilot-setup.sh --start          # + --launchd on macOS for KeepAlive
@@ -60,6 +61,11 @@ gemini-3.5-flash: 1,048,576 in / 65,536 out). Copilot's rolling-window and
 summarization heuristics key off these values, so keep them accurate — details
 and the probe method in `scripts/copilot-byok/README.md`. Multi-region Gemini
 fallback pools make parallel Copilot agent chats 429-proof.
+
+The installer does generate and place a local bearer key in VS Code's endpoint
+configuration. That key authenticates VS Code to the loopback-only auth shim;
+it is **not** a Google/Vertex credential. The shim and proxy use ADC for every
+request sent onward to Vertex.
 
 ---
 

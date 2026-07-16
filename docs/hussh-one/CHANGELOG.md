@@ -70,7 +70,8 @@ GCP project, not a personal subscription token.
 ## 🧩 VS Code Copilot BYOK (Vertex ADC)
 Native VS Code Copilot Custom Endpoints backed by the same Vertex ADC stack — chat, inline
 edit, `@workspace`, and agent-mode tool calling, without a third-party extension or pasted
-API keys.
+Google/Vertex API keys. The setup generates a separate local-only bearer key for VS Code to
+authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
