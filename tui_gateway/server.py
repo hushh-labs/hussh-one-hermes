@@ -569,6 +569,60 @@ def method(name: str):
     return dec
 
 
+@method("pet.cells")
+def _pet_cells(rid, params: dict) -> dict:
+    """Return terminal-renderable frames for the optional pet mascot.
+
+    Ink 0.18.2 polls this method even when pets are disabled.  Keep it
+    fail-open: a missing optional pet dependency or configuration simply
+    hides the mascot rather than producing repeated JSON-RPC errors.
+    """
+    try:
+        from agent.pet import constants, store
+        from agent.pet.render import PetRenderer
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+        pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        if not bool(pet_cfg.get("enabled")):
+            return _ok(rid, {"enabled": False})
+
+        pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
+        if pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        state = str(params.get("state") or constants.PetState.IDLE.value)
+        scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+        cols = int(params.get("cols") or 0) or constants.resolve_cols(
+            scale, pet_cfg.get("unicode_cols", 0)
+        )
+        renderer = PetRenderer(
+            str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols
+        )
+        count = renderer.frame_count(state) or 1
+        frames = []
+        for index in range(count):
+            grid = renderer.cells(state, index, cols=cols)
+            frames.append([[[*top, *bottom] for top, bottom in row] for row in grid])
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "state": state,
+                "cols": cols,
+                "frameMs": constants.LOOP_MS / max(1, count),
+                "frames": frames,
+                "scale": scale,
+            },
+        )
+    except Exception:
+        logger.debug("pet.cells failed", exc_info=True)
+        return _ok(rid, {"enabled": False})
+
+
 def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     """Validate a JSON-RPC request enough for safe local dispatch."""
     if not isinstance(req, dict):
