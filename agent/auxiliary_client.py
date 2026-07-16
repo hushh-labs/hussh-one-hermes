@@ -40,6 +40,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -67,6 +68,23 @@ if TYPE_CHECKING:
     from openai import OpenAI  # noqa: F401 — type hints only
 
 _OPENAI_CLS_CACHE: Optional[type] = None
+
+_aux_interrupt_protection = threading.local()
+
+
+def _aux_interrupt_protected() -> bool:
+    return bool(getattr(_aux_interrupt_protection, "active", False))
+
+
+@contextlib.contextmanager
+def aux_interrupt_protection(active: bool = True):
+    """Prevent a critical auxiliary call from being interrupted mid-flight."""
+    previous = getattr(_aux_interrupt_protection, "active", False)
+    _aux_interrupt_protection.active = active
+    try:
+        yield
+    finally:
+        _aux_interrupt_protection.active = previous
 
 
 def _load_openai_cls() -> type:

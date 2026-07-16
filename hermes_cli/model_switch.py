@@ -46,6 +46,23 @@ from agent.models_dev import (
 logger = logging.getLogger(__name__)
 
 
+def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
+    """Resolve whether a model switch should be persisted to config.yaml."""
+    if is_session:
+        return False
+    if is_global:
+        return True
+    try:
+        from hermes_cli.config import load_config
+
+        model_cfg = load_config().get("model")
+        if isinstance(model_cfg, dict):
+            return bool(model_cfg.get("persist_switch_by_default", True))
+    except Exception:
+        pass
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Non-agentic model warning
 # ---------------------------------------------------------------------------

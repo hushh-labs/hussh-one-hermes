@@ -39,6 +39,14 @@ from utils import base_url_host_matches, base_url_hostname, env_int
 logger = logging.getLogger(__name__)
 
 
+def _reset_stale_streak(agent) -> None:
+    """Clear the consecutive stale-stream breaker after a model switch."""
+    try:
+        agent._consecutive_stale_streams = 0
+    except Exception:
+        pass
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 

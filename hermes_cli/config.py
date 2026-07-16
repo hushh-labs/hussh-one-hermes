@@ -5233,6 +5233,37 @@ def read_raw_config() -> Dict[str, Any]:
         return data
 
 
+def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:
+    """Normalize provider headers without retaining null or non-string values."""
+    if not isinstance(extra_headers, dict) or not extra_headers:
+        return {}
+    return {str(key): str(value) for key, value in extra_headers.items() if value is not None}
+
+
+def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:
+    """Refuse to replace an existing config.yaml that cannot be read."""
+    if config_path is None:
+        config_path = get_config_path()
+    try:
+        config_path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml cannot be accessed "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+
+    try:
+        with open(config_path, "rb") as f:
+            f.read(1)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Refusing to overwrite {config_path}: existing config.yaml cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml.
 

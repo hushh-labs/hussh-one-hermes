@@ -1467,10 +1467,15 @@ def _persist_model_switch(result) -> None:
 
 
 def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
-    from hermes_cli.model_switch import parse_model_flags, switch_model
+    from hermes_cli.model_switch import (
+        parse_model_flags,
+        resolve_persist_behavior,
+        switch_model,
+    )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
+    model_input, explicit_provider, is_global, _force_refresh, is_session = parse_model_flags(raw_input)
+    persist_global = resolve_persist_behavior(is_global, is_session)
     if not model_input:
         raise ValueError("model value required")
 
@@ -2657,6 +2662,15 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
+def _load_provider_routing() -> dict:
+    """Return OpenRouter provider-routing preferences from the TUI config."""
+    try:
+        routing = _load_cfg().get("provider_routing", {})
+        return routing if isinstance(routing, dict) else {}
+    except Exception:
+        return {}
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -2802,6 +2816,7 @@ def _make_agent(
             requested=requested_provider,
             target_model=model or None,
         )
+    _provider_routing = _load_provider_routing()
     try:
         return AIAgent(
             model=model,
@@ -2822,6 +2837,12 @@ def _make_agent(
             reasoning_config=_load_reasoning_config(),
             service_tier=_load_service_tier(),
             enabled_toolsets=_load_enabled_toolsets(),
+            providers_allowed=_provider_routing.get("only"),
+            providers_ignored=_provider_routing.get("ignore"),
+            providers_order=_provider_routing.get("order"),
+            provider_sort=_provider_routing.get("sort"),
+            provider_require_parameters=_provider_routing.get("require_parameters", False),
+            provider_data_collection=_provider_routing.get("data_collection"),
             platform="tui",
             session_id=session_id or key,
             session_db=session_db if session_db is not None else _get_db(),
