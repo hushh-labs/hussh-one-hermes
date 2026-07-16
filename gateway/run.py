@@ -7015,7 +7015,13 @@ class GatewayRunner:
             return adapter
         
         elif platform == Platform.WHATSAPP:
-            from gateway.platforms.whatsapp import WhatsAppAdapter, check_whatsapp_requirements
+            # WhatsApp moved to the bundled platform plugin in Hermes 0.18.
+            # Keep the Hussh One adapter lifecycle below, but import it from
+            # its release-era plugin location rather than the removed core path.
+            from plugins.platforms.whatsapp.adapter import (
+                WhatsAppAdapter,
+                check_whatsapp_requirements,
+            )
             if not check_whatsapp_requirements():
                 logger.warning("WhatsApp: Node.js not installed or bridge not configured")
                 return None
