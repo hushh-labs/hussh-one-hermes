@@ -99,7 +99,7 @@ class TestAdapterInit:
         assert adapter._reply_prefix is None
 
     def test_default_effective_reply_prefix_comes_from_brand(self):
-        from gateway.platforms.whatsapp import WhatsAppAdapter
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         config = PlatformConfig(enabled=True)
         adapter = WhatsAppAdapter(config)
         with patch.dict("os.environ", {}, clear=True):

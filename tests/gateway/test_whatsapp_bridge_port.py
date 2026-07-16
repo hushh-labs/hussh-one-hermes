@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp import WhatsAppAdapter
+from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
