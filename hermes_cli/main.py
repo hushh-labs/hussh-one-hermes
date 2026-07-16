@@ -1801,6 +1801,12 @@ def _launch_tui(
     import tempfile
 
     env = os.environ.copy()
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env(env=env)
+    except Exception:
+        logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
     active_session_fd, active_session_file = tempfile.mkstemp(
         prefix="hermes-tui-active-session-", suffix=".json"
     )
@@ -8600,6 +8606,22 @@ def _is_fork(origin_url: Optional[str]) -> bool:
     return True
 
 
+def _is_hussh_one_origin(origin_url: Optional[str]) -> bool:
+    """Return whether *origin_url* is the canonical Hussh One distribution.
+
+    End-user updates of this overlay must consume reviewed releases from the
+    Hussh repository.  Official Hermes is an engineering upstream, merged by
+    maintainers through the documented overlay-review workflow; it is never an
+    automatic update source for a deployed Hussh One instance.
+    """
+    if not origin_url:
+        return False
+    normalized = origin_url.strip().lower().rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    return normalized.endswith("github.com/hushh-labs/hussh-one-hermes")
+
+
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
     """Check if an 'upstream' remote already exists."""
     try:
@@ -9656,8 +9678,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
     The normal path (``ensure_uv()`` in managed_uv) installs the managed
     standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
-    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
-    which gets a Termux-compatible binary.
+    installer may not work (glibc vs bionic). Prefer a uv already on PATH
+    (for example ``pkg install uv``); only if there is none do we fall back to
+    a wheel-only pip install so we never source-build the Rust crate.
     """
     from hermes_cli.managed_uv import resolve_uv
 
@@ -9666,9 +9689,18 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return existing
     if not _is_termux_env():
         return None
+    system_uv = shutil.which("uv")
+    if system_uv:
+        return system_uv
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
-        subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
+        result = subprocess.run(
+            pip_cmd + ["install", "uv", "--only-binary", ":all:"],
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
     except Exception:
         pass
     # After pip install, check managed path first, then PATH
@@ -9960,11 +9992,25 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference.
+    # Hussh One is a reviewed overlay distributed from its own origin.  Its
+    # ``upstream`` remote is intentionally *not* an end-user update channel.
+    # For all other forks, retain stock Hermes' upstream-first check.
     # Note: upstream/<branch> may not exist for non-main branches (a fork's
     # bb/gui has no upstream counterpart), so when the caller picks a
     # non-default branch we skip the upstream probe and use origin directly.
-    if branch == "main":
+    origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
+    is_hussh_one = _is_hussh_one_origin(origin_url)
+    if branch == "main" and is_hussh_one:
+        print("→ Fetching Hussh One updates from origin...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        upstream_exists = False
+        compare_branch = f"origin/{branch}"
+    elif branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "upstream"],
@@ -10484,6 +10530,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Detect if we're updating from a fork (before any branch logic)
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
+    is_hussh_one = _is_hussh_one_origin(origin_url)
 
     if is_fork:
         print("⚠ Updating from fork:")
@@ -10606,7 +10653,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _invalidate_update_cache()
 
             # Even if origin is up to date, the fork may be behind upstream
-            if is_fork and branch == "main":
+            if is_fork and not is_hussh_one and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
             # Restore stash and switch back to original branch if we moved
@@ -10766,7 +10813,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
 
         # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        if is_fork and not is_hussh_one and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
@@ -12909,6 +12956,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 
@@ -14048,6 +14096,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 

@@ -376,6 +376,8 @@ def run_conversation(
     task_id: str = None,
     stream_callback: Optional[callable] = None,
     persist_user_message: Optional[str] = None,
+    persist_user_timestamp: Optional[float] = None,
+    moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -391,11 +393,26 @@ def run_conversation(
         persist_user_message: Optional clean user message to store in
             transcripts/history when user_message contains API-only
             synthetic prefixes.
-                or queuing follow-up prefetch work.
+        persist_user_timestamp: Optional platform event timestamp to store
+            as metadata on that persisted user message.
+        moa_config: Optional mixture-of-agents configuration for this turn.
 
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    if moa_config is None:
+        try:
+            from hermes_cli.moa_config import decode_moa_turn
+
+            decoded_message, decoded_moa_config = decode_moa_turn(user_message)
+            if decoded_moa_config is not None:
+                user_message = decoded_message
+                moa_config = decoded_moa_config
+                if persist_user_message is None:
+                    persist_user_message = decoded_message
+        except Exception:
+            pass
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
@@ -412,6 +429,7 @@ def run_conversation(
         task_id,
         stream_callback,
         persist_user_message,
+        persist_user_timestamp,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
         install_safe_stdio=_install_safe_stdio,
         sanitize_surrogates=_sanitize_surrogates,
@@ -753,6 +771,35 @@ def run_conversation(
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        if moa_config:
+            try:
+                from agent.moa_loop import _preset_temperature, aggregate_moa_context
+
+                moa_context = aggregate_moa_context(
+                    user_prompt=(
+                        original_user_message
+                        if isinstance(original_user_message, str)
+                        else str(original_user_message)
+                    ),
+                    api_messages=api_messages,
+                    reference_models=moa_config.get("reference_models") or [],
+                    aggregator=moa_config.get("aggregator") or {},
+                    temperature=_preset_temperature(moa_config, "reference_temperature"),
+                    aggregator_temperature=_preset_temperature(
+                        moa_config, "aggregator_temperature"
+                    ),
+                    max_tokens=moa_config.get("reference_max_tokens"),
+                )
+                if moa_context:
+                    for message in reversed(api_messages):
+                        if message.get("role") == "user":
+                            content = message.get("content", "")
+                            if isinstance(content, str):
+                                message["content"] = content + "\n\n" + moa_context
+                            break
+            except Exception as exc:
+                logger.warning("MoA context aggregation failed: %s", exc)
 
         # Inject ephemeral prefill messages right after the system prompt
         # but before conversation history. Same API-call-time-only pattern.
