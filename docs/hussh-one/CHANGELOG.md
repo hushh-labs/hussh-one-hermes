@@ -147,6 +147,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🚀 Onboarding, Bootstrap, Doctor & Deployment
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-17 | `040df65d3` | **Managed Open WebUI endpoint discovery.** Supervisor and doctor now read the persisted companion endpoint (or a legacy launcher) before health-checking, so a valid non-default loopback port is monitored and restarted instead of an unrelated process on `:8080`. |
 | 2026-07-17 | `152b1d655` | **Companion services self-heal by default.** Bootstrap now provisions VS Code BYOK only when a supported editor plus Vertex ADC are available, starts the loopback blank-bearer compatibility shim, and installs branded Open WebUI against this checkout's Hermes binary and `HERMES_HOME`. Supervisor/doctor now health-check and restart Open WebUI; stale Google Ads/ADK injected branding was removed. |
 | 2026-06-27 | `1810e8836` | Bootstrap now sets robust platform-specific config defaults. |
 | 2026-06-27 | `4ee548e7c` | Updated onboarding evolution docs + wiki-link best practices. |
