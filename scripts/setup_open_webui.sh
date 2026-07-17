@@ -56,6 +56,7 @@ HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-🤫 Hussh One}"
 HERMES_API_BASE_URL="http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/v1"
 LAUNCHER_PATH="$HOME/.local/bin/start-open-webui-hermes.sh"
 LOG_DIR="$HERMES_HOME/logs"
+RUNTIME_CONFIG_PATH="$HERMES_HOME/open-webui.env"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
@@ -979,6 +980,20 @@ EOF
   chmod +x "$LAUNCHER_PATH"
 }
 
+write_runtime_config() {
+  local parent temp
+  parent="$(dirname "$RUNTIME_CONFIG_PATH")"
+  mkdir -p "$parent"
+  temp="${RUNTIME_CONFIG_PATH}.tmp.$$"
+  {
+    printf 'OPEN_WEBUI_HOST=%q\n' "$OPEN_WEBUI_HOST"
+    printf 'OPEN_WEBUI_PORT=%q\n' "$OPEN_WEBUI_PORT"
+    printf 'OPEN_WEBUI_LAUNCHER=%q\n' "$LAUNCHER_PATH"
+  } > "$temp"
+  mv "$temp" "$RUNTIME_CONFIG_PATH"
+  chmod 600 "$RUNTIME_CONFIG_PATH"
+}
+
 ensure_env_permissions() {
   chmod 600 "$HERMES_ENV_FILE" 2>/dev/null || true
 }
@@ -1086,6 +1101,7 @@ main() {
   install_open_webui
   install_static_assets
   write_launcher
+  write_runtime_config
 
   case "$OPEN_WEBUI_ENABLE_SERVICE" in
     true|auto)

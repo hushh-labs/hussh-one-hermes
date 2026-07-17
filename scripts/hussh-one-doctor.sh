@@ -13,8 +13,9 @@ LIVE_VERTEX=0
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 DASHBOARD_URL="${HUSSH_ONE_DASHBOARD_URL:-http://127.0.0.1:9119}"
 WHATSAPP_HEALTH_URL="${HUSSH_ONE_WHATSAPP_HEALTH_URL:-http://127.0.0.1:8473/health}"
-OPEN_WEBUI_URL="${HUSSH_ONE_OPEN_WEBUI_URL:-http://127.0.0.1:8080}"
+OPEN_WEBUI_URL="${HUSSH_ONE_OPEN_WEBUI_URL:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+OPEN_WEBUI_LAUNCHER="${HUSSH_ONE_OPEN_WEBUI_LAUNCHER:-$HOME/.local/bin/start-open-webui-hermes.sh}"
 
 FAILURES=0
 WARNINGS=0
@@ -61,6 +62,27 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+read_open_webui_setting() {
+  local key="$1" config_value launcher_value
+  if [[ -r "$HERMES_HOME/open-webui.env" ]]; then
+    config_value="$(sed -nE "s/^${key}=([^[:space:]]+).*/\\1/p" "$HERMES_HOME/open-webui.env" | head -n 1)"
+    [[ -n "$config_value" ]] && printf '%s\n' "$config_value" && return 0
+  fi
+  if [[ -r "$OPEN_WEBUI_LAUNCHER" ]]; then
+    launcher_value="$(sed -nE "s/^export ${key#OPEN_WEBUI_}=([^[:space:]]+).*/\\1/p" "$OPEN_WEBUI_LAUNCHER" | head -n 1)"
+    [[ -n "$launcher_value" ]] && printf '%s\n' "$launcher_value" && return 0
+  fi
+  return 1
+}
+
+if [[ -z "$OPEN_WEBUI_URL" ]]; then
+  open_webui_host="$(read_open_webui_setting OPEN_WEBUI_HOST || true)"
+  open_webui_port="$(read_open_webui_setting OPEN_WEBUI_PORT || true)"
+  open_webui_host="${open_webui_host:-127.0.0.1}"
+  [[ "$open_webui_port" =~ ^[0-9]+$ ]] || open_webui_port=8080
+  OPEN_WEBUI_URL="http://${open_webui_host}:${open_webui_port}"
+fi
 
 case "$MANAGER" in
   auto|launchd|systemd|s6|screen) ;;

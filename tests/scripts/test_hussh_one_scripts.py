@@ -158,6 +158,8 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert 'export HERMES_HOME=${quoted_home}' in text
     assert 'Environment=HERMES_HOME=$HERMES_HOME' in text
     assert "KeepAlive" in text
+    assert 'RUNTIME_CONFIG_PATH="$HERMES_HOME/open-webui.env"' in text
+    assert "write_runtime_config" in text
     assert 'OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-🤫 Hussh One}"' in text
     for stale in ("Google Ads", "Google Agent Development Kit", "Hussh One ADK", "applyAdkLogo"):
         assert stale not in text
@@ -201,6 +203,10 @@ def test_supervisor_probes_and_restarts_open_webui_when_managed(tmp_path):
     unit = home / ".config/systemd/user/openwebui-hermes.service"
     unit.parent.mkdir(parents=True)
     unit.write_text("[Service]\n", encoding="utf-8")
+    launcher = home / ".local/bin/start-open-webui-hermes.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("export HOST=127.0.0.1\nexport PORT=65531\n", encoding="utf-8")
+    launcher.chmod(0o755)
 
     result = run_script(
         "bash",
@@ -213,12 +219,11 @@ def test_supervisor_probes_and_restarts_open_webui_when_managed(tmp_path):
             "HOME": str(home),
             "HERMES_HOME": str(home / ".hermes"),
             "HERMES_BIN": str(tmp_path / "bin" / "hermes"),
-            "HUSSH_ONE_OPEN_WEBUI_PORT": "65531",
         },
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Open WebUI: unhealthy" in result.stdout
+    assert "Open WebUI: unhealthy at http://127.0.0.1:65531" in result.stdout
     assert "systemctl --user restart openwebui-hermes.service" in result.stdout
 
 
@@ -290,4 +295,5 @@ def test_doctor_checks_clone_health_surfaces():
     assert "claude-sonnet-4-6" in text
     assert "OPEN_WEBUI_URL" in text
     assert "check_open_webui_health" in text
+    assert "read_open_webui_setting" in text
     assert "loopback compatibility mode accepts missing or blank-bearer" in text

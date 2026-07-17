@@ -14,8 +14,8 @@ DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 DASHBOARD_HOST="${HUSSH_ONE_DASHBOARD_HOST:-127.0.0.1}"
 DASHBOARD_PORT="${HUSSH_ONE_DASHBOARD_PORT:-9119}"
 WHATSAPP_PORT="${HUSSH_ONE_WHATSAPP_PORT:-3000}"
-OPEN_WEBUI_HOST="${HUSSH_ONE_OPEN_WEBUI_HOST:-127.0.0.1}"
-OPEN_WEBUI_PORT="${HUSSH_ONE_OPEN_WEBUI_PORT:-8080}"
+OPEN_WEBUI_HOST="${HUSSH_ONE_OPEN_WEBUI_HOST:-}"
+OPEN_WEBUI_PORT="${HUSSH_ONE_OPEN_WEBUI_PORT:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_BIN="${HERMES_BIN:-}"
 HERMES_PYTHON_BIN="${HUSSH_ONE_PYTHON_BIN:-}"
@@ -98,6 +98,30 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+read_open_webui_setting() {
+  local key="$1" config_value launcher_value
+  if [[ -r "$HERMES_HOME/open-webui.env" ]]; then
+    config_value="$(sed -nE "s/^${key}=([^[:space:]]+).*/\\1/p" "$HERMES_HOME/open-webui.env" | head -n 1)"
+    [[ -n "$config_value" ]] && printf '%s\n' "$config_value" && return 0
+  fi
+  if [[ -r "$OPEN_WEBUI_LAUNCHER" ]]; then
+    launcher_value="$(sed -nE "s/^export ${key#OPEN_WEBUI_}=([^[:space:]]+).*/\\1/p" "$OPEN_WEBUI_LAUNCHER" | head -n 1)"
+    [[ -n "$launcher_value" ]] && printf '%s\n' "$launcher_value" && return 0
+  fi
+  return 1
+}
+
+if [[ -z "$OPEN_WEBUI_HOST" ]]; then
+  OPEN_WEBUI_HOST="$(read_open_webui_setting OPEN_WEBUI_HOST || true)"
+fi
+if [[ -z "$OPEN_WEBUI_PORT" ]]; then
+  OPEN_WEBUI_PORT="$(read_open_webui_setting OPEN_WEBUI_PORT || true)"
+fi
+OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-127.0.0.1}"
+if [[ ! "$OPEN_WEBUI_PORT" =~ ^[0-9]+$ ]]; then
+  OPEN_WEBUI_PORT=8080
+fi
 
 if [[ -z "$ACTION" ]]; then
   usage >&2
