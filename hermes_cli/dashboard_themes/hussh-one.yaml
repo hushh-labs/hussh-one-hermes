@@ -26,6 +26,10 @@ layout:
   radius: "0.5rem"
   density: "comfortable"
 
+# Keep the embedded PTY text identical to the Hussh One TUI skin.
+terminalForeground: "#DDE7EA"
+terminalBackground: "#071312"
+
 colorOverrides:
   card: "#0D1F1D"
   cardForeground: "#E6FFF5"

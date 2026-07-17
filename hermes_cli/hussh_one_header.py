@@ -12,7 +12,7 @@ gateway ``run.py``. Keeping it here means:
 CANONICAL STANDARD (stacked layout):
 
     hussh 🤫 One
-    <Display Model> [S|A]
+    <Display Model> · <Safe Route> · [S|A]
     ════════════════════
     <message body>
 
@@ -36,103 +36,15 @@ import re
 from typing import Optional
 
 from hermes_cli.brand import BRAND_DISPLAY_NAME
+from hermes_cli.hussh_one_identity import (
+    display_model_name,
+    mode_token,
+    resolve_runtime_identity,
+)
 
 # The horizontal rule under the header. 20 box-drawing chars renders as a clean
 # full-width divider on mobile WhatsApp without wrapping.
 DIVIDER = "════════════════════"
-
-# Friendly display names for the models hussh-one routinely runs. Unknown
-# models fall back to their short id so nothing ever renders blank.
-_DISPLAY_MODEL_RULES: tuple[tuple[str, str], ...] = (
-    ("gemini", "Gemini 3.5 Flash"),
-    ("gemma", "Gemma 4"),
-    ("qwen", "Qwen 3.6 35B"),
-    ("fable", "Claude Fable"),
-    ("opus", "Claude Opus"),
-    ("sonnet", "Claude Sonnet"),
-    ("haiku", "Claude Haiku"),
-)
-
-
-def display_model_name(model: Optional[str]) -> str:
-    """Parse and map a raw model id dynamically to its precise name, version, and size.
-
-    Handles standard formats (e.g. claude-opus-4-8, gemma-4-e2b, qwen3.6-35b-a3b)
-    to output precise canonical names including sub-versions and sizes.
-    """
-    raw = (model or "").strip() or "gemini-3.5-flash"
-    short = raw.rsplit("/", 1)[-1].lower()
-
-    # 1. Gemini Family
-    if "gemini" in short:
-        # Extract version like 3.5
-        v_match = re.search(r"gemini-(\d+(?:\.\d+)?)", short)
-        v = v_match.group(1) if v_match else "3.5"
-        variant = "Flash" if "flash" in short else "Pro" if "pro" in short else ""
-        return f"Gemini {v} {variant}".strip()
-
-    # 2. Claude Family
-    if "claude" in short or any(w in short for w in ["opus", "sonnet", "haiku", "fable"]):
-        variant = (
-            "Opus" if "opus" in short
-            else "Sonnet" if "sonnet" in short
-            else "Haiku" if "haiku" in short
-            else "Fable" if "fable" in short
-            else ""
-        )
-        # Extract version like 4.8 or 3.5
-        v_match = re.search(r"(\d+)[-.](\d+)", short)
-        if v_match:
-            v = f"{v_match.group(1)}.{v_match.group(2)}"
-        else:
-            # Single-digit generational IDs (e.g. claude-fable-5, claude-sonnet-5)
-            v_match_single = re.search(r"(?:fable|sonnet|opus|haiku|claude)-(\d+)\b", short)
-            if v_match_single:
-                v = v_match_single.group(1)
-            else:
-                v = "4.8" if variant == "Opus" else "3.5"
-        return f"Claude {variant} {v}".strip()
-
-    # 3. Gemma Family
-    if "gemma" in short:
-        # Extract version like 4
-        v_match = re.search(r"gemma-(\d+)", short)
-        v = v_match.group(1) if v_match else "4"
-        # Extract size/variant like e2b or 31b
-        size_match = re.search(r"-(\d+b|e2b|a4b|a3b)(?:-|$)", short)
-        size = size_match.group(1).upper() if size_match else ""
-        # Clean up common tags like a4b
-        if size == "E2B":
-            size = "e2b"
-        elif size == "A4B":
-            size = "26B a4b"
-        elif size == "31B":
-            size = "31B"
-        return f"Gemma {v} {size}".strip()
-
-    # 4. Qwen Family
-    if "qwen" in short:
-        # Extract version like 3.6
-        v_match = re.search(r"qwen(\d+(?:\.\d+)?)", short)
-        v = v_match.group(1) if v_match else "3.6"
-        # Extract size/variant like 35b-a3b or 27b
-        size_match = re.search(r"-(\d+b)(?:-|$)", short)
-        size = size_match.group(1).upper() if size_match else ""
-        variant_match = re.search(r"-(a3b|a4b)(?:-|$)", short)
-        var = variant_match.group(1) if variant_match else ""
-        return f"Qwen {v} {size} {var}".replace("  ", " ").strip()
-
-    # Fallback for unrecognized families: preserve the RAW short id verbatim
-    # (e.g. "whizbang-7b"). Mangling it into "Whizbang7b" would drop the
-    # hyphen and size readability — the opposite of the precise-naming goal.
-    # Keeping the real identifier is the most honest thing we can show.
-    return short
-
-
-def mode_token(is_select_mode: bool) -> str:
-    """``[S]`` for Select (manual model pin) or ``[A]`` for Auto (config default)."""
-    return "[S]" if is_select_mode else "[A]"
-
 
 def _env_or_config_override(config_prefix: Optional[str]) -> Optional[str]:
     """Return a verbatim override prefix if one is configured, else None.
@@ -152,6 +64,8 @@ def build_whatsapp_header(
     model: Optional[str],
     *,
     is_select_mode: bool,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     brand_prefix: Optional[str] = None,
     config_prefix: Optional[str] = None,
 ) -> str:
@@ -167,7 +81,7 @@ def build_whatsapp_header(
         The header string ending in a newline, e.g.::
 
             hussh 🤫 One
-            Gemini 3.5 Flash [A]
+            Gemini 3.5 Flash · [A]
             ════════════════════
 
         Or "" when an override explicitly disables the header.
@@ -178,7 +92,12 @@ def build_whatsapp_header(
         return override
 
     brand = (brand_prefix or BRAND_DISPLAY_NAME).strip()
-    model_line = f"{display_model_name(model)} {mode_token(is_select_mode)}"
+    model_line = resolve_runtime_identity(
+        model,
+        provider=provider,
+        base_url=base_url,
+        selection_mode=is_select_mode,
+    ).label
     # Stacked layout: brand line, model+mode line, divider, then body.
     return f"{brand}\n{model_line}\n{DIVIDER}\n"
 
@@ -229,6 +148,8 @@ def apply_whatsapp_header(
     model: Optional[str],
     *,
     is_select_mode: bool,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
     brand_prefix: Optional[str] = None,
     config_prefix: Optional[str] = None,
 ) -> str:
@@ -236,6 +157,8 @@ def apply_whatsapp_header(
     header = build_whatsapp_header(
         model,
         is_select_mode=is_select_mode,
+        provider=provider,
+        base_url=base_url,
         brand_prefix=brand_prefix,
         config_prefix=config_prefix,
     )

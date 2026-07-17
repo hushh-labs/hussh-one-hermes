@@ -30,13 +30,13 @@ class TestComposition:
     def test_stacked_auto_mode(self):
         h = _h()
         out = h.build_whatsapp_header("gemini-3.5-flash", is_select_mode=False)
-        assert out == "🤫 Hussh One\nGemini 3.5 Flash [A]\n════════════════════\n"
+        assert out == "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\n"
 
     def test_stacked_select_mode(self):
         h = _h()
         out = h.build_whatsapp_header("anthropic/claude-opus-4", is_select_mode=True)
         # Precise naming contract: version must be shown, not bare "Claude Opus".
-        assert out == "🤫 Hussh One\nClaude Opus 4.8 [S]\n════════════════════\n"
+        assert out == "🤫 Hussh One\nClaude Opus 4.8 · [S]\n════════════════════\n"
 
     def test_provider_prefix_stripped_in_model_label(self):
         h = _h()
@@ -103,7 +103,16 @@ class TestContaminationStripping:
         already = "Gemma 4 [A]\n════════════════════\nBody"
         out = h.apply_whatsapp_header(already, "gemma", is_select_mode=False)
         # Exactly one header, body preserved, no leftover divider duplication.
-        assert out == "🤫 Hussh One\nGemma 4 [A]\n════════════════════\nBody"
+        assert out == "🤫 Hussh One\nGemma 4 · [A]\n════════════════════\nBody"
+
+    def test_vertex_route_is_included_when_the_runtime_is_vertex_adc(self):
+        h = _h()
+        out = h.build_whatsapp_header(
+            "claude-opus-4",
+            provider="google-vertex-claude",
+            is_select_mode=False,
+        )
+        assert "Claude Opus 4.8 · Vertex ADC · [A]" in out
 
     def test_apply_with_disabled_header_returns_clean_body(self, monkeypatch):
         h = _h()

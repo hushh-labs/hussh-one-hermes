@@ -22,6 +22,24 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
+def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """Persist only non-secret model-selection state for a session."""
+    if not isinstance(override, dict):
+        return None
+    model = str(override.get("model") or "").strip()
+    if not model:
+        return None
+    cleaned = {"model": model}
+    for field in ("provider", "base_url"):
+        value = str(override.get(field) or "").strip()
+        if value:
+            cleaned[field] = value
+    # This provenance is safe to persist. Credentials and api_mode never are.
+    if str(override.get("selection_mode") or "").strip().lower() == "select":
+        cleaned["selection_mode"] = "select"
+    return cleaned
+
+
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
@@ -490,7 +508,7 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
-    model_override: Optional[Dict[str, str]] = None
+    model_override: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -522,7 +540,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
-            "model_override": self.model_override,
+            "model_override": sanitize_model_override(self.model_override),
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -575,7 +593,7 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
-            model_override=data.get("model_override"),
+            model_override=sanitize_model_override(data.get("model_override")),
         )
 
 
@@ -877,6 +895,21 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
+
+    def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
+        self._ensure_loaded()
+        entry = self._entries.get(session_key)
+        return sanitize_model_override(entry.model_override) if entry else None
+
+    def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
+        """Store a sanitized model override without serializing API keys."""
+        self._ensure_loaded()
+        with self._lock:
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return
+            entry.model_override = sanitize_model_override(override)
+            self._save()
 
     def get_or_create_session(
         self,

@@ -153,6 +153,13 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  hussh_identity?: {
+    display_model: string
+    label: string
+    mode_token: '[A]' | '[S]'
+    route_label: string
+    selection_mode: 'auto' | 'select'
+  }
   profile_name?: string
   reasoning_effort?: string
   release_date?: string

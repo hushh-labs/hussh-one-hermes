@@ -101,6 +101,19 @@ def test_api_key_never_serialized(store_factory, tmp_path):
     assert set(stored) == {"model", "provider", "base_url"}
 
 
+def test_explicit_selection_provenance_persists_without_credentials(store_factory, tmp_path):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(
+        entry.session_key,
+        {**OVERRIDE, "selection_mode": "select"},
+    )
+
+    stored = json.loads(_sessions_json(tmp_path))[entry.session_key]["model_override"]
+    assert stored["selection_mode"] == "select"
+    assert "api_key" not in stored
+
+
 def test_from_dict_strips_api_key_from_tampered_json():
     """Even a hand-edited sessions.json with an api_key must not load one."""
     store_entry = SessionEntry.from_dict(
@@ -153,7 +166,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     store = store_factory()
     entry = store.get_or_create_session(_make_source())
     session_key = entry.session_key
-    store.set_model_override(session_key, OVERRIDE)
+    store.set_model_override(session_key, {**OVERRIDE, "selection_mode": "select"})
 
     # Simulated restart: fresh store + fresh runner with an empty in-memory
     # override map, credentials re-resolved via runtime provider resolution.
@@ -173,6 +186,7 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert override["model"] == "gpt-5o"
     assert override["provider"] == "openai"
     assert override["base_url"] == "https://api.openai.example/v1"
+    assert override["selection_mode"] == "select"
     # Credentials come from live resolution, never from disk.
     assert override["api_key"] == "sk-fresh-from-keychain"
     assert override["api_mode"] == "responses"

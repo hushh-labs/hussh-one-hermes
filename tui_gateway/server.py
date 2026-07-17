@@ -1192,6 +1192,35 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     return config
 
 
+def _persist_live_session_runtime(session: dict | None) -> None:
+    """Persist a live non-secret runtime without losing Hussh provenance."""
+    if not session:
+        return
+    agent = session.get("agent")
+    session_key = str(session.get("session_key") or "").strip()
+    if agent is None or not session_key:
+        return
+    db = getattr(agent, "_session_db", None) or _get_db()
+    if db is None:
+        return
+    try:
+        row = db.get_session(session_key) or {}
+        raw_config = row.get("model_config")
+        if isinstance(raw_config, str):
+            raw_config = json.loads(raw_config or "{}")
+        existing_config = raw_config if isinstance(raw_config, dict) else {}
+        model_config = _runtime_model_config(agent, existing_config)
+        if session.get("selection_mode") == "select":
+            model_config["hussh_one_selection_mode"] = "select"
+        model = str(getattr(agent, "model", "") or "").strip()
+        if hasattr(db, "update_session_meta"):
+            db.update_session_meta(session_key, json.dumps(model_config), model or None)
+        elif model and hasattr(db, "update_session_model"):
+            db.update_session_model(session_key, model)
+    except Exception:
+        logger.debug("failed to persist live session runtime", exc_info=True)
+
+
 def _set_session_cwd(session: dict, cwd: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(str(cwd)))
     if not os.path.isdir(resolved):
@@ -1502,10 +1531,11 @@ def _display_mouse_tracking(display: dict) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str(
-        (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
-    ).strip()
-    return parse_reasoning_effort(effort)
+    # Preserve YAML boolean False; coercing with ``or ""`` silently turns
+    # an explicit "thinking off" into an unset/default state on resume.
+    return parse_reasoning_effort(
+        (_load_cfg().get("agent") or {}).get("reasoning_effort", "")
+    )
 
 
 def _load_service_tier() -> str | None:
@@ -1783,7 +1813,6 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             api_mode=result.api_mode,
         )
         _restart_slash_worker(session)
-        _emit("session.info", sid, _session_info(agent, session))
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
     # session (e.g. /new via _reset_session_agent, or resume) re-derives the
@@ -1805,16 +1834,47 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             "base_url": result.base_url,
             "api_key": result.api_key,
             "api_mode": result.api_mode,
+            "selection_mode": "select",
         }
-        # Also persist the model switch to state.db so a fresh process resumption preserves it!
+        session["selection_mode"] = "select"
+        # Persist the non-secret runtime identity and explicit provenance so
+        # a resumed session knows this was a user selection, not auto-routing.
         _sess_key = session.get("session_key")
         if _sess_key:
             _db_handle = _get_db()
             if _db_handle is not None:
                 try:
-                    _db_handle.update_session_model(_sess_key, result.new_model)
+                    _existing_row = _db_handle.get_session(_sess_key) or {}
+                    _existing_config = _existing_row.get("model_config")
+                    if isinstance(_existing_config, str):
+                        _existing_config = json.loads(_existing_config or "{}")
+                    if not isinstance(_existing_config, dict):
+                        _existing_config = {}
+                    _model_config = (
+                        _runtime_model_config(agent, _existing_config)
+                        if agent is not None
+                        else dict(_existing_config)
+                    )
+                    _model_config.update({
+                        "model": result.new_model,
+                        "provider": result.target_provider,
+                        "base_url": result.base_url,
+                        "api_mode": result.api_mode,
+                        "hussh_one_selection_mode": "select",
+                    })
+                    _model_config = {
+                        key: value for key, value in _model_config.items()
+                        if value not in (None, "")
+                    }
+                    _db_handle.update_session_meta(
+                        _sess_key,
+                        json.dumps(_model_config, sort_keys=True),
+                        result.new_model,
+                    )
                 except Exception as _db_exc:
                     logger.debug("Failed to persist model switch to state.db for session %s: %s", _sess_key, _db_exc)
+    if agent:
+        _emit("session.info", sid, _session_info(agent, session))
     if persist_global:
         _persist_model_switch(result)
     return {
@@ -2131,10 +2191,33 @@ def _session_info(agent, session: dict | None = None) -> dict:
     reasoning_effort = ""
     if (
         isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
     ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+        reasoning_effort = (
+            "none"
+            if reasoning_config.get("enabled") is False
+            else str(reasoning_config.get("effort", "") or "")
+        )
     service_tier = getattr(agent, "service_tier", None) or ""
+    try:
+        from hermes_cli.hussh_one_identity import (
+            normalize_selection_mode,
+            resolve_runtime_identity,
+            selection_mode_from_override,
+        )
+
+        override = (session or {}).get("model_override")
+        selection_mode = normalize_selection_mode(
+            (session or {}).get("selection_mode")
+            or selection_mode_from_override(override)
+        )
+        hussh_identity = resolve_runtime_identity(
+            getattr(agent, "model", ""),
+            provider=getattr(agent, "provider", ""),
+            base_url=getattr(agent, "base_url", ""),
+            selection_mode=selection_mode,
+        ).to_dict()
+    except Exception:
+        hussh_identity = {}
     # Effective approval-bypass state — the same three sources that
     # check_all_command_guards() ORs together: persistent config
     # (approvals.mode=off), the process-scoped --yolo env, and the
@@ -2156,6 +2239,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "hussh_identity": hussh_identity,
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -3199,6 +3283,9 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
             "model_override": None,
+            # [S] is recorded only by an explicit /model or natural-language
+            # switch. Router escalation to Vertex Claude deliberately stays [A].
+            "selection_mode": "auto",
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
@@ -3215,6 +3302,26 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
                 db.update_session_cwd(key, _sessions[sid]["cwd"])
             except Exception:
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
+        if row:
+            try:
+                model_config = row.get("model_config")
+                if isinstance(model_config, str):
+                    model_config = json.loads(model_config or "{}")
+                if (
+                    isinstance(model_config, dict)
+                    and model_config.get("hussh_one_selection_mode") == "select"
+                    and sid in _sessions
+                ):
+                    _sessions[sid]["selection_mode"] = "select"
+                    _sessions[sid]["model_override"] = {
+                        "model": getattr(agent, "model", ""),
+                        "provider": getattr(agent, "provider", ""),
+                        "base_url": getattr(agent, "base_url", ""),
+                        "api_mode": getattr(agent, "api_mode", ""),
+                        "selection_mode": "select",
+                    }
+            except Exception:
+                logger.debug("failed to restore Hussh selection provenance", exc_info=True)
     _register_session_cwd(_sessions[sid])
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(
@@ -6509,9 +6616,20 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
+            if session is not None:
+                # Reasoning is session-scoped in the TUI. A model picker must
+                # never overwrite another session's global preference.
+                session["create_reasoning_override"] = parsed
+                if session.get("agent") is not None:
+                    session["agent"].reasoning_config = parsed
+                    _persist_live_session_runtime(session)
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(session["agent"], session),
+                    )
+            else:
+                _write_config_key("agent.reasoning_effort", arg)
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))

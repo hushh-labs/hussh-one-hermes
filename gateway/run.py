@@ -1284,6 +1284,28 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
+    """Resolve live credentials for a persisted, non-secret provider id."""
+    from hermes_cli.runtime_provider import (
+        format_runtime_provider_error,
+        resolve_runtime_provider,
+    )
+
+    try:
+        runtime = resolve_runtime_provider(requested=provider)
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
+    }
+
+
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -9789,12 +9811,15 @@ class GatewayRunner:
             # configured default. Env/config WHATSAPP_REPLY_PREFIX still wins.
             if getattr(source, "platform", None) == Platform.WHATSAPP:
                 from hermes_cli.hussh_one_header import apply_whatsapp_header
+                from hermes_cli.hussh_one_identity import selection_mode_from_override
 
                 model_name = agent_result.get("model") or "gemini-3.5-flash"
-                is_select_mode = bool(
-                    session_key
-                    and session_key in self._session_model_overrides
+                model_override = (
+                    self._session_model_overrides.get(session_key, {})
+                    if session_key
+                    else {}
                 )
+                is_select_mode = selection_mode_from_override(model_override) == "select"
                 wa_cfg = self.config.platforms.get(Platform.WHATSAPP)
                 config_prefix = (
                     wa_cfg.extra.get("reply_prefix")
@@ -9805,6 +9830,8 @@ class GatewayRunner:
                     response,
                     model_name,
                     is_select_mode=is_select_mode,
+                    provider=agent_result.get("provider") or model_override.get("provider"),
+                    base_url=agent_result.get("base_url") or model_override.get("base_url"),
                     config_prefix=config_prefix,
                 )
 
@@ -16665,35 +16692,59 @@ class GatewayRunner:
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
-    def _ensure_session_model_override_loaded(self, session_key: str) -> None:
-        """Load session-scoped model override from SessionEntry if present."""
+    def _rehydrate_session_model_override(self, session_key: str) -> None:
+        """Restore a persisted explicit model selection with live credentials."""
         if not session_key:
             return
-        if session_key not in self._session_model_overrides:
+        if session_key in self._session_model_overrides:
+            return
+        store = getattr(self, "session_store", None)
+        if store is None:
+            return
+        try:
+            persisted = store.get_model_override(session_key)
+        except Exception:
+            logger.debug("Failed to read persisted session model override", exc_info=True)
+            return
+        if not persisted:
+            return
+        override: Dict[str, Any] = {
+            "model": persisted.get("model"),
+            "provider": persisted.get("provider"),
+            "base_url": persisted.get("base_url"),
+            "selection_mode": persisted.get("selection_mode"),
+        }
+        provider = persisted.get("provider")
+        if provider:
             try:
-                store = getattr(self, "session_store", None)
-                if store is not None:
-                    # Ensure the on-disk sessions index is loaded into
-                    # ``_entries`` first. On a cold gateway restart the store is
-                    # lazily loaded, and model resolution can run before any
-                    # ``get_or_create_session`` call has populated ``_entries`` —
-                    # without this the persisted override is silently missed and
-                    # the session "forgets" its last-used model.
-                    ensure_loaded = getattr(store, "_ensure_loaded", None)
-                    if callable(ensure_loaded):
-                        ensure_loaded()
-                    entries = getattr(store, "_entries", {})
-                    entry = entries.get(session_key)
-                    if entry and getattr(entry, "model_override", None):
-                        self._session_model_overrides[session_key] = entry.model_override
+                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                override["api_key"] = runtime.get("api_key")
+                override["api_mode"] = runtime.get("api_mode")
+                override["credential_pool"] = runtime.get("credential_pool")
+                if not override.get("base_url"):
+                    override["base_url"] = runtime.get("base_url")
             except Exception:
-                pass
+                logger.debug(
+                    "Credential re-resolution failed for persisted override (provider=%s)",
+                    provider,
+                    exc_info=True,
+                )
+        self._session_model_overrides[session_key] = override
+
+    def _ensure_session_model_override_loaded(self, session_key: str) -> None:
+        """Compatibility alias for lazy persisted-selection restoration."""
+        self._rehydrate_session_model_override(session_key)
 
     def _set_session_model_override(self, session_key: str, override: Optional[dict]) -> None:
         """Set or clear a session-scoped model override, and persist it to the session store."""
         if not session_key:
             return
         if override:
+            override = dict(override)
+            # This method is called only by explicit /model, picker, and
+            # natural-language selection flows. Automatic routing bypasses
+            # it, so it continues to render as [A].
+            override.setdefault("selection_mode", "select")
             self._session_model_overrides[session_key] = override
         else:
             self._session_model_overrides.pop(session_key, None)
@@ -16704,10 +16755,14 @@ class GatewayRunner:
                 entries = getattr(store, "_entries", {})
                 entry = entries.get(session_key)
                 if entry:
-                    entry.model_override = override
-                    save_fn = getattr(store, "_save", None)
-                    if save_fn is not None:
-                        save_fn()
+                    setter = getattr(store, "set_model_override", None)
+                    if callable(setter):
+                        setter(session_key, override)
+                    else:
+                        entry.model_override = override
+                        save_fn = getattr(store, "_save", None)
+                        if save_fn is not None:
+                            save_fn()
         except Exception as exc:
             logger.debug("Failed to persist model override to session entry: %s", exc)
 
@@ -16727,7 +16782,7 @@ class GatewayRunner:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode"):
+        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
@@ -18961,6 +19016,8 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "provider": getattr(_agent, "provider", None) if _agent else None,
+                    "base_url": getattr(_agent, "base_url", None) if _agent else None,
                     "context_length": _context_length,
                 }
             
@@ -19117,6 +19174,8 @@ class GatewayRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "provider": getattr(agent, "provider", None) if agent else None,
+                "base_url": getattr(agent, "base_url", None) if agent else None,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

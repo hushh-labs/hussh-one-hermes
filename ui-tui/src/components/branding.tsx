@@ -290,7 +290,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text />
 
           <Text color={t.color.accent}>
-            {info.model.split('/').pop()}
+            {info.hussh_identity?.label ?? info.model.split('/').pop()}
             <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
 
@@ -321,7 +321,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           // here so they aren't lost.
           <Box flexDirection="column" marginBottom={1}>
             <Text color={t.color.accent} wrap="truncate-end">
-              {info.model.split('/').pop()}
+              {info.hussh_identity?.label ?? info.model.split('/').pop()}
               <Text color={t.color.muted}> · Nous Research</Text>
             </Text>
             <Text color={t.color.muted} wrap="truncate-end">
