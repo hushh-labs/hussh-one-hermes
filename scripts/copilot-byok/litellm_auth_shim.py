@@ -37,6 +37,7 @@ This is the repo-canonical source. `scripts/hussh-one-copilot-setup.sh` copies i
 to ~/.hermes/scripts/litellm_auth_shim.py at install time.
 """
 import asyncio
+import ipaddress
 import logging
 import os
 import sys
@@ -59,6 +60,13 @@ LISTEN_PORT = int(os.environ.get("SHIM_PORT", "8644"))
 # The single valid bearer key. Required — refuse to start without it so we never
 # accidentally run an open proxy.
 MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
+# VS Code Insiders compatibility escape hatch. Disabled by default: when a
+# particular custom-endpoint build silently drops the configured provider key,
+# accept only a headerless request that arrived through the loopback listener.
+# The shim injects the real key only on its private upstream hop to LiteLLM.
+ALLOW_LOOPBACK_ANONYMOUS = os.environ.get(
+    "HUSSH_SHIM_ALLOW_LOOPBACK_ANONYMOUS", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # Hop-by-hop headers must not be forwarded (RFC 7230 §6.1). Also strip Host so
 # httpx sets the correct upstream Host, and content-length (we re-stream).
@@ -66,6 +74,17 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
 }
+
+
+def _is_loopback_request(request: Request) -> bool:
+    """Return true only for a direct loopback TCP peer."""
+    client = request.client
+    if client is None:
+        return False
+    try:
+        return ipaddress.ip_address(client.host).is_loopback
+    except ValueError:
+        return False
 
 # ── Graceful upstream recovery (the whole point of this layer) ────────────────
 # The upstream LiteLLM proxy can die (OOM/jetsam on a big Opus turn) and be
@@ -422,24 +441,34 @@ async def _proxy(request: Request) -> Response:
             status_code=503,
         )
     token = _extract_bearer(request)
+    accepted_anonymous_loopback = False
     if token is None:
         raw_auth = request.headers.get("authorization") or request.headers.get("Authorization")
-        # Redact: log only whether a header was present and its scheme/length,
-        # never the raw value — a malformed header can still contain a real
-        # (if truncated/garbled) credential, and this log file is not a secret
-        # store. Full header dump likewise dropped for the same reason.
-        auth_shape = (
-            "absent" if raw_auth is None
-            else f"present (len={len(raw_auth)}, scheme={raw_auth.split(None, 1)[0]!r})" if raw_auth
-            else "empty"
-        )
-        logger.error(f"Auth failed: token is None. Authorization header: {auth_shape}.")
-        return _unauthorized("Missing or malformed Authorization header. Expected: 'Bearer <key>'.")
-    # Constant-time compare to avoid timing oracles on the key.
-    import hmac
-    if not hmac.compare_digest(token, MASTER_KEY):
-        logger.error(f"Auth failed: token mismatch (received len={len(token)}, expected len={len(MASTER_KEY)}).")
-        return _unauthorized("Invalid API key.")
+        if (
+            ALLOW_LOOPBACK_ANONYMOUS
+            and raw_auth is None
+            and _is_loopback_request(request)
+        ):
+            accepted_anonymous_loopback = True
+            logger.warning("Accepted headerless request via loopback compatibility mode.")
+        else:
+            # Redact: log only whether a header was present and its scheme/length,
+            # never the raw value — a malformed header can still contain a real
+            # (if truncated/garbled) credential, and this log file is not a secret
+            # store. Full header dump likewise dropped for the same reason.
+            auth_shape = (
+                "absent" if raw_auth is None
+                else f"present (len={len(raw_auth)}, scheme={raw_auth.split(None, 1)[0]!r})" if raw_auth
+                else "empty"
+            )
+            logger.error(f"Auth failed: token is None. Authorization header: {auth_shape}.")
+            return _unauthorized("Missing or malformed Authorization header. Expected: 'Bearer <key>'.")
+    else:
+        # Constant-time compare to avoid timing oracles on the key.
+        import hmac
+        if not hmac.compare_digest(token, MASTER_KEY):
+            logger.error(f"Auth failed: token mismatch (received len={len(token)}, expected len={len(MASTER_KEY)}).")
+            return _unauthorized("Invalid API key.")
 
     assert _client is not None
     url = f"{UPSTREAM}{request.url.path}"
@@ -450,6 +479,8 @@ async def _proxy(request: Request) -> Response:
         (k, v) for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP
     ]
+    if accepted_anonymous_loopback:
+        fwd_headers.append(("authorization", f"Bearer {MASTER_KEY}"))
 
     # Buffer the request so we can retry transparently across an upstream
     # restart. Cap protects against a pathological body; over the cap we fall

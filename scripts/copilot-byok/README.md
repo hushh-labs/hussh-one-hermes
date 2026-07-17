@@ -60,6 +60,17 @@ select a **Hussh One Vertex ADC** model; a manual key entry is neither needed
 nor valid. If VS Code asks for one, it has retained stale endpoint metadata —
 reload the window (or restart VS Code) rather than leaving the field blank.
 
+### VS Code Insiders compatibility mode
+
+Some Insiders builds have registered a valid `customendpoint` configuration but
+still dropped its provider `apiKey` from requests. For that specific upstream
+defect, run setup with `--allow-unauthenticated-loopback`. The shim then accepts
+only **headerless** requests received directly on its `127.0.0.1` listener and
+adds the real key only for its private LiteLLM hop. Wrong or malformed supplied
+keys still fail. This is an opt-in compatibility mode, not the default: any
+local process, or a client using an SSH port forward, can call the endpoint
+without the local bearer key while it is enabled.
+
 ## Context windows & output caps (live-probed, Jul 2026)
 
 `hussh-one-copilot-setup.sh` writes these into `chatLanguageModels.json`. They

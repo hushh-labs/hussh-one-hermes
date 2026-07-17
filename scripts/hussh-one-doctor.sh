@@ -444,15 +444,22 @@ check_copilot_byok() {
     return 0
   fi
 
-  # Probe the shim (:8644). Auth semantics must be deterministic: no-auth -> 401.
+  # Probe the shim (:8644). Default auth semantics are deterministic
+  # (no-auth -> 401); the explicit VS Code compatibility mode permits a
+  # headerless request only at this loopback listener.
   local py
   py="$(python_bin)"
   if [[ -z "$py" || ! -x "$py" ]]; then
     warn "Python runtime not found for Copilot BYOK probe"
     return 0
   fi
-  if "$py" - <<'PY'
-import urllib.request, urllib.error, sys
+  local allow_anonymous=0
+  if grep -q 'HUSSH_SHIM_ALLOW_LOOPBACK_ANONYMOUS="1"' "$shim_launcher" 2>/dev/null; then
+    allow_anonymous=1
+    warn "Copilot BYOK loopback compatibility mode is enabled; headerless local requests are accepted"
+  fi
+  if ALLOW_ANONYMOUS="$allow_anonymous" "$py" - <<'PY'
+import os, urllib.request, urllib.error, sys
 def code(path, auth=None):
     req = urllib.request.Request("http://127.0.0.1:8644"+path)
     if auth: req.add_header("Authorization", "Bearer "+auth)
@@ -460,12 +467,17 @@ def code(path, auth=None):
         with urllib.request.urlopen(req, timeout=5) as r: return r.status
     except urllib.error.HTTPError as e: return e.code
     except Exception: return None
-noauth = code("/v1/models")            # must be 401 (deterministic auth)
+noauth = code("/v1/models")
 health = code("/healthz")              # 200 if shim+upstream alive
-sys.exit(0 if (noauth == 401 and health == 200) else 1)
+expected_noauth = 200 if os.environ.get("ALLOW_ANONYMOUS") == "1" else 401
+sys.exit(0 if (noauth == expected_noauth and health == 200) else 1)
 PY
   then
-    pass "Copilot BYOK shim live on :8644 (deterministic 401, upstream healthy)"
+    if [[ "$allow_anonymous" == "1" ]]; then
+      pass "Copilot BYOK shim live on :8644 (loopback compatibility, upstream healthy)"
+    else
+      pass "Copilot BYOK shim live on :8644 (deterministic 401, upstream healthy)"
+    fi
   else
     warn "Copilot BYOK shim not responding correctly on :8644; start it: scripts/hussh-one-copilot-setup.sh --start (the reaper also self-heals it)"
   fi

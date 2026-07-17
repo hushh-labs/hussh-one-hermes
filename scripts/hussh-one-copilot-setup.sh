@@ -34,6 +34,7 @@ START_SERVICES=0
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 WRITE_VSCODE=1
 USE_LAUNCHD=0
+ALLOW_UNAUTHENTICATED_LOOPBACK=0
 PROXY_PORT=8643
 SHIM_PORT=8644
 
@@ -46,6 +47,10 @@ Options:
   --start             Start/restart the proxy + shim after setup, then smoke test
   --launchd           (macOS) Install launchd KeepAlive agents for instant restart
                       of the proxy + shim on crash/OOM/sleep (recommended)
+  --allow-unauthenticated-loopback
+                      Compatibility mode for VS Code builds that fail to forward
+                      custom-endpoint credentials. Accepts headerless requests
+                      only at the loopback-bound shim; see security note below.
   --no-vscode         Do not write VS Code chatLanguageModels.json
   --dry-run           Print actions without mutating the machine
   -h, --help          Show this help
@@ -56,6 +61,11 @@ loopback bearer key into the endpoint configuration automatically; do not paste
 or leave a key blank. If VS Code prompts for one, it has retained a stale
 configuration — reload the window (or restart VS Code) and select the Hussh One
 endpoint again.
+
+Compatibility mode is only for a VS Code custom-endpoint forwarding defect. It
+keeps the shim bound to 127.0.0.1, but a local process (or a remote client using
+an SSH port forward) could use the endpoint without the local bearer key. Prefer
+the default authenticated mode whenever your VS Code build forwards credentials.
 USAGE
 }
 
@@ -64,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --project) PROJECT="${2:-}"; shift 2 ;;
     --start) START_SERVICES=1; shift ;;
     --launchd) USE_LAUNCHD=1; shift ;;
+    --allow-unauthenticated-loopback) ALLOW_UNAUTHENTICATED_LOOPBACK=1; shift ;;
     --no-vscode) WRITE_VSCODE=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -228,6 +239,7 @@ export LITELLM_MASTER_KEY="\$(grep -o 'LITELLM_MASTER_KEY="[^"]*"' "\$HOME/.herm
 export SHIM_UPSTREAM="http://127.0.0.1:$PROXY_PORT"
 export SHIM_HOST="127.0.0.1"
 export SHIM_PORT="$SHIM_PORT"
+export HUSSH_SHIM_ALLOW_LOOPBACK_ANONYMOUS="$ALLOW_UNAUTHENTICATED_LOOPBACK"
 exec "\$HOME/.hermes/litellm-venv/bin/python" "\$HOME/.hermes/scripts/litellm_auth_shim.py"
 EOF
   chmod 700 "$LAUNCHER_SHIM"
@@ -563,9 +575,10 @@ if [[ "$START_SERVICES" == "1" && "$DRY_RUN" != "1" ]]; then
   done
   log "Smoke test (auth + chat through shim) ..."
   smoke_test() {
-    SMOKE_KEY="$KEY" SMOKE_PORT="$SHIM_PORT" python3 - <<'PY'
+    SMOKE_KEY="$KEY" SMOKE_PORT="$SHIM_PORT" ALLOW_ANONYMOUS="$ALLOW_UNAUTHENTICATED_LOOPBACK" python3 - <<'PY'
 import json, os, urllib.request, urllib.error
 key = os.environ["SMOKE_KEY"]; port = os.environ["SMOKE_PORT"]
+allow_anonymous = os.environ.get("ALLOW_ANONYMOUS") == "1"
 base = f"http://127.0.0.1:{port}"
 def code(path, auth, method="GET", data=None):
     req = urllib.request.Request(base+path, data=data, method=method)
@@ -578,8 +591,9 @@ def code(path, auth, method="GET", data=None):
 body = json.dumps({"model":"gemini-3.5-flash","messages":[{"role":"user","content":"reply OK"}]}).encode()
 noauth = code("/v1/models", None)
 chat = code("/v1/chat/completions", key, "POST", body)
-ok = (noauth == 401 and chat == 200)
-print(f"  no-auth->{noauth} (want 401), chat->{chat} (want 200): {'PASS' if ok else 'FAIL'}")
+expected_noauth = 200 if allow_anonymous else 401
+ok = (noauth == expected_noauth and chat == 200)
+print(f"  no-auth->{noauth} (want {expected_noauth}), chat->{chat} (want 200): {'PASS' if ok else 'FAIL'}")
 raise SystemExit(0 if ok else 1)
 PY
   }
