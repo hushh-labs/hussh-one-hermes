@@ -51,8 +51,11 @@ Options:
   -h, --help          Show this help
 
 After setup, in VS Code: reload the window (Developer: Reload Window) and pick a
-model from the "Hussh One Vertex ADC" endpoint. When prompted for an API key,
-paste the key printed at the end (also stored in the launcher).
+model from the "Hussh One Vertex ADC" endpoint. The setup writes the generated
+loopback bearer key into the endpoint configuration automatically; do not paste
+or leave a key blank. If VS Code prompts for one, it has retained a stale
+configuration — reload the window (or restart VS Code) and select the Hussh One
+endpoint again.
 USAGE
 }
 
@@ -734,14 +737,15 @@ fi
 log ""
 log "VS Code Copilot BYOK (Vertex ADC) setup complete."
 log "  Endpoint URL : http://127.0.0.1:$SHIM_PORT/v1   (the auth shim)"
-log "  API key      : $KEY"
+log "  Local auth   : configured automatically in the VS Code endpoint"
 log "  Models       : gemini-3.5-flash, gemini-3.1-pro-preview, claude-sonnet-4-6, claude-opus-4-8"
 if [[ "$started_via_launchd" == "1" ]]; then
   log "  Resilience   : launchd KeepAlive ($PROXY_LABEL, $SHIM_LABEL) — instant restart"
 fi
 log ""
 log "In VS Code: Developer: Reload Window, choose a 'Hussh One Vertex ADC' model,"
-log "and paste the API key above when prompted."
+log "and use its preconfigured local authentication. If VS Code prompts for a key,"
+log "reload/restart VS Code instead of entering a blank value."
 if [[ "$started_via_launchd" != "1" ]]; then
   log "Tip: re-run with --launchd for instant crash/OOM restart (recommended). The"
   log "reaper watchdog (ensure_litellm_proxy) also self-heals both services."

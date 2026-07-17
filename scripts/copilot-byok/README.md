@@ -54,6 +54,12 @@ The second is the Vertex authentication mechanism. Do not substitute a Google
 AI Studio key for ADC: that key only works against the separate direct Gemini
 API, not the Vertex endpoint.
 
+The installer writes the local key into both VS Code and VS Code Insiders
+configurations automatically. After installation, reload the VS Code window and
+select a **Hussh One Vertex ADC** model; a manual key entry is neither needed
+nor valid. If VS Code asks for one, it has retained stale endpoint metadata —
+reload the window (or restart VS Code) rather than leaving the field blank.
+
 ## Context windows & output caps (live-probed, Jul 2026)
 
 `hussh-one-copilot-setup.sh` writes these into `chatLanguageModels.json`. They
