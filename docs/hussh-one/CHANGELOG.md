@@ -20,6 +20,7 @@ Baileys bridge, with owner-only triggering and sandboxed social-group capsules.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-17 | `08d8eef31` | **Self-chat JID/LID bridge fix.** Pure, Node-tested incoming self-chat classification now accepts the owner's linked-device identifiers without weakening capsule triggers, isolated memory, or the gateway's single canonical outgoing header. |
 | 2026-07-12 | `daaaa3070` | **Group Intelligence onboarding** — self-chat auto-all-users mode, debounced bridge watchdog, cron/scheduler + `send_message` tool support for the new flow. |
 | 2026-07-08 | `2faade147` | **Per-capsule dedicated trigger handles.** Each capsule (e.g. "One Team") now scopes to its OWN `@`-handle via `whatsapp.capsules.<jid>.trigger_tokens`, forwarded to the bridge as `WHATSAPP_GROUP_TRIGGER_TOKENS`. Fixes cross-talk where any global `@One`/`@husshOne` tag — or a native @-mention of the owner's own number in self-chat mode — incorrectly woke every capsule group. |
 | 2026-06-25 | `1904dd513` | Count-capped WhatsApp session prune (`MAX_PER_FAMILY`) — bounds Baileys session-dir bloat. |
@@ -75,6 +76,12 @@ authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-16 | `41c4ef2ca` | Accept blank or absent Copilot bearer headers only through the loopback-bound compatibility shim, restoring affected VS Code custom endpoints without exposing the proxy remotely. |
+| 2026-07-16 | `100b7e4e6` | Completed the headerless VS Code BYOK fallback path through the local LiteLLM auth shim. |
+| 2026-07-16 | `7ce5060b9` | Corrected VS Code custom-endpoint authentication to use provider-level credentials, preventing malformed/missing Authorization headers. |
+| 2026-07-16 | `8ba7fb3cf` | Auto-configured Copilot's local loopback authentication during Hussh One BYOK onboarding. |
+| 2026-07-15 | `bdb8cd3a8` | Tightened BYOK model steering and fallback behavior so Copilot recovers predictably instead of silently switching away from the configured Vertex route. |
+| 2026-07-15 | `f32364846` | Documented the boundary between the local Copilot loopback key and Vertex ADC: the former authenticates only the local shim; model access remains ADC-based. |
 | 2026-07-14 | `pending` | **3.1-pro 429 recovery + search-tool mapping verified.** `gemini-3.1-pro-preview` is GLOBAL-ONLY on Vertex (live region probe: all 18 non-global regions 404), so a mid-stream 429 falling back to itself hit the just-cooled-down deployment → "No deployments available" → Copilot rendered the dead stream as a broken tool call. Fixed by chaining its `fallbacks` to the multi-region `gemini-3.5-flash` pool. Separately **verified (not assumed)** that Copilot's real native search tools map correctly onto every Vertex ADC model: replayed the actual captured 86-tool Copilot manifest (incl. `file_search`, `grep_search`, `github_text_search`, `vscode_listCodeUsages`, MCP `*_search`) through the shim — all `type:object`, zero composition keywords, and every model (opus-4-8, sonnet-4-6, sonnet-5, gemini-3.5-flash, gemini-3.1-pro-preview) returned `finish=tool_calls` with well-formed search calls. Search was never broken — the symptom was the 3.1-pro 429 dead-end. |
 | 2026-07-14 | `pending` | **Smart-tool-usage steering for BYOK agent mode.** BYOK models (Vertex Claude/Gemini) aren't tuned for Copilot's tool ecosystem, so in agent mode they over-spawned subagents for routine work and shelled out `cat`/`sed`/`grep` instead of using native read/edit/search tools. `hussh-one-copilot-setup.sh` now ships an always-on user-level custom instructions file (`~/.copilot/instructions/hussh-one-tooling.instructions.md`, `applyTo: '**'`, highest instruction priority) that steers every agent/model to native-tool-first behavior and against needless delegation. Added `hussh-one-doctor.sh` guard (`check_copilot_byok`) so the steering file can't silently regress. |
 | 2026-07-14 | `b31cfdc9c` | Corrected the previous entry's unverified claim of a confirmed Gemini root-`anyOf` production bug: live traffic capture of Copilot's real 86-tool manifest (native built-ins + all MCP tools) shows zero root-level composition keywords and a clean 200 OK against both Gemini models — the theory did not hold up. Added a temporary env-gated debug capture tool to `litellm_auth_shim.py` (`HUSSH_SHIM_CAPTURE_TOOLS=1`, off by default) for future ground-truth investigations. The sanitizer/tests from the prior commit remain as a no-op safety net. |
@@ -140,6 +147,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🚀 Onboarding, Bootstrap, Doctor & Deployment
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-17 | `152b1d655` | **Companion services self-heal by default.** Bootstrap now provisions VS Code BYOK only when a supported editor plus Vertex ADC are available, starts the loopback blank-bearer compatibility shim, and installs branded Open WebUI against this checkout's Hermes binary and `HERMES_HOME`. Supervisor/doctor now health-check and restart Open WebUI; stale Google Ads/ADK injected branding was removed. |
 | 2026-06-27 | `1810e8836` | Bootstrap now sets robust platform-specific config defaults. |
 | 2026-06-27 | `4ee548e7c` | Updated onboarding evolution docs + wiki-link best practices. |
 | 2026-06-21 | `a749903d5` | Seeded OOM-safe compression defaults (`compression.threshold=0.35`, hygiene message limit) in bootstrap. |
@@ -160,6 +168,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🎨 Branding & Header Infrastructure
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-17 | `de8b243f0` | **Canonical runtime identity.** WhatsApp, TUI, and dashboard now show `Model · Vertex ADC · [A/S]` from one safe identity module. `[A]` remains router-driven (including Claude escalation); `[S]` is persisted only after an explicit model switch. Also corrected the Claude Opus display regression and dashboard terminal foreground propagation. |
 | 2026-06-15 | `71d50dfc1` | Repaired model header accuracy end-to-end (precise version/size naming). |
 | 2026-06-07 | `4f5eb8d8e` | Default prefix made emoji-first: **"🤫 Hussh One"**. |
 | 2026-06-03 | `77c62b0d5` | Extracted the WhatsApp header into the upgrade-safe `hermes_cli/hussh_one_header.py` module + MCP onboarding scanner. |
@@ -173,6 +182,7 @@ Brand story: [overview/brand.md](./overview/brand.md)
 ## 📚 Documentation Infrastructure
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-14 | `233ee0aae` | Backfilled correction-commit context in this changelog after the July Copilot verification work. |
 | 2026-07-08 | `7da566c3c` | **This changelog + its self-checking freshness guard shipped** (`scripts/hussh-one-changelog-check.py`), wired into `hussh-one-health-index.py` and `hussh-one-doctor.sh`. |
 | 2026-07-07 | `635c0e7e7` | Synced onboarding + docs with live-probed Vertex context windows and cron `[SILENT]` conventions. |
 | 2026-06-22 | `d368c5db6` / `613a0fbdf` | Documented session-model resume, dashboard crash resilience, and the Open WebUI variant. |
@@ -185,6 +195,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-07-15 | `12b402353` | Integrated upstream Hermes Agent **v0.18.2** into Hussh One. |
 | 2026-06-07 | `42f39a52b` | **Trunk reconciliation** — merged the drifted `hussh-one-hermes` branch (9 unique features: capsules, upgrade-safe header module, bootstrap/doctor/supervisor scripts) into `main`; `main` became the sole canonical trunk; old branch deleted, preserved at tag `safety/hussh-one-hermes-20260607-232148`. |
 | 2026-06-07 | `6a8f537e3` | Merged 71 upstream commits into `main`. |
 | 2026-06-07 | `34b003a11` | Merge `upstream/main`. |
@@ -218,7 +229,8 @@ the conflict-resolution playbook before attempting this merge.
 Hussh-One-only surfaces: `hermes_cli/hussh_one_header.py`, `hermes_cli/brand.py`,
 `gateway/whatsapp_capsule.py`, `scripts/whatsapp-bridge/bridge.js`,
 `scripts/hussh-one-*.sh`, `scripts/copilot-byok/`, `scripts/open-webui/`,
-`plugins/model-providers/google-vertex-claude/`, `hermes_cli/hussh_one_router.py`,
+`scripts/setup_open_webui.sh`, `plugins/model-providers/google-vertex-claude/`,
+`hermes_cli/hussh_one_identity.py`, `hermes_cli/hussh_one_router.py`,
 `hermes_cli/hussh_one_mcp_scan.py`, `docs/hussh-one/`, `HUSSH_ONE.md`.
 
 Check for undocumented commits any time:
