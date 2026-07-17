@@ -57,6 +57,7 @@ def test_supervisor_supports_expected_managers_and_conflict_guard():
     assert "require_no_conflicts" in text
     assert "hermes dashboard --host" not in text  # command is argv-built, not shell-hardcoded
     assert "--tui --no-open" in text
+    assert 'WHATSAPP_PORT="${HUSSH_ONE_WHATSAPP_PORT:-8473}"' in text
 
 
 def test_supervisor_service_definitions_restart_and_raise_fd_limit():

@@ -13,7 +13,7 @@ DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 
 DASHBOARD_HOST="${HUSSH_ONE_DASHBOARD_HOST:-127.0.0.1}"
 DASHBOARD_PORT="${HUSSH_ONE_DASHBOARD_PORT:-9119}"
-WHATSAPP_PORT="${HUSSH_ONE_WHATSAPP_PORT:-3000}"
+WHATSAPP_PORT="${HUSSH_ONE_WHATSAPP_PORT:-8473}"
 OPEN_WEBUI_HOST="${HUSSH_ONE_OPEN_WEBUI_HOST:-}"
 OPEN_WEBUI_PORT="${HUSSH_ONE_OPEN_WEBUI_PORT:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
@@ -46,7 +46,7 @@ Options:
   --clean-conflicts          Stop fallback screen sessions before service start/restart
   --host HOST                Dashboard host (default: 127.0.0.1)
   --dashboard-port PORT      Dashboard port (default: 9119)
-  --whatsapp-port PORT       WhatsApp bridge port (default: 3000)
+  --whatsapp-port PORT       WhatsApp bridge port (default: 8473)
   --open-webui-port PORT     Open WebUI port (default: 8080)
   --dry-run                  Print selected actions without mutating services
   -h, --help                 Show this help
