@@ -29,6 +29,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { isSelfChatJid, shouldRejectNonOwnerSelfChatEvent } from './self_chat_gate.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -392,6 +393,15 @@ async function startSocket() {
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
+      const isAllowlisted = ALLOWED_GROUPS.includes(chatId);
+      const isSelfChat = isSelfChatJid({
+        chatId,
+        accountId: sock.user?.id,
+        accountLid: sock.user?.lid,
+        isGroup,
+        isAllowlisted,
+      });
+
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
         if (chatId.includes('status')) continue;
@@ -399,18 +409,6 @@ async function startSocket() {
         if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
           continue;
-        }
-
-        // Check if the group is allowlisted or if it's the self-chat JID.
-        // If not, we only allow it if it's a group message explicitly triggered by the user (the owner)
-        // using @One, @husshOne, or @hussh-one, or starts with a slash.
-        const isAllowlisted = ALLOWED_GROUPS.includes(chatId);
-        let isSelfChat = false;
-        if (!isAllowlisted && !isGroup) {
-          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const chatNumber = chatId.replace(/@.*/, '');
-          isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
         }
 
         if (!isAllowlisted && !isSelfChat) {
@@ -493,7 +491,12 @@ async function startSocket() {
           }
           // Tagged by another member in an allowlisted capsule group — allow through.
         } else {
-          if (WHATSAPP_MODE === 'self-chat' && !ALLOWED_GROUPS.includes(chatId)) {
+          if (shouldRejectNonOwnerSelfChatEvent({
+            mode: WHATSAPP_MODE,
+            isAllowlisted,
+            isSelfChat,
+            isCapsuleGroup,
+          })) {
             try {
               console.log(JSON.stringify({
                 event: 'ignored',
