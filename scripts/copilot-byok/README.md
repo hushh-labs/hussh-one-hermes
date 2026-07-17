@@ -65,9 +65,9 @@ reload the window (or restart VS Code) rather than leaving the field blank.
 Some Insiders builds have registered a valid `customendpoint` configuration but
 still dropped its provider `apiKey` from requests. For that specific upstream
 defect, run setup with `--allow-unauthenticated-loopback`. The shim then accepts
-only **headerless** requests received directly on its `127.0.0.1` listener and
-adds the real key only for its private LiteLLM hop. Wrong or malformed supplied
-keys still fail. This is an opt-in compatibility mode, not the default: any
+only **headerless or blank-`Bearer`** requests received directly on its
+`127.0.0.1` listener and adds the real key only for its private LiteLLM hop.
+Wrong or non-empty malformed supplied keys still fail. This is an opt-in compatibility mode, not the default: any
 local process, or a client using an SSH port forward, can call the endpoint
 without the local bearer key while it is enabled.
 

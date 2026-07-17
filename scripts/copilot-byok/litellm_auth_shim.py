@@ -86,6 +86,11 @@ def _is_loopback_request(request: Request) -> bool:
     except ValueError:
         return False
 
+
+def _is_missing_or_blank_bearer(raw_auth: str | None) -> bool:
+    """Recognize the two credential-drop shapes emitted by VS Code Insiders."""
+    return raw_auth is None or raw_auth.strip().lower() == "bearer"
+
 # ── Graceful upstream recovery (the whole point of this layer) ────────────────
 # The upstream LiteLLM proxy can die (OOM/jetsam on a big Opus turn) and be
 # respawned by launchd in well under a second. We make that invisible to the
@@ -446,11 +451,11 @@ async def _proxy(request: Request) -> Response:
         raw_auth = request.headers.get("authorization") or request.headers.get("Authorization")
         if (
             ALLOW_LOOPBACK_ANONYMOUS
-            and raw_auth is None
+            and _is_missing_or_blank_bearer(raw_auth)
             and _is_loopback_request(request)
         ):
             accepted_anonymous_loopback = True
-            logger.warning("Accepted headerless request via loopback compatibility mode.")
+            logger.warning("Accepted missing/blank-bearer request via loopback compatibility mode.")
         else:
             # Redact: log only whether a header was present and its scheme/length,
             # never the raw value — a malformed header can still contain a real
@@ -480,6 +485,9 @@ async def _proxy(request: Request) -> Response:
         if k.lower() not in _HOP_BY_HOP
     ]
     if accepted_anonymous_loopback:
+        # A blank `Bearer` header must not reach LiteLLM beside the injected
+        # credential: duplicate Authorization headers are rejected upstream.
+        fwd_headers = [(k, v) for k, v in fwd_headers if k.lower() != "authorization"]
         fwd_headers.append(("authorization", f"Bearer {MASTER_KEY}"))
 
     # Buffer the request so we can retry transparently across an upstream

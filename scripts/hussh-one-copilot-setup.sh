@@ -49,8 +49,9 @@ Options:
                       of the proxy + shim on crash/OOM/sleep (recommended)
   --allow-unauthenticated-loopback
                       Compatibility mode for VS Code builds that fail to forward
-                      custom-endpoint credentials. Accepts headerless requests
-                      only at the loopback-bound shim; see security note below.
+                      custom-endpoint credentials. Accepts missing or blank
+                      bearer credentials only at the loopback-bound shim; see
+                      security note below.
   --no-vscode         Do not write VS Code chatLanguageModels.json
   --dry-run           Print actions without mutating the machine
   -h, --help          Show this help

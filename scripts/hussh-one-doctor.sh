@@ -456,7 +456,7 @@ check_copilot_byok() {
   local allow_anonymous=0
   if grep -q 'HUSSH_SHIM_ALLOW_LOOPBACK_ANONYMOUS="1"' "$shim_launcher" 2>/dev/null; then
     allow_anonymous=1
-    warn "Copilot BYOK loopback compatibility mode is enabled; headerless local requests are accepted"
+    warn "Copilot BYOK loopback compatibility mode is enabled; missing or blank-bearer local requests are accepted"
   fi
   if ALLOW_ANONYMOUS="$allow_anonymous" "$py" - <<'PY'
 import os, urllib.request, urllib.error, sys
