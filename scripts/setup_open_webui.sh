@@ -4,7 +4,7 @@ set -euo pipefail
 # Bootstrap Open WebUI against Hermes Agent's OpenAI-compatible API server.
 #
 # Idempotent by design:
-# - ensures ~/.hermes/.env has API server settings
+# - ensures $HERMES_HOME/.env has API server settings
 # - installs Open WebUI into ~/.local/open-webui-venv
 # - writes a reusable launcher at ~/.local/bin/start-open-webui-hermes.sh
 # - optionally installs a user service (launchd on macOS, systemd --user on Linux)
@@ -25,11 +25,13 @@ set -euo pipefail
 #   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
 #   HERMES_API_PORT=8642
 #   HERMES_API_HOST=127.0.0.1
-#   HERMES_API_MODEL_NAME='Hermes Agent'
+#   HERMES_API_MODEL_NAME='🤫 Hussh One'
+#   HERMES_HOME=~/.hermes
+#   HERMES_BIN=/path/to/this/checkout/.venv/bin/hermes
 
 OPEN_WEBUI_PORT="${OPEN_WEBUI_PORT:-8080}"
 OPEN_WEBUI_HOST="${OPEN_WEBUI_HOST:-127.0.0.1}"
-OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-Hermes Agent WebUI}"
+OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-🤫 Hussh One}"
 OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
 # Hussh One performance defaults: keep Open WebUI at 1 Hermes agent call per
@@ -42,15 +44,18 @@ OPEN_WEBUI_ENABLE_TAGS_GENERATION="${OPEN_WEBUI_ENABLE_TAGS_GENERATION:-False}"
 OPEN_WEBUI_AUTH="${OPEN_WEBUI_AUTH:-True}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
-HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HERMES_HOME/.env}"
+HERMES_BIN="${HERMES_BIN:-$REPO_ROOT/.venv/bin/hermes}"
 HERMES_API_PORT="${HERMES_API_PORT:-8642}"
 HERMES_API_HOST="${HERMES_API_HOST:-127.0.0.1}"
 HERMES_API_CONNECT_HOST="${HERMES_API_CONNECT_HOST:-127.0.0.1}"
-HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-Hermes Agent}"
+HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-🤫 Hussh One}"
 HERMES_API_BASE_URL="http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/v1"
 LAUNCHER_PATH="$HOME/.local/bin/start-open-webui-hermes.sh"
-LOG_DIR="$HOME/.hermes/logs"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="$HERMES_HOME/logs"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
@@ -61,6 +66,15 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   fi
+}
+
+require_hermes_bin() {
+  if [[ -x "$HERMES_BIN" ]]; then
+    return 0
+  fi
+  echo "Repository Hermes binary not found or not executable: $HERMES_BIN" >&2
+  echo "Set HERMES_BIN to this checkout's Hermes executable after creating its virtualenv." >&2
+  exit 1
 }
 
 choose_python() {
@@ -248,83 +262,12 @@ CSS
   cat > "$static_dir/loader.js" <<'JS'
 (() => {
   // ---------------------------------------------------------------------------
-  // Part 1: Hero title branding ("Powered by Google Agent Development Kit")
+  // Part 1: Canonical Hussh One title defaults
   // ---------------------------------------------------------------------------
-  const titles = new Set([
-    "Hussh Google Ads Agent",
-    "Hussh Google Ads Executive Demo Agent",
-  ]);
-  const poweredBy = "Powered by Google Agent Development Kit";
-  const adkLogoPath = "/static/google-adk-logo.png";
-  const appTitle = "Hussh One ADK";
-  const fallbackChatTitle = "Hussh Google Ads Agent";
+  const brandTitles = new Set(["Hussh One", "🤫 Hussh One"]);
+  const appTitle = "🤫 Hussh One";
+  const fallbackChatTitle = appTitle;
   let lastGoodDocumentTitle = appTitle;
-
-  const normalizeLogoSrc = (value) => {
-    try {
-      return new URL(value || "", window.location.origin).pathname;
-    } catch (_e) {
-      return String(value || "");
-    }
-  };
-
-  const shouldUseAdkLogo = (value) => {
-    const raw = String(value || "");
-    const path = normalizeLogoSrc(raw);
-    return (
-      /agent-development-kit\.png(?:$|[?#])/i.test(raw) ||
-      /^\/static\/(?:apple-touch-icon|favicon(?:-96x96)?|splash(?:-dark)?|logo)\.(?:png|svg|ico)$/i.test(path)
-    );
-  };
-
-  const applyAdkLogo = () => {
-    for (const image of document.querySelectorAll("img[src]")) {
-      if (shouldUseAdkLogo(image.getAttribute("src"))) {
-        image.src = adkLogoPath;
-      }
-    }
-
-    for (const link of document.querySelectorAll("link[href]")) {
-      const rel = String(link.getAttribute("rel") || "").toLowerCase();
-      if ((rel.includes("icon") || rel.includes("apple-touch-icon")) && shouldUseAdkLogo(link.getAttribute("href"))) {
-        link.href = adkLogoPath;
-      }
-    }
-  };
-
-  const isVisibleHeroTitle = (element) => {
-    const text = (element.textContent || "").replace(/\s+/g, " ").trim();
-    if (!titles.has(text)) return false;
-
-    const rect = element.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return false;
-
-    const style = window.getComputedStyle(element);
-    const fontSize = Number.parseFloat(style.fontSize || "0");
-    return fontSize >= 28;
-  };
-
-  const markTitle = () => {
-    const candidates = Array.from(
-      document.querySelectorAll("h1,h2,h3,div,span,p,button"),
-    ).filter(isVisibleHeroTitle);
-
-    const leafCandidates = candidates.filter(
-      (candidate) => !candidates.some((other) => other !== candidate && candidate.contains(other)),
-    );
-
-    const selected = leafCandidates[0] || candidates[0];
-    for (const element of document.querySelectorAll(".hushh-adk-agent-title")) {
-      if (element !== selected) {
-        element.classList.remove("hushh-adk-agent-title");
-        delete element.dataset.hushhAdkPowered;
-      }
-    }
-
-    if (!selected) return;
-    selected.classList.add("hushh-adk-agent-title");
-    selected.dataset.hushhAdkPowered = poweredBy;
-  };
 
   // ---------------------------------------------------------------------------
   // Part 2: Browser tab title hygiene
@@ -366,8 +309,8 @@ CSS
   const isUsableChatTitle = (value) => {
     const text = compactText(stripTitleMarkup(value));
     if (text.length < 3 || text.length > 120) return false;
-    if (/^(new chat|open webui|hussh one adk)$/i.test(text)) return false;
-    if (titles.has(text)) return false;
+    if (/^(new chat|open webui|🤫?\s*hussh one)$/i.test(text)) return false;
+    if (brandTitles.has(text)) return false;
     return !isLeakyTitle(text);
   };
 
@@ -933,9 +876,7 @@ CSS
   // Shared scheduler + observer
   // ---------------------------------------------------------------------------
   const run = () => {
-    applyAdkLogo();
     suppressDisabledAuthChrome();
-    markTitle();
     sanitizeVisibleLeakyTitles();
     syncDocumentTitle();
     processReasoning();
@@ -970,21 +911,26 @@ JS
 write_launcher() {
   mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
 
-  local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv
+  local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv quoted_home quoted_env
   quoted_data_dir="$(shell_quote "$OPEN_WEBUI_DATA_DIR")"
   quoted_name="$(shell_quote "$OPEN_WEBUI_NAME")"
   quoted_base_url="$(shell_quote "$HERMES_API_BASE_URL")"
   quoted_host="$(shell_quote "$OPEN_WEBUI_HOST")"
   quoted_port="$(shell_quote "$OPEN_WEBUI_PORT")"
   quoted_venv="$(shell_quote "$OPEN_WEBUI_VENV")"
+  quoted_home="$(shell_quote "$HERMES_HOME")"
+  quoted_env="$(shell_quote "$HERMES_ENV_FILE")"
 
   cat > "$LAUNCHER_PATH" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export HERMES_HOME=${quoted_home}
+export HERMES_ENV_FILE=${quoted_env}
 API_KEY=\$(python3 - <<'PY'
+import os
 from pathlib import Path
-p = Path.home()/'.hermes'/'.env'
+p = Path(os.environ["HERMES_ENV_FILE"])
 for raw in p.read_text().splitlines():
     line = raw.strip()
     if line.startswith('API_SERVER_KEY='):
@@ -1078,7 +1024,7 @@ install_systemd_user_service() {
   mkdir -p "$unit_dir"
   cat > "$unit" <<EOF
 [Unit]
-Description=Open WebUI connected to Hermes Agent
+Description=Open WebUI connected to Hussh One
 After=default.target
 
 [Service]
@@ -1087,8 +1033,10 @@ ExecStart=/bin/bash %h/.local/bin/start-open-webui-hermes.sh
 Restart=always
 RestartSec=3
 WorkingDirectory=%h
-StandardOutput=append:%h/.hermes/logs/openwebui.log
-StandardError=append:%h/.hermes/logs/openwebui.error.log
+Environment=HERMES_HOME=$HERMES_HOME
+Environment=HERMES_ENV_FILE=$HERMES_ENV_FILE
+StandardOutput=append:$LOG_DIR/openwebui.log
+StandardError=append:$LOG_DIR/openwebui.error.log
 
 [Install]
 WantedBy=default.target
@@ -1103,9 +1051,10 @@ start_foreground_hint() {
 }
 
 main() {
-  require_cmd hermes
+  require_hermes_bin
   require_cmd curl
   require_cmd python3
+  export HERMES_HOME
 
   install_macos_dependencies
 
@@ -1124,11 +1073,11 @@ main() {
   ensure_env_permissions
 
   log 'Restarting Hermes gateway so API server settings take effect...'
-  hermes gateway restart >/dev/null 2>&1 || true
+  "$HERMES_BIN" gateway restart >/dev/null 2>&1 || true
   sleep 4
   if ! curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null; then
     log 'Hermes API server did not answer on the first check. Trying to start gateway in the background...'
-    nohup hermes gateway run >/dev/null 2>&1 &
+    HERMES_HOME="$HERMES_HOME" nohup "$HERMES_BIN" gateway run >/dev/null 2>&1 &
     sleep 6
   fi
   curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null

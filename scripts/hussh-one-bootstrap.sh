@@ -13,7 +13,8 @@ SKIP_INSTALL=0
 SKIP_BUILD=0
 LIVE_SMOKE=0
 CLEAN_CONFLICTS=0
-SETUP_COPILOT="${HUSSH_ONE_SETUP_COPILOT:-0}"
+SETUP_COPILOT="${HUSSH_ONE_SETUP_COPILOT:-auto}"
+SETUP_OPEN_WEBUI="${HUSSH_ONE_SETUP_OPEN_WEBUI:-auto}"
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 
@@ -28,7 +29,10 @@ Options:
   --skip-build              Do not build TUI/dashboard frontend assets
   --live-smoke              Run optional live Vertex smoke checks from doctor
   --clean-conflicts         Let supervisor clean stale conflicting sessions
-  --copilot                 Set up VS Code Copilot BYOK (Vertex ADC proxy + shim)
+  --copilot                 Force VS Code Copilot BYOK setup when prerequisites exist
+  --no-copilot              Skip VS Code Copilot BYOK setup
+  --open-webui              Force Open WebUI companion setup
+  --no-open-webui           Skip Open WebUI companion setup
   --dry-run                 Print actions without mutating the machine
   -h, --help                Show this help
 USAGE
@@ -62,6 +66,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --copilot)
       SETUP_COPILOT=1
+      shift
+      ;;
+    --no-copilot)
+      SETUP_COPILOT=0
+      shift
+      ;;
+    --open-webui)
+      SETUP_OPEN_WEBUI=1
+      shift
+      ;;
+    --no-open-webui)
+      SETUP_OPEN_WEBUI=0
       shift
       ;;
     --dry-run)
@@ -276,18 +292,70 @@ check_whatsapp_pairing() {
 }
 
 setup_copilot_byok() {
-  if [[ "$SETUP_COPILOT" != "1" ]]; then
+  if [[ "$SETUP_COPILOT" == "0" ]]; then
     return 0
   fi
-  local args=("$SCRIPT_DIR/hussh-one-copilot-setup.sh")
+  local editor_dir=""
+  for candidate in \
+    "$HOME/Library/Application Support/Code - Insiders/User" \
+    "$HOME/Library/Application Support/Code/User" \
+    "$HOME/.config/Code - Insiders/User" \
+    "$HOME/.config/Code/User"; do
+    if [[ -d "$candidate" ]]; then
+      editor_dir="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$editor_dir" ]]; then
+    if [[ "$SETUP_COPILOT" == "1" ]]; then
+      warn "No supported VS Code user profile found; Copilot BYOK was skipped"
+    else
+      log "Copilot BYOK skipped: no supported VS Code installation found."
+    fi
+    return 0
+  fi
+  if ! command -v gcloud >/dev/null 2>&1 \
+    || ! gcloud auth application-default print-access-token >/dev/null 2>&1 \
+    || [[ -z "$(gcloud config get-value project 2>/dev/null || true)" ]]; then
+    warn "Copilot BYOK skipped: Vertex ADC and an active GCP project are required"
+    return 0
+  fi
+
+  local args=("$SCRIPT_DIR/hussh-one-copilot-setup.sh" --start --allow-unauthenticated-loopback)
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    args+=(--launchd)
+  fi
   if [[ "$DRY_RUN" == "1" ]]; then
     args+=(--dry-run)
   fi
-  if [[ "$START_SERVICES" == "1" ]]; then
-    args+=(--start)
+  log "Setting up VS Code Copilot BYOK (Vertex ADC) for $(basename "$(dirname "$editor_dir")") ..."
+  if ! run_cmd "${args[@]}"; then
+    warn "Copilot BYOK setup failed; Hermes setup will continue. Re-run scripts/hussh-one-copilot-setup.sh after fixing the prerequisite."
   fi
-  log "Setting up VS Code Copilot BYOK (Vertex ADC) ..."
-  run_cmd "${args[@]}"
+}
+
+setup_open_webui() {
+  if [[ "$SETUP_OPEN_WEBUI" == "0" ]]; then
+    return 0
+  fi
+  local hermes
+  hermes="$(hermes_bin)"
+  if [[ "$DRY_RUN" != "1" && ! -x "$hermes" ]]; then
+    warn "Open WebUI skipped: repository Hermes binary is unavailable"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "Open WebUI skipped: python3 is unavailable"
+    return 0
+  fi
+  log "Setting up Open WebUI companion service ..."
+  if ! run_cmd env \
+    "HERMES_HOME=$HERMES_HOME" \
+    "HERMES_BIN=$hermes" \
+    OPEN_WEBUI_ENABLE_SERVICE=auto \
+    "$SCRIPT_DIR/setup_open_webui.sh"; then
+    warn "Open WebUI setup failed; Hermes setup will continue. Re-run scripts/setup_open_webui.sh after fixing the prerequisite."
+  fi
 }
 
 start_services() {
@@ -323,6 +391,7 @@ set_config_defaults
 check_gcp_adc
 check_whatsapp_pairing
 setup_copilot_byok
+setup_open_webui
 
 if [[ "$START_SERVICES" == "1" ]]; then
   start_services

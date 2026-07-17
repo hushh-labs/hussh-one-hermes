@@ -14,6 +14,8 @@ DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 DASHBOARD_HOST="${HUSSH_ONE_DASHBOARD_HOST:-127.0.0.1}"
 DASHBOARD_PORT="${HUSSH_ONE_DASHBOARD_PORT:-9119}"
 WHATSAPP_PORT="${HUSSH_ONE_WHATSAPP_PORT:-3000}"
+OPEN_WEBUI_HOST="${HUSSH_ONE_OPEN_WEBUI_HOST:-127.0.0.1}"
+OPEN_WEBUI_PORT="${HUSSH_ONE_OPEN_WEBUI_PORT:-8080}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_BIN="${HERMES_BIN:-}"
 HERMES_PYTHON_BIN="${HUSSH_ONE_PYTHON_BIN:-}"
@@ -29,6 +31,11 @@ DASHBOARD_LOG="${HUSSH_ONE_DASHBOARD_LOG:-$HERMES_HOME/logs/hussh-one-dashboard.
 DASHBOARD_ERR_LOG="${HUSSH_ONE_DASHBOARD_ERR_LOG:-$HERMES_HOME/logs/hussh-one-dashboard.error.log}"
 GATEWAY_LOG="${HUSSH_ONE_GATEWAY_LOG:-$HERMES_HOME/logs/hussh-one-gateway.log}"
 GATEWAY_ERR_LOG="${HUSSH_ONE_GATEWAY_ERR_LOG:-$HERMES_HOME/logs/hussh-one-gateway.error.log}"
+OPEN_WEBUI_LABEL="${HUSSH_ONE_OPEN_WEBUI_LAUNCHD_LABEL:-ai.openwebui.hermes}"
+OPEN_WEBUI_UNIT="${HUSSH_ONE_OPEN_WEBUI_SYSTEMD_UNIT:-openwebui-hermes.service}"
+OPEN_WEBUI_SCREEN="${HUSSH_ONE_OPEN_WEBUI_SCREEN:-openwebui-hermes}"
+OPEN_WEBUI_LAUNCHER="${HUSSH_ONE_OPEN_WEBUI_LAUNCHER:-$HOME/.local/bin/start-open-webui-hermes.sh}"
+OPEN_WEBUI_LOG="${HUSSH_ONE_OPEN_WEBUI_LOG:-$HERMES_HOME/logs/openwebui.log}"
 
 usage() {
   cat <<'USAGE'
@@ -40,6 +47,7 @@ Options:
   --host HOST                Dashboard host (default: 127.0.0.1)
   --dashboard-port PORT      Dashboard port (default: 9119)
   --whatsapp-port PORT       WhatsApp bridge port (default: 3000)
+  --open-webui-port PORT     Open WebUI port (default: 8080)
   --dry-run                  Print selected actions without mutating services
   -h, --help                 Show this help
 USAGE
@@ -69,6 +77,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --whatsapp-port)
       WHATSAPP_PORT="${2:-}"
+      shift 2
+      ;;
+    --open-webui-port)
+      OPEN_WEBUI_PORT="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -559,6 +571,109 @@ dashboard_url() {
   printf 'http://%s:%s\n' "$DASHBOARD_HOST" "$DASHBOARD_PORT"
 }
 
+open_webui_url() {
+  printf 'http://%s:%s\n' "$OPEN_WEBUI_HOST" "$OPEN_WEBUI_PORT"
+}
+
+open_webui_http_healthy() {
+  command -v curl >/dev/null 2>&1 || return 1
+  local url status
+  for url in "$(open_webui_url)/health" "$(open_webui_url)/"; do
+    status="$(curl -sS -L --max-time 3 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+    case "$status" in
+      2*|3*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+open_webui_service_installed() {
+  local selected="$1"
+  case "$selected" in
+    launchd) [[ -f "$HOME/Library/LaunchAgents/${OPEN_WEBUI_LABEL}.plist" ]] ;;
+    systemd) [[ -f "$HOME/.config/systemd/user/${OPEN_WEBUI_UNIT}" ]] ;;
+    screen) [[ -x "$OPEN_WEBUI_LAUNCHER" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+screen_start_open_webui() {
+  if [[ "$DRY_RUN" != "1" ]] && ! command -v screen >/dev/null 2>&1; then
+    return 1
+  fi
+  if [[ ! -x "$OPEN_WEBUI_LAUNCHER" ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$OPEN_WEBUI_LOG")"
+  stop_screen_session "$OPEN_WEBUI_SCREEN"
+  local shell_bin="${SHELL:-/bin/sh}"
+  local command
+  command="while true; do $(shell_quote "$OPEN_WEBUI_LAUNCHER") >> $(shell_quote "$OPEN_WEBUI_LOG") 2>&1; sleep 3; done"
+  run_cmd screen -dmS "$OPEN_WEBUI_SCREEN" "$shell_bin" -lc "$command"
+}
+
+restart_open_webui() {
+  local selected="$1"
+  case "$selected" in
+    launchd)
+      run_cmd launchctl kickstart -k "$(launchd_domain)/$OPEN_WEBUI_LABEL"
+      ;;
+    systemd)
+      run_cmd systemctl --user restart "$OPEN_WEBUI_UNIT"
+      ;;
+    screen)
+      screen_start_open_webui
+      ;;
+    *)
+      log "Open WebUI service is not managed by $selected; no restart action is available."
+      return 1
+      ;;
+  esac
+}
+
+ensure_open_webui() {
+  local selected="$1"
+  if ! open_webui_service_installed "$selected"; then
+    log "Open WebUI: not installed for $selected (bootstrap will provision it when available)."
+    return 0
+  fi
+  if open_webui_http_healthy; then
+    log "Open WebUI: healthy ($(open_webui_url))"
+    return 0
+  fi
+  log "Open WebUI: unhealthy at $(open_webui_url); restarting its managed service."
+  if ! restart_open_webui "$selected"; then
+    log "Open WebUI: restart could not be requested."
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    return 0
+  fi
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    sleep 1
+    if open_webui_http_healthy; then
+      log "Open WebUI: recovered after restart ($(open_webui_url))"
+      return 0
+    fi
+  done
+  log "Open WebUI: remains unhealthy after restart; inspect $OPEN_WEBUI_LOG."
+  return 0
+}
+
+open_webui_status() {
+  local selected="$1"
+  if ! open_webui_service_installed "$selected"; then
+    log "Open WebUI: not installed for $selected"
+    return 0
+  fi
+  if open_webui_http_healthy; then
+    log "Open WebUI: healthy ($(open_webui_url))"
+  else
+    log "Open WebUI: unhealthy ($(open_webui_url)); restart will self-heal it"
+  fi
+}
+
 write_launchd_dashboard_plist() {
   local plist="$HOME/Library/LaunchAgents/${DASHBOARD_LABEL}.plist"
   local path_env
@@ -908,11 +1023,15 @@ case "$ACTION" in
     esac
     port_status "$DASHBOARD_PORT" "dashboard"
     port_status "$WHATSAPP_PORT" "whatsapp"
+    port_status "$OPEN_WEBUI_PORT" "Open WebUI"
+    open_webui_status "$manager"
     log "dashboard url: $(dashboard_url)"
     ;;
 esac
 
 if [[ "$ACTION" == "start" || "$ACTION" == "restart" ]]; then
+  ensure_open_webui "$manager"
   log "Hussh One dashboard: $(dashboard_url)"
   log "Hussh One gateway health: http://127.0.0.1:${WHATSAPP_PORT}/health"
+  log "Hussh One Open WebUI: $(open_webui_url)"
 fi

@@ -30,6 +30,7 @@ CHANGELOG = REPO_ROOT / "docs" / "hussh-one" / "CHANGELOG.md"
 # CHANGELOG.md; update both together.
 HUSSH_ONE_PATHS = [
     "hermes_cli/hussh_one_header.py",
+    "hermes_cli/hussh_one_identity.py",
     "hermes_cli/hussh_one_router.py",
     "hermes_cli/hussh_one_mcp_scan.py",
     "hermes_cli/brand.py",
@@ -38,12 +39,15 @@ HUSSH_ONE_PATHS = [
     "gateway/whatsapp_capsule.py",
     "scripts/whatsapp-bridge/",
     "scripts/hussh-one-",
+    "scripts/setup_open_webui.sh",
     "scripts/copilot-byok/",
     "scripts/open-webui/",
     "plugins/model-providers/google-vertex-claude/",
     "docs/hussh-one/",
     "HUSSH_ONE.md",
 ]
+
+CHANGELOG_ONLY_PATHS = {"docs/hussh-one/CHANGELOG.md"}
 
 
 def _git(*args: str) -> str:
@@ -60,6 +64,21 @@ def _merge_base_with_upstream() -> str | None:
     return _git("merge-base", "HEAD", "upstream/main") or None
 
 
+def _changed_paths(sha: str) -> set[str]:
+    """Return the tracked paths changed by one commit."""
+    return {
+        path
+        for path in _git("show", "--format=", "--name-only", sha).splitlines()
+        if path
+    }
+
+
+def is_changelog_only_commit(sha: str) -> bool:
+    """Whether a commit updates only this changelog's own documentation."""
+    changed = _changed_paths(sha)
+    return bool(changed) and changed <= CHANGELOG_ONLY_PATHS
+
+
 def find_candidate_commits(since_ref: str | None) -> list[tuple[str, str, str]]:
     """Return (short_sha, date, subject) for commits touching Hussh-One paths."""
     base = since_ref or _merge_base_with_upstream()
@@ -72,7 +91,7 @@ def find_candidate_commits(since_ref: str | None) -> list[tuple[str, str, str]]:
     commits = []
     for line in out.splitlines():
         parts = line.split("|", 2)
-        if len(parts) == 3:
+        if len(parts) == 3 and not is_changelog_only_commit(parts[0]):
             commits.append(tuple(parts))
     return commits
 

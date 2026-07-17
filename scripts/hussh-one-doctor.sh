@@ -13,6 +13,7 @@ LIVE_VERTEX=0
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 DASHBOARD_URL="${HUSSH_ONE_DASHBOARD_URL:-http://127.0.0.1:9119}"
 WHATSAPP_HEALTH_URL="${HUSSH_ONE_WHATSAPP_HEALTH_URL:-http://127.0.0.1:8473/health}"
+OPEN_WEBUI_URL="${HUSSH_ONE_OPEN_WEBUI_URL:-http://127.0.0.1:8080}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 
 FAILURES=0
@@ -24,7 +25,7 @@ Usage: scripts/hussh-one-doctor.sh [options]
 
 Options:
   --manager auto|launchd|systemd|s6|screen
-  --require-services       Fail if dashboard or WhatsApp health is not reachable
+  --require-services       Fail if dashboard, WhatsApp, or Open WebUI health is not reachable
   --live-vertex            Run optional live Vertex Claude smoke checks
   --dry-run                Print external service checks without mutating state
   -h, --help               Show this help
@@ -352,6 +353,32 @@ check_dashboard_chat() {
   fi
 }
 
+check_open_webui_health() {
+  if ! command -v curl >/dev/null 2>&1; then
+    if [[ "$REQUIRE_SERVICES" == "1" ]]; then
+      fail "curl is required for Open WebUI health checks"
+    else
+      warn "curl unavailable; Open WebUI health skipped"
+    fi
+    return 0
+  fi
+  local url status
+  for url in "$OPEN_WEBUI_URL/health" "$OPEN_WEBUI_URL/"; do
+    status="$(curl -sS -L --max-time 2 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+    case "$status" in
+      2*|3*)
+        pass "Open WebUI health is reachable at $OPEN_WEBUI_URL"
+        return 0
+        ;;
+    esac
+  done
+  if [[ "$REQUIRE_SERVICES" == "1" ]]; then
+    fail "Open WebUI health not reachable at $OPEN_WEBUI_URL"
+  else
+    warn "Open WebUI health not reachable at $OPEN_WEBUI_URL; supervisor start/restart will attempt recovery"
+  fi
+}
+
 check_whatsapp_health() {
   if ! command -v curl >/dev/null 2>&1; then
     warn "curl unavailable; WhatsApp health skipped"
@@ -456,7 +483,7 @@ check_copilot_byok() {
   local allow_anonymous=0
   if grep -q 'HUSSH_SHIM_ALLOW_LOOPBACK_ANONYMOUS="1"' "$shim_launcher" 2>/dev/null; then
     allow_anonymous=1
-    warn "Copilot BYOK loopback compatibility mode is enabled; missing or blank-bearer local requests are accepted"
+    pass "Copilot BYOK loopback compatibility mode accepts missing or blank-bearer local requests"
   fi
   if ALLOW_ANONYMOUS="$allow_anonymous" "$py" - <<'PY'
 import os, urllib.request, urllib.error, sys
@@ -565,6 +592,7 @@ check_config
 check_supervisor_status
 check_boot_persistence
 check_dashboard_chat
+check_open_webui_health
 check_whatsapp_health
 check_vertex_profile
 check_changelog_freshness
