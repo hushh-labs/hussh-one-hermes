@@ -278,19 +278,16 @@ vertex_models = [
 for m in vertex_models:
     m.update({"url": url, "toolCalling": True, "vision": True,
               "thinking": True, "streaming": True})
-    # Embed the shim master key directly. Relying on VS Code's secret store
-    # (${input:chat.lm.secret.*}) is fragile: the stored secret can vanish on
-    # a VS Code update / keychain change, after which Copilot sends an empty
-    # bearer, the shim 401s, and Copilot SILENTLY falls back to its metered
-    # hosted model (e.g. Claude Haiku) — surfacing as a "credit limit" error
-    # even though Vertex ADC is wired up. Hardcoding the key avoids that.
-    if master_key:
-        m["apiKey"] = master_key
-        m["headers"] = {"Authorization": f"Bearer {master_key}"}
 
 vertex_block = {
     "name": "Hussh One Vertex ADC",
     "vendor": "customendpoint",
+    # `customendpoint` reads credentials at the provider level.  Model-level
+    # apiKey/headers fields are ignored by current VS Code Insiders builds,
+    # which results in a request with no Authorization header at all.
+    # Keep the literal loopback-only key here instead of a VS Code secret-store
+    # reference: the latter can disappear after a keychain or editor update.
+    "apiKey": master_key,
     "apiType": "chat-completions",
     "models": vertex_models,
 }

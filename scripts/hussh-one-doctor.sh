@@ -471,7 +471,7 @@ PY
   fi
 
   # Guard the silent-fallback regression: VS Code's chatLanguageModels.json must
-  # carry a literal key on the Vertex ADC models, NOT a ${input:...} secret-store
+# carry a literal key on the Vertex ADC provider, NOT a ${input:...} secret-store
   # reference. If the secret evaporates (VS Code update / keychain change),
   # Copilot sends an empty bearer, the shim 401s, and Copilot silently falls back
   # to its metered hosted model — surfacing as a bogus "credit limit" error.
@@ -496,12 +496,11 @@ vertex = [b for b in data if isinstance(b, dict) and b.get("name") == "Hussh One
 if not vertex:
     sys.exit(3)  # endpoint absent — not configured here
 for b in vertex:
-    for m in b.get("models", []):
-        k = m.get("apiKey", "")
-        if not k or "${input:" in str(k):
-            sys.exit(1)  # missing/placeholder key — the silent-fallback trap
-        if want and k != want:
-            sys.exit(4)  # stale key — won't match the shim
+    k = b.get("apiKey", "")
+    if not k or "${input:" in str(k):
+        sys.exit(1)  # missing/placeholder key — the silent-fallback trap
+    if want and k != want:
+        sys.exit(4)  # stale key — won't match the shim
 sys.exit(0)
 PY
     then

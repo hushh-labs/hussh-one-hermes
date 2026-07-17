@@ -46,10 +46,10 @@ There are deliberately two credentials in this local chain:
 
 | Hop | Credential | Purpose |
 | --- | --- | --- |
-| VS Code → `127.0.0.1:8644` | Installer-generated LiteLLM master key | Prevents another local process from using the proxy. It remains local. |
+| VS Code → `127.0.0.1:8644` | Installer-generated LiteLLM master key | Set as the `customendpoint` provider's `apiKey`; prevents another local process from using the proxy. It remains local. |
 | Auth shim/proxy → Vertex AI | Google ADC access token | Authorizes the actual Gemini/Claude request and is minted/refreshed automatically. |
 
-The first is the API key visible in VS Code's custom-endpoint configuration.
+The first is the provider-level `apiKey` in VS Code's custom-endpoint configuration.
 The second is the Vertex authentication mechanism. Do not substitute a Google
 AI Studio key for ADC: that key only works against the separate direct Gemini
 API, not the Vertex endpoint.
