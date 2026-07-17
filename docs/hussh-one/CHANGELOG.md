@@ -20,6 +20,7 @@ Baileys bridge, with owner-only triggering and sandboxed social-group capsules.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-17 | `6346c137a` | Corrected the supervisor's WhatsApp health/status default from the obsolete `:3000` to the bridge's canonical `:8473`, so it now monitors the live connected service. |
 | 2026-07-17 | `08d8eef31` | **Self-chat JID/LID bridge fix.** Pure, Node-tested incoming self-chat classification now accepts the owner's linked-device identifiers without weakening capsule triggers, isolated memory, or the gateway's single canonical outgoing header. |
 | 2026-07-12 | `daaaa3070` | **Group Intelligence onboarding** — self-chat auto-all-users mode, debounced bridge watchdog, cron/scheduler + `send_message` tool support for the new flow. |
 | 2026-07-08 | `2faade147` | **Per-capsule dedicated trigger handles.** Each capsule (e.g. "One Team") now scopes to its OWN `@`-handle via `whatsapp.capsules.<jid>.trigger_tokens`, forwarded to the bridge as `WHATSAPP_GROUP_TRIGGER_TOKENS`. Fixes cross-talk where any global `@One`/`@husshOne` tag — or a native @-mention of the owner's own number in self-chat mode — incorrectly woke every capsule group. |
