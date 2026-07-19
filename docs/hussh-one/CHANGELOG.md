@@ -121,6 +121,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-18 | `41eae5c88` | **Single-owner dashboard and quiet self-chat doctor.** macOS launchd now owns one versioned watchdog (which owns the `:9119` child) instead of racing a detached watchdog. The managed no-agent doctor persists alert state, reports only new/recovered failures (six-hour unresolved reminder), and silently prunes only regenerable WhatsApp session files. |
 | 2026-06-24 | `7de58e588` | Full Ink cache evict on session reset — stops layout mismatch after `/new`. |
 | 2026-06-24 | `936bb7768` | Restore all live sessions on gateway restart. |
 | 2026-06-24 | `87649d682` | Made the Chat events-feed WebSocket resilient (reconnect + heartbeat). |

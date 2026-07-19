@@ -57,9 +57,9 @@ WHATSAPP_CAPSULE_RATE_WINDOW_MS=60000
 
 ## Restarting safely (macOS)
 ```bash
-# kill orphaned bridge first to avoid stale code on port 3000
-ps aux | grep bridge.js     # find PID
-launchctl stop ai.hermes.gateway && kill -9 <bridge_pid> && launchctl start ai.hermes.gateway
+# The supervisor retires the legacy detached dashboard watchdog, its orphaned
+# child, and then starts the single launchd-owned watchdog on :9119.
+scripts/hussh-one-supervisor.sh restart --manager launchd
 ```
 Then verify: `tail ~/.hermes/logs/gateway.log` for `✓ whatsapp connected`.
 
@@ -69,6 +69,30 @@ scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-guard.sh
 python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsapp_*.py -q
 python3 scripts/hussh-one-changelog-check.py
+```
+
+## Automatic self-chat doctor
+
+Bootstrap installs the deterministic no-agent doctor at
+`~/.hermes/scripts/hussh_one_doctor_heal.py` and updates the existing
+**Hussh One Self-Healing Doctor** cron job in place; its ID, schedule, and
+self-chat delivery target are preserved. The script is deliberately silent
+when health is unchanged, because cron delivers script stdout verbatim.
+
+- A new failure sends one self-chat alert; a resolved failure sends one
+  recovery notice; an unresolved failure is reminded at most once every six
+  hours.
+- Alert state is private local runtime data at
+  `~/.hermes/health/hussh-one-doctor-alert-state.json`. Deleting it merely
+  re-establishes the alert baseline on the next run.
+- The doctor may run the conservative WhatsApp janitor once per day when at
+  least 1,000 files are safe-prunable. It never removes `creds.json` or
+  `identity-key-*` files and remains silent when cleanup succeeds.
+
+For a local dry verification without sending a message, run:
+
+```bash
+HERMES_HOME="$HOME/.hermes" .venv/bin/python ~/.hermes/scripts/hussh_one_doctor_heal.py
 ```
 
 ## Onboarding checklist (new machine or new session)
