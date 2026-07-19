@@ -39,7 +39,7 @@ HUSSH_ONE_PATHS = [
     "hermes_cli/dashboard_themes/hussh-one.yaml",
     "gateway/whatsapp_capsule.py",
     "scripts/whatsapp-bridge/",
-    "scripts/hussh-one-",
+    ":(glob)scripts/hussh-one-*",
     "scripts/setup_open_webui.sh",
     "scripts/copilot-byok/",
     "scripts/open-webui/",

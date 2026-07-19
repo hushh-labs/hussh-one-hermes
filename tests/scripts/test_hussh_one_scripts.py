@@ -290,6 +290,12 @@ def test_changelog_checker_uses_recorded_fork_base_without_upstream(monkeypatch)
     assert any("recorded-base..HEAD" in args for args in seen_args)
 
 
+def test_changelog_checker_uses_a_glob_for_hussh_script_paths():
+    checker = _load_changelog_checker()
+
+    assert ":(glob)scripts/hussh-one-*" in checker.HUSSH_ONE_PATHS
+
+
 def test_bootstrap_dry_run_with_temp_home_is_non_mutating(tmp_path):
     env = {
         "HUSSH_ONE_DRY_RUN": "1",
