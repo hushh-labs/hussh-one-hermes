@@ -130,6 +130,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 | Date | Commit | What shipped |
 |------|--------|---------------|
 | 2026-07-18 | `41eae5c88` | **Single-owner dashboard and quiet self-chat doctor.** macOS launchd now owns one versioned watchdog (which owns the `:9119` child) instead of racing a detached watchdog. The managed no-agent doctor persists alert state, reports only new/recovered failures (six-hour unresolved reminder), and silently prunes only regenerable WhatsApp session files. |
+| 2026-07-10 | `be100c2f1` | Eliminated dashboard chat freezes caused by stale PTY/session state and added deterministic doctor diagnostics for the two failure modes that previously required a manual browser refresh. |
 | 2026-06-24 | `7de58e588` | Full Ink cache evict on session reset — stops layout mismatch after `/new`. |
 | 2026-06-24 | `936bb7768` | Restore all live sessions on gateway restart. |
 | 2026-06-24 | `87649d682` | Made the Chat events-feed WebSocket resilient (reconnect + heartbeat). |
@@ -193,6 +194,8 @@ Brand story: [overview/brand.md](./overview/brand.md)
 ## 📚 Documentation Infrastructure
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-18 | `e8fb123b9` | Changelog coverage now includes every `scripts/hussh-one-*` path through an explicit Git glob, so Hussh operational changes cannot silently evade the freshness check. |
+| 2026-07-18 | `703c932ce` | Clean clones without an optional `upstream` remote now use the recorded fork base for changelog audit scope rather than falsely treating inherited Hermes history as undocumented Hussh work. |
 | 2026-07-18 | `94acedb7a` | Documented the single-owner macOS dashboard restart path and the managed quiet-doctor alert, recovery, state-file, and safe session-cleanup operating procedures. |
 | 2026-07-14 | `233ee0aae` | Backfilled correction-commit context in this changelog after the July Copilot verification work. |
 | 2026-07-08 | `7da566c3c` | **This changelog + its self-checking freshness guard shipped** (`scripts/hussh-one-changelog-check.py`), wired into `hussh-one-health-index.py` and `hussh-one-doctor.sh`. |
