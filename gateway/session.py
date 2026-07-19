@@ -109,6 +109,14 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    # Authorization and routing metadata is supplied by adapters, never by the
+    # model.  Defaults retain compatibility with persisted pre-field sessions.
+    role_authorized: bool = False  # Adapter confirmed the sender's allowed role
+    auto_thread_created: bool = False
+    auto_thread_initial_name: Optional[str] = None
+    scope_id: Optional[str] = None  # Generic routed workspace/server scope
+    profile: Optional[str] = None  # Multiplexed Hermes profile that owns this event
+    delivered_via_upstream_relay: bool = False  # Trusted relay transport marker
     
     @property
     def description(self) -> str:
@@ -152,6 +160,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.profile:
+            d["profile"] = self.profile
         return d
 
     @classmethod
@@ -170,6 +180,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            profile=data.get("profile"),
         )
     
 

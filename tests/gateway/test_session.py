@@ -60,6 +60,26 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic == "Planning and coordination for Project X"
         assert restored.chat_name == "Server / #project-planning"
 
+    def test_adapter_metadata_contract_and_profile_roundtrip(self):
+        """Adapter event metadata is accepted and profile routing persists."""
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="self-chat",
+            role_authorized=True,
+            auto_thread_created=True,
+            auto_thread_initial_name="Follow up",
+            scope_id="workspace-1",
+            profile="support",
+            delivered_via_upstream_relay=True,
+        )
+
+        # Authorization and relay-origin flags are event-local trust signals;
+        # profile is the only adapter routing field that must survive restart.
+        restored = SessionSource.from_dict(source.to_dict())
+        assert restored.profile == "support"
+        assert restored.role_authorized is False
+        assert restored.delivered_via_upstream_relay is False
+
     def test_minimal_roundtrip(self):
         source = SessionSource(platform=Platform.LOCAL, chat_id="cli")
         d = source.to_dict()
