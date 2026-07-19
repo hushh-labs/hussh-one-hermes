@@ -271,6 +271,25 @@ def test_changelog_checker_exempts_only_changelog_only_commits(monkeypatch):
     ]
 
 
+def test_changelog_checker_uses_recorded_fork_base_without_upstream(monkeypatch):
+    checker = _load_changelog_checker()
+    monkeypatch.setattr(checker, "_merge_base_with_upstream", lambda: None)
+    monkeypatch.setattr(checker, "_recorded_fork_base", lambda: "recorded-base")
+
+    seen_args: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> str:
+        seen_args.append(args)
+        if args[0] == "log":
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(checker, "_git", fake_git)
+
+    assert checker.find_candidate_commits(None) == []
+    assert any("recorded-base..HEAD" in args for args in seen_args)
+
+
 def test_bootstrap_dry_run_with_temp_home_is_non_mutating(tmp_path):
     env = {
         "HUSSH_ONE_DRY_RUN": "1",

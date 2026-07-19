@@ -49,6 +49,11 @@ HUSSH_ONE_PATHS = [
 ]
 
 CHANGELOG_ONLY_PATHS = {"docs/hussh-one/CHANGELOG.md"}
+# A fresh clone of the Hussh distribution does not necessarily define the
+# optional ``upstream`` remote. Keep the audit bounded to the fork's recorded
+# ancestor in that case instead of treating all inherited Hermes history as
+# undocumented Hussh work. Keep this aligned with LICENSES/attribution.toml.
+RECORDED_FORK_BASE = "9de9c25f620ff7f1ce0fd5457d596052d5159596"
 
 
 def _git(*args: str) -> str:
@@ -63,6 +68,11 @@ def _merge_base_with_upstream() -> str | None:
     if "upstream" not in remotes:
         return None
     return _git("merge-base", "HEAD", "upstream/main") or None
+
+
+def _recorded_fork_base() -> str | None:
+    """Return the committed fork ancestor when ``upstream`` is unavailable."""
+    return _git("rev-parse", "--verify", f"{RECORDED_FORK_BASE}^{{commit}}") or None
 
 
 def _changed_paths(sha: str) -> set[str]:
@@ -82,7 +92,7 @@ def is_changelog_only_commit(sha: str) -> bool:
 
 def find_candidate_commits(since_ref: str | None) -> list[tuple[str, str, str]]:
     """Return (short_sha, date, subject) for commits touching Hussh-One paths."""
-    base = since_ref or _merge_base_with_upstream()
+    base = since_ref or _merge_base_with_upstream() or _recorded_fork_base()
     range_spec = f"{base}..HEAD" if base else "HEAD"
     fmt = "%h|%ad|%s"
     out = _git(
