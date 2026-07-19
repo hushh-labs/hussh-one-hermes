@@ -1597,6 +1597,48 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _sanitize_replay_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return an Anthropic response block that is valid request input.
+
+    SDK response blocks include output-only siblings such as ``parsed_output``
+    and ``caller``.  Persisting and replaying those fields makes the next
+    Anthropic request fail validation, so this intentionally whitelists the
+    input contract instead of trying to blacklist every SDK-only field.
+    """
+    if not isinstance(block, dict):
+        return None
+    block_type = block.get("type")
+    if block_type == "text":
+        clean: Dict[str, Any] = {"type": "text", "text": block.get("text", "")}
+        citations = block.get("citations")
+        if isinstance(citations, list) and citations:
+            clean["citations"] = citations
+        if isinstance(block.get("cache_control"), dict):
+            clean["cache_control"] = block["cache_control"]
+        return clean
+    if block_type == "thinking":
+        clean = {"type": "thinking", "thinking": block.get("thinking", "")}
+        if block.get("signature"):
+            clean["signature"] = block["signature"]
+        return clean
+    if block_type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": block["data"]} if block.get("data") else None
+    if block_type == "tool_use":
+        clean = {
+            "type": "tool_use",
+            "id": _sanitize_tool_id(block.get("id", "")),
+            "name": block.get("name", ""),
+            "input": block.get("input", {}),
+        }
+        if isinstance(block.get("cache_control"), dict):
+            clean["cache_control"] = block["cache_control"]
+        return clean
+    if block_type == "image":
+        source = block.get("source")
+        return {"type": "image", "source": source} if isinstance(source, dict) else None
+    return None
+
+
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     """Normalize tool schemas before sending them to Anthropic.
 
@@ -1711,6 +1753,13 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
 
     if ptype == "input_text":
         block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
+    elif ptype == "text":
+        # Stored Anthropic response text blocks may carry output-only SDK fields.
+        # Rebuild only the permitted request fields rather than copying verbatim.
+        block = {"type": "text", "text": part.get("text", "")}
+        citations = part.get("citations")
+        if isinstance(citations, list) and citations:
+            block["citations"] = citations
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
@@ -1832,6 +1881,17 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     reasoning_content injection for Kimi/DeepSeek endpoints.
     """
     content = m.get("content", "")
+    # Preserve ordered signed thinking/tool blocks exactly as captured, while
+    # removing SDK output-only fields before a later request replays them.
+    ordered_blocks = m.get("anthropic_content_blocks")
+    if isinstance(ordered_blocks, list) and ordered_blocks:
+        replayed = [
+            clean
+            for block in ordered_blocks
+            if (clean := _sanitize_replay_block(block)) is not None
+        ]
+        if replayed:
+            return {"role": "assistant", "content": replayed}
     blocks = _extract_preserved_thinking_blocks(m)
     if content:
         if isinstance(content, list):
