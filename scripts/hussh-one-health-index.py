@@ -46,6 +46,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+MAINTENANCE_DIR = REPO_ROOT / "scripts" / "maintenance"
+if str(MAINTENANCE_DIR) not in sys.path:
+    sys.path.insert(0, str(MAINTENANCE_DIR))
+
+from whatsapp_session_inventory import scan_session_directory
 
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
 
@@ -85,6 +90,14 @@ def _port_open(host: str, port: int, timeout: float = 1.5) -> bool:
         return False
 
 
+def _dashboard_reachable() -> bool:
+    """The launchd job supervises a watchdog, so verify its child directly."""
+    if not _port_open("127.0.0.1", 9119):
+        return False
+    code, _body = _http_get("http://127.0.0.1:9119/")
+    return 200 <= code < 400
+
+
 def probe_services() -> None:
     """Discover launchd (macOS) / systemd (Linux) Hermes-related services."""
     harness = "services"
@@ -107,6 +120,23 @@ def probe_services() -> None:
             label = cols[-1].strip()
             pid = cols[0].strip()
             status = cols[1].strip() if len(cols) > 1 else "?"
+            if label == "ai.hussh-one.dashboard":
+                reachable = _dashboard_reachable()
+                if pid not in ("-", "") and pid.isdigit() and reachable:
+                    add(harness, label, OK, f"watchdog pid={pid}; dashboard http=ready", evolving=True)
+                elif reachable:
+                    # Legacy releases ran an orphan watchdog beside launchd.  The
+                    # UI remained healthy even when the obsolete direct launcher
+                    # exited with EADDRINUSE; do not page the user for that.
+                    add(harness, label, WARN,
+                        "dashboard reachable; launchd watchdog migration pending", evolving=True)
+                elif pid not in ("-", "") and pid.isdigit():
+                    add(harness, label, WARN,
+                        f"watchdog pid={pid}, but dashboard endpoint is unavailable", evolving=True)
+                else:
+                    add(harness, label, FAIL,
+                        f"dashboard unavailable (launchd last exit={status})", evolving=True)
+                continue
             if pid not in ("-", "") and pid.isdigit():
                 add(harness, label, OK, f"running pid={pid}", evolving=True)
             elif status not in ("0", "-", ""):
@@ -162,6 +192,15 @@ def probe_listeners() -> None:
         if _port_open("127.0.0.1", p):
             add(harness, f"open-webui:{p}", OK, "listening")
             break
+    # Hussh dashboard.  This is intentionally independent of the LaunchAgent:
+    # launchd supervises the watchdog, while the watchdog owns the HTTP child.
+    code, body = _http_get("http://127.0.0.1:9119/")
+    if 200 <= code < 400:
+        add(harness, "dashboard:9119", OK, "http=ready")
+    elif _port_open("127.0.0.1", 9119):
+        add(harness, "dashboard:9119", WARN, f"port open but http={code}: {body[:80]}")
+    else:
+        add(harness, "dashboard:9119", FAIL, "not listening")
 
 
 def probe_cron() -> None:
@@ -296,14 +335,23 @@ def probe_session_bloat() -> None:
     if not sess.exists():
         add(harness, "session-dir", INFO, "no WhatsApp session dir")
         return
-    n = _count_dir(sess)
-    if n > 5000:
+    try:
+        inventory = scan_session_directory(sess)
+    except OSError as exc:
+        add(harness, "session-dir", WARN, f"cannot inventory session files: {exc}")
+        return
+    detail = (
+        f"{inventory.total_files} total · {inventory.protected_files} protected · "
+        f"{inventory.prunable_count} safe-prunable"
+    )
+    if inventory.prunable_count > 2500:
         add(harness, "session-dir", FAIL,
-            f"{n} files (>5000) — prune lid-mapping/pre-key/sender-key; risks 408 flap")
-    elif n > 1500:
-        add(harness, "session-dir", WARN, f"{n} files — watch for bloat (prune if it grows)")
+            f"{detail} — cleanup required to avoid 408 reconnect flapping")
+    elif inventory.prunable_count >= 1000:
+        add(harness, "session-dir", WARN,
+            f"{detail} — conservative cleanup is ready")
     else:
-        add(harness, "session-dir", OK, f"{n} files (healthy)")
+        add(harness, "session-dir", OK, f"{detail} (healthy)")
 
 
 def probe_upstream_drift() -> None:

@@ -358,6 +358,28 @@ setup_open_webui() {
   fi
 }
 
+install_managed_doctor() {
+  local python
+  python="$(python_bin)"
+  if [[ -z "$python" || ( "$DRY_RUN" != "1" && ! -x "$python" ) ]]; then
+    warn "Managed Hussh doctor skipped: repository Python is unavailable"
+    return 0
+  fi
+  local args=(
+    "$SCRIPT_DIR/hussh_one_doctor_install.py"
+    --repo-root "$REPO_ROOT"
+    --hermes-home "$HERMES_HOME"
+    --python-bin "$python"
+  )
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: install managed Hussh doctor into $HERMES_HOME/scripts"
+    return 0
+  fi
+  if ! run_cmd "$python" "${args[@]}"; then
+    warn "Managed Hussh doctor installation failed; Hermes setup will continue. Re-run bootstrap after fixing Python."
+  fi
+}
+
 start_services() {
   local args=("$SCRIPT_DIR/hussh-one-supervisor.sh" restart --manager "$MANAGER")
   if [[ "$CLEAN_CONFLICTS" == "1" ]]; then
@@ -386,6 +408,7 @@ run_doctor() {
 log "Bootstrapping Hussh One Hermes in $REPO_ROOT"
 mkdir -p "$HERMES_HOME"
 ensure_venv
+install_managed_doctor
 build_assets
 set_config_defaults
 check_gcp_adc

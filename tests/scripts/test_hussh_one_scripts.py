@@ -62,15 +62,20 @@ def test_supervisor_supports_expected_managers_and_conflict_guard():
 
 def test_supervisor_service_definitions_restart_and_raise_fd_limit():
     text = (ROOT / "scripts/hussh-one-supervisor.sh").read_text(encoding="utf-8")
+    watchdog = (ROOT / "scripts/hussh-one-dashboard-watchdog.py").read_text(encoding="utf-8")
 
     assert "SERVICE_NOFILE_LIMIT" in text
     assert "<key>SoftResourceLimits</key>" in text
     assert "<key>HardResourceLimits</key>" in text
     assert "LimitNOFILE=$SERVICE_NOFILE_LIMIT" in text
     assert "DASHBOARD_WATCHDOG_PID" in text
-    assert "start_dashboard_watchdog" in text
-    assert "socket.socket(socket.AF_INET, socket.SOCK_STREAM)" in text
-    assert "hermes_cli.main\", \"dashboard\"" in text
+    assert "DASHBOARD_WATCHDOG_SCRIPT" in text
+    assert '<string>$(xml_escape "$DASHBOARD_WATCHDOG_SCRIPT")</string>' in text
+    assert "retire_legacy_dashboard_watchdog" in text
+    assert "start_dashboard_watchdog" not in text
+    assert "socket.create_connection" in watchdog
+    assert "hermes_cli.main" in watchdog
+    assert "start_new_session=True" in watchdog
     assert "while true; do $(dashboard_command_line)" in text
     assert "while true; do $(shell_quote \"$HERMES_BIN\") gateway run --replace" in text
 
@@ -118,6 +123,8 @@ def test_bootstrap_auto_provisions_companions_only_when_prerequisites_exist():
     assert "Vertex ADC and an active GCP project are required" in text
     assert "--allow-unauthenticated-loopback" in text
     assert "setup_open_webui" in text
+    assert "install_managed_doctor" in text
+    assert "hussh_one_doctor_install.py" in text
     assert 'OPEN_WEBUI_ENABLE_SERVICE=auto' in text
 
 
