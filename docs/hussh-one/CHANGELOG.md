@@ -14,6 +14,14 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## ⚖️ Distribution & Compliance
+
+| Date | Commit | What shipped |
+|------|--------|---------------|
+| 2026-07-18 | `634e396f2` | **Apache-2.0 Hussh One distribution with MIT upstream preservation.** Replaced the root distribution license with Apache-2.0, preserved Nous Research's unmodified MIT grant, added NOTICE and nested-component attribution, applied SPDX headers to Hussh-added source, and added CI/guard enforcement plus package-artifact verification for the `Apache-2.0 AND MIT` expression. |
+
+---
+
 ## 🛰️ WhatsApp Gateway & Bridge
 The primary Hussh One surface — a self-chat WhatsApp number driving the agent via a Node.js
 Baileys bridge, with owner-only triggering and sandboxed social-group capsules.
