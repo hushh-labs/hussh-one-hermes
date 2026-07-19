@@ -285,4 +285,7 @@ fix(security): prevent shell injection in sudo password piping
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](https://github.com/NousResearch/hermes-agent/blob/main/LICENSE).
+By contributing to Hussh One, you agree that your original contributions are
+licensed under Apache-2.0. Retained Hermes Agent upstream code remains MIT; see
+the repository's [NOTICE](https://github.com/hushh-labs/hussh-one-hermes/blob/main/NOTICE)
+and [upstream MIT text](https://github.com/hushh-labs/hussh-one-hermes/blob/main/LICENSES/UPSTREAM-MIT.txt).

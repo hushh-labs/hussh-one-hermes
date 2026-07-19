@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Guard Hussh One fork contracts after upstream Hermes or plugin updates.
 
 set -euo pipefail
@@ -24,6 +26,9 @@ require_file "scripts/hussh-one-bootstrap.sh"
 require_file "scripts/hussh-one-supervisor.sh"
 require_file "scripts/hussh-one-doctor.sh"
 require_file "scripts/hussh-one-restart.sh"
+require_file "scripts/hussh-one-license-audit.py"
+
+python3 scripts/hussh-one-license-audit.py
 
 legacy_brand_pattern='hushh''-puppy|hussh ''puppy|HUSSH''_PUPPY'
 if rg -n "$legacy_brand_pattern" --glob '!tests/hermes_cli/test_hussh_one_branding.py'; then

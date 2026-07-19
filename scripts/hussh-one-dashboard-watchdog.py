@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Launchd-owned Hussh One dashboard watchdog.
 
 The watchdog is the only process launchd starts.  It owns the dashboard child,

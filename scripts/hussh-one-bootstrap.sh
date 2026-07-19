@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Idempotent setup for a fresh Hussh One Hermes clone.
 
 set -euo pipefail

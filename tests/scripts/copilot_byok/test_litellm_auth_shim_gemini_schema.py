@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the Gemini tool-schema sanitizer in the Copilot BYOK auth shim.
 
 Regression coverage for a real production bug: Vertex's Gemini function-

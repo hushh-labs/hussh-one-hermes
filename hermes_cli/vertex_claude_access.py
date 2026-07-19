@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Runtime access checks for Anthropic Claude models on Vertex AI."""
 
 from __future__ import annotations

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Hussh One — Self-Evolving Health & Harness Index.
 
 A single command that AUTO-DISCOVERS and probes every active "harness" that

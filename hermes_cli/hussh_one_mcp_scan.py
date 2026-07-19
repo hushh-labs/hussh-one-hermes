@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """hussh 🤫 One — MCP connector auto-detection & onboarding scanner.
 
 Scans the machine for MCP server definitions already configured in other AI

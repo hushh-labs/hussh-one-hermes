@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 from types import SimpleNamespace
 
 from tui_gateway.server import _session_info

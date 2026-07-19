@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Hussh One — VS Code Copilot BYOK (Vertex ADC) onboarding.
 #
 # Idempotent setup for native VS Code Copilot Custom Endpoints backed by Google

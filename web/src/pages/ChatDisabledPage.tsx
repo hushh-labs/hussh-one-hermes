@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Hushh Labs
+// SPDX-License-Identifier: Apache-2.0
 import { AlertTriangle, Terminal } from "lucide-react";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";

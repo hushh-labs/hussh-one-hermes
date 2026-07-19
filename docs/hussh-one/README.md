@@ -23,6 +23,7 @@ Hermes Agent to create **hussh 🤫 One**. It is designed to be:
 | [`architecture/`](./architecture/) | How the abstraction is layered over Hermes; the overlay contract |
 | [`features/`](./features/) | One page per shipped capability (the product surface) |
 | [`operations/`](./operations/) | Bootstrapping, supervising, upgrading, doctor/guard runbooks |
+| [`operations/licensing.md`](./operations/licensing.md) | Distribution license, provenance map, and release checks |
 | [`contracts/`](./contracts/) | Machine-readable invariants every build must satisfy |
 | [`roadmap/`](./roadmap/) | What's next; how we evolve without breaking determinism |
 | [`CHANGELOG.md`](./CHANGELOG.md) | **Dated, categorized history** of every Hussh-One-only capability — the crystal-clear index of what we ship on top of upstream (WhatsApp/capsules, Vertex ADC, Copilot BYOK, Open WebUI, and more) |

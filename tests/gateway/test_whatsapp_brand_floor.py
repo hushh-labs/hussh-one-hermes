@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the WhatsApp brand-floor (idempotent proactive-send branding).
 
 The inbound agent-reply path (gateway/run.py) composes the full stacked header.

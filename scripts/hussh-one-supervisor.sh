@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Hussh One lifecycle manager for dashboard + messaging gateway.
 
 set -euo pipefail

@@ -12,6 +12,7 @@ under `scripts/hussh-one-*`.
 | `hussh-one-guard.sh` | Post-merge invariant guard (branding, header, capsule, dashboard) |
 | `hussh-one-restart.sh` | Convenience restart wrapper |
 | `hussh-one-copilot-setup.sh` | VS Code Copilot BYOK: LiteLLM proxy (:8643) + auth shim (:8644) + `chatLanguageModels.json` with live-probed context windows (see `scripts/copilot-byok/README.md`) |
+| `hussh-one-license-audit.py` | Verifies SPDX metadata, notices, attribution coverage, and release-file inclusion |
 
 ## Bootstrapping a new machine
 ```bash
@@ -67,6 +68,7 @@ Then verify: `tail ~/.hermes/logs/gateway.log` for `✓ whatsapp connected`.
 ```bash
 scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-guard.sh
+python3 scripts/hussh-one-license-audit.py
 python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsapp_*.py -q
 python3 scripts/hussh-one-changelog-check.py
 ```

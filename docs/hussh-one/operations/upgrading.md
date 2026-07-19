@@ -10,6 +10,7 @@ git switch main
 git merge upstream/main        # resolve conflicts favoring overlay modules
 # run the guard — this is the contract that proves the overlay survived
 scripts/hussh-one-guard.sh
+python3 scripts/hussh-one-license-audit.py
 python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsapp_*.py -q
 ```
 
@@ -32,8 +33,14 @@ python -m pytest tests/hermes_cli/test_hussh_one_*.py tests/gateway/test_whatsap
    `apply_whatsapp_header`).
 3. Never accept an upstream change that removes a documented config knob without updating
    the corresponding [contract](../contracts/README.md) and feature page.
+4. Keep the license boundary intact: inherited source is MIT, Hussh-added source is
+   Apache-2.0 with SPDX headers, and modified inherited source is `MIT AND Apache-2.0`.
+   Update [`LICENSES/attribution.toml`](../../../LICENSES/attribution.toml) only when
+   the upstream comparison base changes deliberately.
 
 ## After upgrading
 - Restart the gateway (see operations runbook).
 - Confirm `✓ whatsapp connected` and send a test `@One` ping.
+- Before a release, run the license audit and inspect the built wheel/sdist for
+  `LICENSE`, `NOTICE`, `LICENSES/*`, and `THIRD_PARTY_NOTICES.md`.
 - Commit with a clear message; push to `origin/hussh-one-hermes`.

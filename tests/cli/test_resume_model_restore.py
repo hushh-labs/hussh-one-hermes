@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Tests for per-session model restore on resume (#hussh-one session-model).
 
 When a chat session is resumed (dashboard Chat tab refresh, ``hermes --resume``)

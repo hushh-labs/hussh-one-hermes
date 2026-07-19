@@ -89,7 +89,9 @@ Hermes auto-detects local endpoints and relaxes streaming timeouts (read timeout
 
 ### How much does it cost?
 
-Hermes Agent itself is **free and open-source** (MIT license). You pay only for the LLM API usage from your chosen provider. Local models are completely free to run.
+Hussh One is **free and open-source** under `Apache-2.0 AND MIT`: Hussh additions
+are Apache-2.0 and retained Hermes Agent upstream code remains MIT. You pay only
+for the LLM API usage from your chosen provider. Local models are completely free to run.
 
 ### Can multiple people use one instance?
 

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Shared, conservative inventory for Baileys WhatsApp session files.
 
 The pruner and Hussh health index must agree on what is safe to remove.  This

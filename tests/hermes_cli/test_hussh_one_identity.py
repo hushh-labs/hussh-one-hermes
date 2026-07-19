@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 from hermes_cli.hussh_one_identity import (
     AUTO_MODE,
     SELECT_MODE,

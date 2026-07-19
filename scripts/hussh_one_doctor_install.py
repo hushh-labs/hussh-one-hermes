@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Install and migrate the deterministic Hussh One doctor without changing its job ID."""
 from __future__ import annotations
 

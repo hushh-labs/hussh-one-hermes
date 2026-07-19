@@ -2,6 +2,7 @@
   "name": "hermes-tui",
   "version": "0.0.1",
   "private": true,
+  "license": "Apache-2.0 AND MIT",
   "type": "module",
   "scripts": {
     "dev": "npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",

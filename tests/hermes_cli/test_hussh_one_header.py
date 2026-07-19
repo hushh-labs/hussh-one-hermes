@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the hussh 🤫 One canonical WhatsApp header builder.
 
 Covers:

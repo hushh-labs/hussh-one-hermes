@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Vertex AI endpoint helpers shared by Gemini and Claude providers."""
 
 from __future__ import annotations

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "WhatsApp bridge for Hermes Agent using Baileys",
   "private": true,
+  "license": "Apache-2.0 AND MIT",
   "type": "module",
   "scripts": {
     "start": "node bridge.js"

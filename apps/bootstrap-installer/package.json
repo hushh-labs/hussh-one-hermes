@@ -1,6 +1,7 @@
 {
   "name": "@hermes/bootstrap-installer",
   "private": true,
+  "license": "Apache-2.0 AND MIT",
   "version": "0.0.1",
   "description": "Hermes Setup — signed installer that drives scripts/install.ps1 with a polished native UI.",
   "type": "module",

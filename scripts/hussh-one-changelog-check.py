@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Hussh One — Changelog freshness check.
 
 Finds commits that touch a Hussh-One-only surface but whose short SHA is NOT

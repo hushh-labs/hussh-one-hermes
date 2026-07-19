@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Hushh Labs
+// SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it } from 'vitest'
 
 import { resolvePickerSelection } from '../components/modelPicker.js'

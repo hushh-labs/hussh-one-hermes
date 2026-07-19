@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """hussh 🤫 One — WhatsApp group "capsule" sandbox resolution.
 
 A *capsule* is a per-group sandbox that lets a non-owner social group (e.g.

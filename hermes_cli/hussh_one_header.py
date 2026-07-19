@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """hussh 🤫 One — WhatsApp reply header (single source of truth).
 
 This module owns the canonical hussh-one WhatsApp message header so the logic

@@ -1,0 +1,17 @@
+Hussh One Hermes
+Copyright 2026 Hushh Labs
+
+This repository is the Hussh One distribution of Hermes Agent. Hussh One
+additions are licensed under Apache-2.0. Retained Hermes Agent upstream code
+continues to be available under the MIT License; the complete, unmodified
+upstream license is preserved in LICENSES/UPSTREAM-MIT.txt.
+
+This distribution incorporates Hermes Agent.
+Copyright (c) 2025 Nous Research
+Licensed under the MIT License.
+
+No upstream or third-party component is relicensed by this distribution.
+Their terms, notices, and any more-specific nested licenses remain controlling
+for the paths they cover. See LICENSES/attribution.toml and
+THIRD_PARTY_NOTICES.md for the machine-readable path policy and component
+index.

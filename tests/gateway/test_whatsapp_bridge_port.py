@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """WhatsApp bridge port: dedicated, conflict-free default + config override.
 
 Regression guard for the port move off 3000 (which collides with Next.js /

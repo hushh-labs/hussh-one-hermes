@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Hushh Labs
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Pure self-chat routing rules for the WhatsApp bridge.
  *

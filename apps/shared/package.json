@@ -1,6 +1,7 @@
 {
   "name": "@hermes/shared",
   "private": true,
+  "license": "Apache-2.0 AND MIT",
   "version": "0.0.0",
   "type": "module",
   "exports": {

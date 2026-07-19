@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Default brand profile for this Hermes distribution."""
 
 from __future__ import annotations

@@ -1,0 +1,42 @@
+version = 1
+
+[distribution]
+name = "Hussh One Hermes"
+copyright_holder = "Hushh Labs"
+copyright_year = 2026
+spdx_expression = "Apache-2.0 AND MIT"
+
+[provenance]
+# The audit compares paths with this retained Hermes Agent ancestor. A source
+# path unchanged from that ancestor is MIT; a path modified from it is the
+# combined expression below; a Hussh-added source path is Apache-2.0.
+upstream_base_commit = "9de9c25f620ff7f1ce0fd5457d596052d5159596"
+upstream_retained = "MIT"
+upstream_modified = "MIT AND Apache-2.0"
+hussh_added = "Apache-2.0"
+source_extensions = [".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".css", ".sh"]
+
+[spdx_headers]
+required_for_hussh_added_source = true
+copyright = "SPDX-FileCopyrightText: 2026 Hushh Labs"
+license = "SPDX-License-Identifier: Apache-2.0"
+
+[[nested_component]]
+path = "plugins/hermes-achievements"
+license = "MIT"
+required_files = ["LICENSE"]
+
+[[nested_component]]
+path = "plugins/security-guidance"
+license = "Apache-2.0"
+required_files = ["LICENSE", "NOTICE"]
+
+[[nested_component]]
+path = "skills/creative/humanizer"
+license = "MIT"
+required_files = ["LICENSE"]
+
+[[nested_component]]
+path = "skills/productivity/powerpoint"
+license = "LicenseRef-Anthropic-Commercial-Terms"
+required_files = ["LICENSE.txt"]

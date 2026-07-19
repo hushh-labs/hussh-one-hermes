@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0%20AND%20MIT-green?style=for-the-badge" alt="License: Apache-2.0 AND MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
@@ -271,6 +271,13 @@ scripts/run_tests.sh
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Hussh One is distributed under the SPDX expression **`Apache-2.0 AND MIT`**.
+Hushh Labs' 2026 additions are Apache-2.0; retained Hermes Agent upstream code
+remains MIT and its unmodified license is preserved in
+[`LICENSES/UPSTREAM-MIT.txt`](LICENSES/UPSTREAM-MIT.txt). Nested components keep
+their own terms. See [NOTICE](NOTICE),
+[`LICENSES/attribution.toml`](LICENSES/attribution.toml), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing.
 
-Built by [Nous Research](https://nousresearch.com).
+Hussh One is built by Hushh Labs on Hermes Agent by
+[Nous Research](https://nousresearch.com).

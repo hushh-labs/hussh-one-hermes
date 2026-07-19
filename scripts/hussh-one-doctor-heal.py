@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Deterministic, stateful Hussh One doctor for the self-chat cron job.
 
 The scheduler delivers a no-agent script's stdout verbatim.  Consequently this

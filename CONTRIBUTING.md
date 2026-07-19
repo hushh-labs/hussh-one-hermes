@@ -1005,4 +1005,8 @@ test(tools): add unit tests for file_operations
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing to Hussh One, you agree that your original contributions are
+licensed under the [Apache License 2.0](LICENSE). Retained Hermes Agent upstream
+code remains under its preserved [MIT License](LICENSES/UPSTREAM-MIT.txt), and
+nested components retain their own terms. See [NOTICE](NOTICE) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -191,7 +191,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · MIT License · ${new Date().getFullYear()}`,
+      copyright: `Hussh One by Hushh Labs · Apache-2.0 AND MIT upstream · ${new Date().getFullYear()}`,
     },
     prism: {
       theme: prismThemes.github,

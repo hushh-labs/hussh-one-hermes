@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Deterministic natural-language model switch detection.
 
 This intentionally does not use an LLM.  It only accepts short, direct,
@@ -170,4 +172,3 @@ def parse_natural_model_switch(text: str) -> NaturalModelSwitchIntent | None:
 
     raw_args = f"{model} --provider {provider}"
     return NaturalModelSwitchIntent(model=model, provider=provider, raw_args=raw_args)
-

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Prune stale Baileys WhatsApp session files (🤫 Hussh One).
 
 Baileys writes one JSON file per contact device, group sender-key, pre-key,
