@@ -185,6 +185,7 @@ Brand story: [overview/brand.md](./overview/brand.md)
 ## 📚 Documentation Infrastructure
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-18 | `94acedb7a` | Documented the single-owner macOS dashboard restart path and the managed quiet-doctor alert, recovery, state-file, and safe session-cleanup operating procedures. |
 | 2026-07-14 | `233ee0aae` | Backfilled correction-commit context in this changelog after the July Copilot verification work. |
 | 2026-07-08 | `7da566c3c` | **This changelog + its self-checking freshness guard shipped** (`scripts/hussh-one-changelog-check.py`), wired into `hussh-one-health-index.py` and `hussh-one-doctor.sh`. |
 | 2026-07-07 | `635c0e7e7` | Synced onboarding + docs with live-probed Vertex context windows and cron `[SILENT]` conventions. |
