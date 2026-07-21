@@ -68,6 +68,16 @@ def _ra():
     return run_agent
 
 
+def _provider_uses_anthropic_vertex(provider: str) -> bool:
+    """Return whether the configured provider uses Vertex's Anthropic API."""
+    try:
+        from agent.anthropic_adapter import provider_uses_anthropic_vertex
+
+        return provider_uses_anthropic_vertex(provider)
+    except Exception:
+        return False
+
+
 def _build_codex_gpt5_autoraise_notice(
     autoraise: Dict[str, Any], context_length: Optional[int] = None
 ) -> str:

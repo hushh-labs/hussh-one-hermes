@@ -23,9 +23,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
+    ProviderDef,
     custom_provider_slug,
     determine_api_mode,
     get_label,
@@ -47,21 +48,14 @@ from agent.models_dev import (
 logger = logging.getLogger(__name__)
 
 
-def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
-    """Resolve whether a model switch should be persisted to config.yaml."""
-    if is_session:
-        return False
-    if is_global:
-        return True
-    try:
-        from hermes_cli.config import load_config
+# Providers whose picker model list should NOT be capped by max_models.
+# OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
+# be visible so users can pick any model they have access to.
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
 
-    Accepts:
-    - ``{"model-id": {...}}``
-    - ``["model-a", "model-b"]``
-    - ``[{"id": "model-a"}, {"name": "model-b"}]``
-    - ``"model-a"``
-    """
+
+def _declared_model_ids(value: Any) -> list[str]:
+    """Return configured model IDs from supported config shapes."""
     ids: list[str] = []
     seen: set[str] = set()
 
@@ -872,6 +866,11 @@ def resolve_display_context_length(
         pass
     if model_info is not None and model_info.context_window:
         return int(model_info.context_window)
+    # Unknown custom endpoints deliberately probe down to the same conservative
+    # default used by ``get_model_context_length``.  Keep the picker/status
+    # surface useful even when metadata discovery is unavailable.
+    if (provider or "").strip().lower() == "custom" and base_url:
+        return 256_000
     return None
 
 

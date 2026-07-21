@@ -952,6 +952,11 @@ export ENABLE_OPENAI_API=True
 export ENABLE_OLLAMA_API=False
 export OFFLINE_MODE=True
 export BYPASS_EMBEDDING_AND_RETRIEVAL=True
+# Open WebUI still validates an embedding backend during startup even when
+# retrieval is bypassed. Keep this local OpenAI-compatible fallback so a fresh
+# Hussh One install can boot without downloading a sentence-transformer model.
+export RAG_EMBEDDING_ENGINE="openai"
+export RAG_EMBEDDING_MODEL="text-embedding-3-small"
 export RAG_EMBEDDING_MODEL_AUTO_UPDATE=False
 export RAG_RERANKING_MODEL_AUTO_UPDATE=False
 export SCARF_NO_ANALYTICS=true

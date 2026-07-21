@@ -22,7 +22,7 @@ def test_bare_proactive_message_gets_branded():
     a = _adapter()
     with patch.dict(os.environ, {}, clear=True):
         out = a._ensure_brand_floor("Hello from cron")
-    assert out == "🤫 Hussh One\nGemini 3.1 Pro [A]\n════════════════════\nHello from cron"
+    assert out == "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\nHello from cron"
 
 
 def test_full_header_reply_is_not_double_stamped():
@@ -75,5 +75,5 @@ def test_proactive_floor_reflects_configured_default_model():
         with patch("gateway.run._resolve_gateway_model", return_value="claude-opus-4-8"):
             out = a._ensure_brand_floor("Heartbeat from Opus turn")
     assert out == (
-        "🤫 Hussh One\nClaude Opus 4.8 [A]\n════════════════════\nHeartbeat from Opus turn"
+        "🤫 Hussh One\nClaude Opus 4.8 · [A]\n════════════════════\nHeartbeat from Opus turn"
     )

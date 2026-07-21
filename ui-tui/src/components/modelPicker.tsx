@@ -18,24 +18,7 @@ const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
-/**
- * Resolve the model picker's initial selection so the popover opens reflecting
- * the live session model instead of always row 0. Pure + exported for testing.
- *
- * - `currentModel` is the authoritative live model (session.info → status bar).
- * - Provider index lands on the `is_current` provider (or 0).
- * - Model index lands on `currentModel` within that provider (or 0).
- */
-export function resolvePickerSelection(
-  providers: ModelOptionProvider[],
-  currentModel: string
-): { providerIdx: number; modelIdx: number } {
-  const providerIdx = Math.max(
-    0,
-    providers.findIndex(p => p.is_current)
-  )
-  const models = providers[providerIdx]?.models ?? []
-  const found = currentModel ? models.indexOf(currentModel) : -1
+type ProviderRow = { name: string; provider: ModelOptionProvider }
 
 export function providerIndexAfterClearingFilter(
   providerRows: ProviderRow[],
@@ -59,7 +42,7 @@ export function ModelPicker({
   t
 }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
-  const [currentModel, setCurrentModel] = useState(liveModel ?? '')
+  const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [persistGlobal, setPersistGlobal] = useState(false)
@@ -82,7 +65,15 @@ export function ModelPicker({
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
-    gw.request<ModelOptionsResponse>('model.options', sessionId ? { session_id: sessionId } : {})
+    gw.request<ModelOptionsResponse>('model.options', {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(initialRefresh ? { refresh: true } : {}),
+      // The TUI picker shows the full provider universe with setup
+      // affordances ("paste KEY to activate"), so opt into unconfigured
+      // rows — the backend now defaults to the configured subset for
+      // desktop chat pickers (#56974).
+      include_unconfigured: true
+    })
       .then(raw => {
         const r = asRpcResult<ModelOptionsResponse>(raw)
 
@@ -95,18 +86,14 @@ export function ModelPicker({
 
         const next = r.providers ?? []
         setProviders(next)
-        // liveModel (from session.info, the status-bar source of truth) wins
-        // over the RPC's snapshot so the popover always reflects what's shown
-        // above the tool calls. Fall back to the RPC value only when no live
-        // model has reached the client yet.
-        const authoritativeModel = (liveModel && liveModel.trim()) || String(r.model ?? '')
-        setCurrentModel(authoritativeModel)
-        // Land provider + model cursor on the live model (see
-        // resolvePickerSelection) so the popover opens in sync with the status
-        // bar instead of always highlighting provider 0 / model 0.
-        const sel = resolvePickerSelection(next, authoritativeModel)
-        setProviderIdx(sel.providerIdx)
-        setModelIdx(sel.modelIdx)
+        setCurrentModel(String(r.model ?? ''))
+        setProviderIdx(
+          Math.max(
+            0,
+            next.findIndex(p => p.is_current)
+          )
+        )
+        setModelIdx(0)
         setStage('provider')
         setErr('')
         setLoading(false)
@@ -115,7 +102,7 @@ export function ModelPicker({
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, sessionId, liveModel])
+  }, [gw, initialRefresh, sessionId])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -170,8 +157,17 @@ export function ModelPicker({
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+      // Preserve the selected provider across filter clear (same fix as
+      // Enter→key/model and Ctrl+D transitions above).
+      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+      if (fullProviderIdx >= 0) {
+        setProviderIdx(fullProviderIdx)
+      } else if (stage === 'provider') {
+        setProviderIdx(0)
+      }
+
       setFilter('')
-      setProviderIdx(stage === 'provider' ? 0 : providerIdx)
       setModelIdx(0)
 
       return
@@ -353,6 +349,12 @@ export function ModelPicker({
         if (provider.authenticated === false) {
           // api_key providers: prompt for key inline
           if (provider.auth_type === 'api_key' && provider.key_env) {
+            const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+            if (fullProviderIdx >= 0) {
+              setProviderIdx(fullProviderIdx)
+            }
+
             setStage('key')
             setKeyInput('')
             setKeyError('')
@@ -363,16 +365,14 @@ export function ModelPicker({
           return
         }
 
-        setStage('model')
-        // When drilling into the CURRENT provider, land on the active model;
-        // for any other provider, start at the top. Keeps the popover in sync
-        // with the live model instead of always highlighting row 1.
-        if (provider.is_current && currentModel) {
-          const i = (provider.models ?? []).indexOf(currentModel)
-          setModelIdx(i >= 0 ? i : 0)
-        } else {
-          setModelIdx(0)
+        const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+        if (fullProviderIdx >= 0) {
+          setProviderIdx(fullProviderIdx)
         }
+
+        setStage('model')
+        setModelIdx(0)
         setFilter('')
 
         return
@@ -419,7 +419,14 @@ export function ModelPicker({
 
     // Disconnect (Ctrl+D): only in provider stage, only for authenticated providers.
     if (key.ctrl && ch === 'd' && stage === 'provider' && provider?.authenticated !== false) {
+      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+      if (fullProviderIdx >= 0) {
+        setProviderIdx(fullProviderIdx)
+      }
+
       setStage('disconnect')
+      setFilter('')
 
       return
     }
