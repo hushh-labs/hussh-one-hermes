@@ -7,10 +7,11 @@ copyright_year = 2026
 spdx_expression = "Apache-2.0 AND MIT"
 
 [provenance]
-# The audit compares paths with this retained Hermes Agent ancestor. A source
-# path unchanged from that ancestor is MIT; a path modified from it is the
-# combined expression below; a Hussh-added source path is Apache-2.0.
-upstream_base_commit = "9de9c25f620ff7f1ce0fd5457d596052d5159596"
+# The audit compares paths with the Hermes Agent upstream revision integrated
+# by this distribution update. A source path unchanged from that revision is
+# MIT; a path modified from it is the combined expression below; a Hussh-added
+# source path is Apache-2.0.
+upstream_base_commit = "e0e15436ee74ab6e90db138e9ca2a35c57b3dc08"
 upstream_retained = "MIT"
 upstream_modified = "MIT AND Apache-2.0"
 hussh_added = "Apache-2.0"

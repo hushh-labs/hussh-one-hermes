@@ -20,16 +20,17 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // React Compiler rules are useful once the dashboard is compiler-clean,
-      // but the current codebase still has established patterns that violate
-      // them across many unrelated files. Keep lint actionable by enforcing
-      // the non-compiler rules here; `npm run build` remains the TS/React gate.
-      'react-hooks/preserve-manual-memoization': 'off',
-      'react-hooks/purity': 'off',
-      'react-hooks/refs': 'off',
-      'react-hooks/set-state-in-effect': 'off',
-      'react-hooks/static-components': 'off',
-      'react-refresh/only-export-components': 'off',
+      // Context providers and hook files commonly export both a component
+      // (the Provider) and a hook (useContext). Allow constant exports so
+      // these don't need to be split into separate files.
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // TODO: upgrade these react-hooks v7 rules from 'warn' to 'error' after
+      // refactoring set-state-in-effect, ref-as-instance-var, and manual
+      // memoization patterns in the web codebase.
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/refs': 'warn',
+      'react-hooks/preserve-manual-memoization': 'warn',
+      'react-hooks/static-components': 'warn',
     },
   },
 ])

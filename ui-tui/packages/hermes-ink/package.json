@@ -5,7 +5,11 @@
   "license": "Apache-2.0 AND MIT",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist"
+    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
+    "check": "npm run typecheck",
+    "typecheck": "tsc -b . --noEmit",
+    "lint": "echo 'ok!'",
+    "fix": "echo 'nothing to fix'"
   },
   "sideEffects": true,
   "main": "./index.js",
@@ -50,6 +54,7 @@
     "wrap-ansi": "^9.0.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
   }
 }

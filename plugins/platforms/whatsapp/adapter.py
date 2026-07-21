@@ -29,8 +29,12 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_cli.brand import BRAND_DISPLAY_NAME, default_whatsapp_reply_prefix
-from hermes_constants import get_hermes_dir
+from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_constants import (
+    find_node_executable,
+    get_hermes_dir,
+    with_hermes_node_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -806,8 +810,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 ],
                 stdout=bridge_log_fh,
                 stderr=bridge_log_fh,
-                preexec_fn=None if _IS_WINDOWS else os.setsid,
                 env=bridge_env,
+                **windows_detach_popen_kwargs(),
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             
@@ -1472,6 +1476,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -1649,6 +1654,257 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Plugin migration glue (#41112 / #3823)
+#
+# Added when the WhatsApp adapter moved from gateway/platforms/whatsapp.py into
+# this bundled plugin. Mirrors the Discord (#24356) / Slack migrations: a
+# register(ctx) entry point plus hook implementations that replace the
+# per-platform core touchpoints (the Platform.WHATSAPP elif in gateway/run.py,
+# the whatsapp_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
+# gateway/config.py, the _setup_whatsapp wizard + _PLATFORMS["whatsapp"] static
+# dict in hermes_cli/gateway.py, and the _send_whatsapp dispatch in
+# tools/send_message_tool.py).  WhatsApp auth is handled by the Node.js bridge,
+# so is_connected is always True (matches the legacy checker).
+# ──────────────────────────────────────────────────────────────────────────
+
+
+_WA_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_WA_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+_WA_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
+
+
+def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> str:
+    """Map a local media file to the bridge /send-media ``mediaType``.
+
+    Returns one of ``image`` | ``video`` | ``audio`` | ``document`` so the
+    Baileys bridge renders the right native WhatsApp message kind. Voice notes
+    and audio files route to ``audio``; ``force_document`` (the [[as_document]]
+    directive) forces every file to ``document`` regardless of extension.
+    """
+    if force_document:
+        return "document"
+    ext = os.path.splitext(file_path)[1].lower()
+    if is_voice or ext in _WA_AUDIO_EXTS:
+        return "audio"
+    if ext in _WA_IMAGE_EXTS:
+        return "image"
+    if ext in _WA_VIDEO_EXTS:
+        return "video"
+    return "document"
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    caption=None,
+):
+    """Out-of-process WhatsApp delivery via the local bridge HTTP API.
+
+    Implements the standalone_sender_fn contract so deliver=whatsapp cron jobs
+    succeed when cron runs separately from the gateway. Replaces the legacy
+    _send_whatsapp helper.
+
+    When ``caption`` is provided (single-file ``MEDIA:<path> caption`` send),
+    the text rides on the media bubble's native caption via the bridge
+    ``/send-media`` ``caption`` field instead of being posted as a separate
+    ``/send`` message beforehand.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        bridge_port = extra.get("bridge_port", 3000)
+        normalized_chat_id = to_whatsapp_jid(chat_id)
+        media = media_files or []
+        text = message or ""
+        # A caption only applies to a single media file; guard defensively so
+        # a caption is never silently repeated across a multi-file send.
+        media_caption = caption if (caption and len(media) == 1) else None
+        last_message_id = None
+        async with aiohttp.ClientSession() as session:
+            # 1) Text first (skip the /send call when this chunk is media-only
+            #    or when the text is delivered as the media caption instead).
+            if text.strip() and not media_caption:
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send",
+                    json={"chatId": normalized_chat_id, "message": text},
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"error": f"WhatsApp bridge error ({resp.status}): {body}"}
+                    data = await resp.json()
+                    last_message_id = data.get("messageId")
+
+            # 2) Each media file as a native attachment via /send-media. The
+            # bridge maps mediaType -> image/video/audio/document message kinds
+            # so PNG/JPEG/WebP/GIF arrive as inline images, MP4 as a video
+            # bubble, and ogg/opus as a voice note — not a file/document.
+            for media_path, is_voice in media:
+                if not os.path.exists(media_path):
+                    # If the text was suppressed to ride as this file's caption
+                    # (caption mode), the words would otherwise be lost when the
+                    # file is missing — deliver the caption as a plain message
+                    # so nothing silently disappears.
+                    if media_caption:
+                        try:
+                            async with session.post(
+                                f"http://localhost:{bridge_port}/send",
+                                json={"chatId": normalized_chat_id, "message": media_caption},
+                                timeout=aiohttp.ClientTimeout(total=30),
+                            ) as resp:
+                                if resp.status == 200:
+                                    last_message_id = (await resp.json()).get("messageId")
+                        except Exception:
+                            logger.warning("WhatsApp caption-fallback send failed for missing media")
+                    return {"error": f"WhatsApp media file not found: {media_path}"}
+                media_type = _bridge_media_type(media_path, is_voice, force_document)
+                payload: Dict[str, Any] = {
+                    "chatId": normalized_chat_id,
+                    "filePath": media_path,
+                    "mediaType": media_type,
+                }
+                if media_type == "document":
+                    payload["fileName"] = os.path.basename(media_path)
+                if media_caption:
+                    payload["caption"] = media_caption
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send-media",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"error": f"WhatsApp media error ({resp.status}): {body}"}
+                    data = await resp.json()
+                    last_message_id = data.get("messageId") or last_message_id
+
+        return {
+            "success": True,
+            "platform": "whatsapp",
+            "chat_id": normalized_chat_id,
+            "message_id": last_message_id,
+        }
+    except Exception as e:
+        return {"error": f"WhatsApp send failed: {e}"}
+
+
+def interactive_setup() -> None:
+    """Guide the user through WhatsApp setup.
+
+    Replaces the central _setup_whatsapp in hermes_cli/gateway.py and the
+    static _PLATFORMS["whatsapp"] dict. CLI helpers are lazy-imported so the
+    plugin's module-load surface stays minimal.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+    )
+
+    print_header("WhatsApp")
+    print_info("WhatsApp uses a local Node.js bridge (WhatsApp Web client).")
+    print_info("Start the bridge separately; the gateway connects to it over HTTP.")
+    existing = get_env_value("WHATSAPP_ENABLED")
+    if existing and existing.lower() in {"true", "1", "yes"}:
+        print_info("WhatsApp: already enabled")
+        if not prompt_yes_no("Reconfigure WhatsApp?", False):
+            return
+
+    if prompt_yes_no("Enable WhatsApp?", True):
+        save_env_value("WHATSAPP_ENABLED", "true")
+        print_success("WhatsApp enabled")
+    else:
+        save_env_value("WHATSAPP_ENABLED", "false")
+        print_info("WhatsApp left disabled")
+        return
+
+    allowed_users = prompt(
+        "Allowed user IDs (comma-separated, leave empty for no allowlist)"
+    )
+    if allowed_users:
+        save_env_value("WHATSAPP_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("WhatsApp allowlist configured")
+
+    home_channel = prompt("Home chat ID for cron delivery (leave empty to skip)")
+    if home_channel:
+        save_env_value("WHATSAPP_HOME_CHANNEL", home_channel.strip())
+
+
+def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
+    """Translate config.yaml whatsapp: keys into WHATSAPP_* env vars.
+
+    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
+    whatsapp_cfg block from gateway/config.py::load_gateway_config(). Env vars
+    take precedence over YAML. Returns None — everything flows through env.
+    """
+    import json as _json
+    if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
+        os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
+    if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
+        os.environ["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(whatsapp_cfg["mention_patterns"])
+    frc = whatsapp_cfg.get("free_response_chats")
+    if frc is not None and not os.getenv("WHATSAPP_FREE_RESPONSE_CHATS"):
+        if isinstance(frc, list):
+            frc = ",".join(str(v) for v in frc)
+        os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+    if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
+        os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
+    af = whatsapp_cfg.get("allow_from")
+    if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
+        if isinstance(af, list):
+            af = ",".join(str(v) for v in af)
+        os.environ["WHATSAPP_ALLOWED_USERS"] = str(af)
+    if "group_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_POLICY"):
+        os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
+    gaf = whatsapp_cfg.get("group_allow_from")
+    if gaf is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
+        if isinstance(gaf, list):
+            gaf = ",".join(str(v) for v in gaf)
+        os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
+    return None
+
+
+def _is_connected(config) -> bool:
+    """WhatsApp is considered connected when the user has explicitly enabled it
+    via ``WHATSAPP_ENABLED`` (or the YAML-bridged equivalent on the config).
+
+    Auth itself is handled by the external Node.js bridge — we can't verify the
+    bridge token here — so the opt-in flag is the connection signal. The legacy
+    built-in path keyed off ``WHATSAPP_ENABLED`` in both the connected-platforms
+    check and the setup-status display; returning an unconditional True here
+    would make WhatsApp always show as "configured" in ``hermes setup`` even
+    when the user never enabled it. #41112.
+    """
+    extra = getattr(config, "extra", {}) or {}
+    if config is not None and getattr(config, "enabled", False) and extra:
+        # An explicitly-enabled PlatformConfig with seeded extras (e.g. from
+        # YAML) counts as configured.
+        return True
+    # Read via hermes_cli.gateway.get_env_value (not os.getenv) so setup-status
+    # callers that patch get_env_value — and the gateway connected-platforms
+    # check — observe the same value. Matches the discord/slack plugin pattern.
+    import hermes_cli.gateway as gateway_mod
+    val = (gateway_mod.get_env_value("WHATSAPP_ENABLED") or "").strip().lower()
+    return val in {"true", "1", "yes"}
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs WhatsAppAdapter from a PlatformConfig."""
+    return WhatsAppAdapter(config)
 
 
 def register(ctx) -> None:

@@ -71,7 +71,28 @@ interface ChatSidebarProps {
   className?: string;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+/** Build the ``session.create`` params for the sidecar session.
+ *
+ * Extracted from the effect below so the invariant — close_on_disconnect
+ * is set, source is "tool", and the profile is forwarded when present —
+ * can be tested without reading component source text. See
+ * ``chat-sidebar-session-params.test.ts``.
+ */
+export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
+  return {
+    close_on_disconnect: true,
+    source: "tool",
+    ...(profile ? { profile } : {}),
+  };
+}
+
+export function ChatSidebar({
+  channel,
+  profile,
+  className,
+  onDashboardNewSessionRequest,
+  onSessionTitleChange,
+}: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -116,13 +137,9 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         if (cancelled) {
           return;
         }
-        return gw.request<{ session_id: string }>("session.create", {});
-      })
-      .then((created) => {
-        if (cancelled || !created?.session_id) {
-          return;
-        }
-        setSessionId(created.session_id);
+        // close_on_disconnect: the gateway reaps this sidecar session (and its
+        // slash_worker subprocess) when the WS drops, instead of leaking it.
+        return gw.request<{ session_id: string }>("session.create", sidecarSessionCreateParams(profile));
       })
       .catch((e: Error) => {
         if (!cancelled) {
@@ -393,7 +410,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect
+                reconnect tools feed
               </Button>
             )}
           </div>

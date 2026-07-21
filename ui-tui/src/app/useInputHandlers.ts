@@ -16,7 +16,15 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
-import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
+import {
+  type GatewayRpc,
+  GRID_STREAM_COUNT,
+  type GridTestState,
+  type InputHandlerActions,
+  type InputHandlerContext,
+  type InputHandlerResult,
+  type OverlayState
+} from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -97,6 +105,47 @@ export function applyVoiceRecordResponse(
   }
 }
 
+export function dismissSensitivePrompt(
+  overlay: Pick<OverlayState, 'secret' | 'sudo'>,
+  rpc: GatewayRpc,
+  sys: (text: string) => void
+) {
+  if (overlay.sudo) {
+    const requestId = overlay.sudo.requestId
+
+    patchOverlayState({ sudo: null })
+    sys('sudo cancelled')
+
+    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+  }
+
+  if (overlay.secret) {
+    const requestId = overlay.secret.requestId
+
+    patchOverlayState({ secret: null })
+    sys('secret entry cancelled')
+
+    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+  }
+}
+
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+const GRID_TEST_MAX_SIZE = 12
+
+const cycleAutoNumber = (value: null | number, max: number) => {
+  if (value === null) {
+    return 0
+  }
+
+  return value >= max ? null : value + 1
+}
+
+const keepGridCursorInBounds = (grid: GridTestState): GridTestState => ({
+  ...grid,
+  activeCol: clamp(grid.activeCol, 0, grid.cols - 1),
+  activeRow: clamp(grid.activeRow, 0, grid.rows - 1)
+})
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -149,16 +198,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo) {
-      return gateway
-        .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })
-        .then(r => r && (patchOverlayState({ sudo: null }), actions.sys('sudo cancelled')))
-    }
-
-    if (overlay.secret) {
-      return gateway
-        .rpc<SecretRespondResponse>('secret.respond', { request_id: overlay.secret.requestId, value: '' })
-        .then(r => r && (patchOverlayState({ secret: null }), actions.sys('secret entry cancelled')))
+    if (overlay.sudo || overlay.secret) {
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
     if (overlay.modelPicker) {
@@ -171,6 +212,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.billing) {
       return patchOverlayState({ billing: null })
+    }
+
+    if (overlay.subscription) {
+      return patchOverlayState({ subscription: null })
     }
 
     if (overlay.skillsHub) {
@@ -191,6 +236,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.journey) {
       return patchOverlayState({ journey: false })
+    }
+
+    if (overlay.gridTest) {
+      return patchOverlayState({ gridTest: null })
+    }
+
+    if (overlay.dialog) {
+      return patchOverlayState({ dialog: null })
     }
   }
 
@@ -302,7 +355,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // answering felt like the prompt had locked the entire UI.  Explicitly
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
-      const promptOverlay = overlay.approval || overlay.billing || overlay.clarify || overlay.confirm
+      const promptOverlay =
+        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
+
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
       if (promptOverlay && !fallThroughForScroll) {
@@ -373,7 +428,160 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c')) {
+      if (overlay.gridTest) {
+        const updateGrid = (fn: (grid: GridTestState) => GridTestState) =>
+          patchOverlayState(prev =>
+            prev.gridTest ? { ...prev, gridTest: keepGridCursorInBounds(fn(prev.gridTest)) } : prev
+          )
+
+        const openDemoDialog = () =>
+          patchOverlayState({
+            dialog: {
+              body: ['Dialog overlaid on top of /grid-test.', '', 'Backdrop dims the grid behind.'].join('\n'),
+              hint: 'Esc/q/Enter close',
+              title: 'Overlay primitive',
+              zone: 'center'
+            }
+          })
+
+        const resetGrid = () =>
+          updateGrid(grid => ({
+            ...grid,
+            activeCol: 0,
+            activeRow: 0,
+            areas: false,
+            cols: 4,
+            gap: null,
+            nested: false,
+            paddingX: null,
+            rows: 3,
+            streamFocus: 0,
+            streamMain: 0,
+            streams: false,
+            zoomed: false
+          }))
+
+        if (isCtrl(key, ch, 'c')) {
+          return patchOverlayState({ gridTest: null })
+        }
+
+        // Streams mode swallows the grid-shape keys: focus cycles across the
+        // live panels and Enter promotes the focused one to the 2x2 slot.
+        if (overlay.gridTest.streams) {
+          if (key.escape || ch === 'q' || ch === 's') {
+            return updateGrid(grid => ({ ...grid, streams: false }))
+          }
+
+          if (key.return) {
+            return updateGrid(grid => ({ ...grid, streamMain: grid.streamFocus }))
+          }
+
+          if (ch === 'd') {
+            return openDemoDialog()
+          }
+
+          if (ch === 'r') {
+            return resetGrid()
+          }
+
+          if (key.leftArrow || key.upArrow || ch === 'h' || ch === 'k') {
+            return updateGrid(grid => ({
+              ...grid,
+              streamFocus: (grid.streamFocus + GRID_STREAM_COUNT - 1) % GRID_STREAM_COUNT
+            }))
+          }
+
+          if (key.rightArrow || key.downArrow || ch === 'l' || ch === 'j') {
+            return updateGrid(grid => ({ ...grid, streamFocus: (grid.streamFocus + 1) % GRID_STREAM_COUNT }))
+          }
+
+          return
+        }
+
+        if (overlay.gridTest.zoomed && (key.escape || ch === 'q')) {
+          return updateGrid(grid => ({ ...grid, zoomed: false }))
+        }
+
+        if (key.escape || ch === 'q') {
+          return patchOverlayState({ gridTest: null })
+        }
+
+        if (key.return) {
+          return updateGrid(grid => ({ ...grid, nested: true, zoomed: true }))
+        }
+
+        if (ch === 'n') {
+          return updateGrid(grid => ({ ...grid, nested: !grid.nested }))
+        }
+
+        if (ch === 'a') {
+          return updateGrid(grid => ({ ...grid, areas: !grid.areas, streams: false }))
+        }
+
+        if (ch === 's') {
+          return updateGrid(grid => ({ ...grid, areas: false, streams: true }))
+        }
+
+        if (ch === 'g') {
+          return updateGrid(grid => ({ ...grid, gap: cycleAutoNumber(grid.gap, 3) }))
+        }
+
+        if (ch === 'p') {
+          return updateGrid(grid => ({ ...grid, paddingX: cycleAutoNumber(grid.paddingX, 2) }))
+        }
+
+        if (ch === 'd') {
+          return openDemoDialog()
+        }
+
+        if (ch === 'r') {
+          return resetGrid()
+        }
+
+        if (ch === '+' || ch === '=') {
+          return updateGrid(grid => ({ ...grid, cols: clamp(grid.cols + 1, 1, GRID_TEST_MAX_SIZE) }))
+        }
+
+        if (ch === '-' || ch === '_') {
+          return updateGrid(grid => ({ ...grid, cols: clamp(grid.cols - 1, 1, GRID_TEST_MAX_SIZE) }))
+        }
+
+        if (ch === ']') {
+          return updateGrid(grid => ({ ...grid, rows: clamp(grid.rows + 1, 1, GRID_TEST_MAX_SIZE) }))
+        }
+
+        if (ch === '[') {
+          return updateGrid(grid => ({ ...grid, rows: clamp(grid.rows - 1, 1, GRID_TEST_MAX_SIZE) }))
+        }
+
+        if (key.leftArrow || ch === 'h') {
+          return updateGrid(grid => ({ ...grid, activeCol: clamp(grid.activeCol - 1, 0, grid.cols - 1) }))
+        }
+
+        if (key.rightArrow || ch === 'l') {
+          return updateGrid(grid => ({ ...grid, activeCol: clamp(grid.activeCol + 1, 0, grid.cols - 1) }))
+        }
+
+        if (key.upArrow || ch === 'k') {
+          return updateGrid(grid => ({ ...grid, activeRow: clamp(grid.activeRow - 1, 0, grid.rows - 1) }))
+        }
+
+        if (key.downArrow || ch === 'j') {
+          return updateGrid(grid => ({ ...grid, activeRow: clamp(grid.activeRow + 1, 0, grid.rows - 1) }))
+        }
+
+        return
+      }
+
+      if (overlay.dialog) {
+        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q' || key.return) {
+          return patchOverlayState({ dialog: null })
+        }
+
+        return
+      }
+
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
