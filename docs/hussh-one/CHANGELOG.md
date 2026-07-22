@@ -213,6 +213,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-07-22 | `4df42f7d9` | Defined the upstream-first operating policy: official Hermes is authoritative for generic contracts, `upstream` is fetch-only, and reconciliation happens on a short-lived sync branch with a real Vertex smoke before merging into the runtime `main`. |
 | 2026-07-15 | `12b402353` | Integrated upstream Hermes Agent **v0.18.2** into Hussh One. |
 | 2026-06-07 | `42f39a52b` | **Trunk reconciliation** — merged the drifted `hussh-one-hermes` branch (9 unique features: capsules, upgrade-safe header module, bootstrap/doctor/supervisor scripts) into `main`; `main` became the sole canonical trunk; old branch deleted, preserved at tag `safety/hussh-one-hermes-20260607-232148`. |
 | 2026-06-07 | `6a8f537e3` | Merged 71 upstream commits into `main`. |
