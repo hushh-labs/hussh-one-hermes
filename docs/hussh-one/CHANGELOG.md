@@ -28,6 +28,7 @@ Baileys bridge, with owner-only triggering and sandboxed social-group capsules.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-22 | `32169ced6` | **One canonical outgoing WhatsApp header.** The Python delivery boundary now normalizes gateway replies, direct sends, cron delivery, and media captions idempotently; it preserves the selected `[S]` Vertex/route identity, removes model-echoed duplicate headers, and keeps the Node bridge transport-only with no fallback prefix. |
 | 2026-07-17 | `6346c137a` | Corrected the supervisor's WhatsApp health/status default from the obsolete `:3000` to the bridge's canonical `:8473`, so it now monitors the live connected service. |
 | 2026-07-17 | `08d8eef31` | **Self-chat JID/LID bridge fix.** Pure, Node-tested incoming self-chat classification now accepts the owner's linked-device identifiers without weakening capsule triggers, isolated memory, or the gateway's single canonical outgoing header. |
 | 2026-07-12 | `daaaa3070` | **Group Intelligence onboarding** — self-chat auto-all-users mode, debounced bridge watchdog, cron/scheduler + `send_message` tool support for the new flow. |
@@ -60,6 +61,7 @@ GCP project, not a personal subscription token.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-22 | `b545618a3` | **Vertex request-local routing repair.** Per-request Anthropic calls now retain the provider-aware Vertex client and its project-scoped `rawPredict` endpoint, rather than degrading to a generic Anthropic `/v1/messages` client. Restored the missing adapter/fallback helpers and title-client cache contract exposed by the partial upstream reconciliation. |
 | 2026-07-14 | `d3f9f111f` | **Gemini 3.1 Pro Preview onboarded** end-to-end: native `gemini` provider, `google-gemini-cli`, Vertex ADC (Copilot BYOK), and adaptive thinking (`low`/`medium`/`high`) extended to the full Gemini 3/3.1/3.5 family (was Pro-only `low`/`high`, Flash-only `low`/`medium`/`high` — now unified). Natural-language switch ("switch to gemini 3.1", "gemini 3.1 pro") added to `natural_model_switch.py`. Context window: 2,097,152 in / 65,536 out (live-probed). |
 | 2026-07-07 | `a717f82fb` | Vertex ADC context-window corrections; fixed a bare `SILENT` token leaking to user chat. |
 | 2026-07-07 | `f32dce090` | Live-probed: `claude-sonnet-4-6` output cap is **128k**, not 64k. |

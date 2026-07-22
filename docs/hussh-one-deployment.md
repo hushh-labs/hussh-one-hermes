@@ -22,7 +22,7 @@ The bootstrap creates or updates `.venv`, installs Hermes dependencies, builds t
 - s6/container: existing container supervisor services when present
 - fallback: `screen`
 
-The dashboard service runs `hermes dashboard --tui --no-open` on `127.0.0.1:9119`. The gateway/WhatsApp bridge keeps its health endpoint on `127.0.0.1:3000/health`. The supervisor refuses mixed screen/service-manager state unless `--clean-conflicts` is passed.
+The dashboard service runs `hermes dashboard --tui --no-open` on `127.0.0.1:9119`. The gateway/WhatsApp bridge keeps its health endpoint on `127.0.0.1:8473/health`. The supervisor refuses mixed screen/service-manager state unless `--clean-conflicts` is passed.
 
 ## Daily Commands
 
@@ -39,9 +39,14 @@ Before merging official Hermes updates:
 git fetch upstream main --tags
 git switch main
 git branch "backup/hussh-one-before-upstream-$(date +%Y%m%d-%H%M%S)"
+git switch -c "sync/upstream-$(date +%Y%m%d)"
 git merge --no-ff upstream/main
 scripts/hussh-one-guard.sh
 ```
+
+Do not restart from this branch. Run the Vertex smoke, merge the verified sync
+branch into `main`, then restart. The complete conflict and rollback procedure
+is in [Upstream maintenance](./hussh-one-upstream-maintenance.md).
 
 Keep secrets in `$HERMES_HOME/.env` or your shell. `.env.example` only documents non-secret Vertex selectors such as `GOOGLE_CLOUD_PROJECT`, `GCP_PROJECT`, and `GOOGLE_CLOUD_LOCATION`.
 

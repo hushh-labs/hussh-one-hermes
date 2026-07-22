@@ -8,9 +8,13 @@ Fork-owned data and identity should stay in these surfaces:
 
 - `HUSSH_ONE.md`
 - `hermes_cli/brand.py`
+- `hermes_cli/hussh_one_header.py`
 - `hermes_cli/skins/hussh-one.yaml`
 - `hermes_cli/dashboard_themes/hussh-one.yaml`
 - `plugins/model-providers/google-vertex-claude/`
+- `plugins/platforms/whatsapp/adapter.py` (final delivery normalization only)
+- `scripts/whatsapp-bridge/bridge.js` (transport, self-chat/capsule gates, and
+  no presentation policy)
 - `scripts/hussh-one-bootstrap.sh`
 - `scripts/hussh-one-supervisor.sh`
 - `scripts/hussh-one-doctor.sh`
@@ -60,7 +64,12 @@ preserved forever in the tag `safety/hussh-one-hermes-20260607-232148`.
    "runtime" branch to keep in sync.
 4. The remotes are fixed: `origin` → `hushh-labs/hussh-one-hermes` (our private
    canonical repo), `upstream` → `NousResearch/hermes-agent` (official Hermes).
-   Verify with `git remote -v` before any destructive action.
+   `upstream` is input only. Disable its push URL once per clone so an
+   accidental `git push upstream` cannot target the official repository:
+   `git remote set-url --push upstream DISABLED`.
+5. Official Hermes is authoritative for every generic core contract. A Hussh
+   difference must be either a small overlay at the boundary above or a
+   documented, tested exception; it is never a reason to freeze upstream.
 
 ## Remotes & Sync State (quick check)
 
@@ -76,8 +85,10 @@ git log origin/main..HEAD --oneline             # unpushed local commits (should
 
 ## Update Flow (pulling latest official Hermes)
 
-Always merge `upstream/main` directly into `main`. Tag a safety snapshot first
-so any merge can be undone with one command.
+Never test a large upstream merge on the running `main` checkout. Reconcile it
+on a short-lived `sync/upstream-<date>` branch, where upstream changes win by
+default and every Hussh exception must be reapplied deliberately. Only merge
+that verified branch into `main` after the guard and live smoke pass.
 
 ```bash
 git switch main
@@ -89,13 +100,20 @@ TS=$(date +%Y%m%d-%H%M%S)
 git tag "safety/main-$TS" main
 git push origin "safety/main-$TS"
 
-# 2. Merge official Hermes into main.
+# 2. Reconcile official Hermes away from the running trunk.
+git switch -c "sync/upstream-$(date +%Y%m%d)" main
 git merge --no-ff upstream/main
 
-# 3. Resolve conflicts (see "Conflict-Resolution Playbook" below), then guard.
+# 3. Resolve conflicts by taking upstream's generic behavior first, then add
+#    only documented Hussh overlays (see the playbook below).
 scripts/hussh-one-guard.sh
 
-# 4. Push and restart.
+# 4. Run the real local route smoke before changing the runtime branch.
+.venv/bin/hermes chat --provider=google-vertex-claude -m claude-opus-4-8 -q "reply with ok"
+
+# 5. Fast, reviewable handoff into the sole runtime trunk, then restart.
+git switch main
+git merge --no-ff "sync/upstream-$(date +%Y%m%d)"
 git push origin main
 scripts/hussh-one-restart.sh        # or: hermes gateway restart
 ```
@@ -113,10 +131,10 @@ blindly picking a side:
 |------|--------------|
 | `hermes_cli/brand.py` | OUR emoji-first `BRAND_DISPLAY_NAME = "🤫 Hussh One"`. Never let upstream's generic Hermes branding win. |
 | `hermes_cli/skins/hussh-one.yaml`, `dashboard_themes/hussh-one.yaml` | OUR `🤫 Hussh One` branding strings. |
-| `gateway/run.py` (WhatsApp header block) | OUR `apply_whatsapp_header(...)` call (the upgrade-safe module). Take upstream's surrounding changes, keep our block. |
-| `hermes_cli/hussh_one_header.py` | OURS entirely. If `_BRAND_LINE_RE` needs to strip new self-echo forms, extend it (it already covers emoji-first + legacy emoji-middle). |
-| `gateway/platforms/whatsapp.py` | KEEP BOTH: upstream's new attrs (e.g. `supports_code_blocks`) AND our `DEFAULT_REPLY_PREFIX = default_whatsapp_reply_prefix()` + `_ensure_brand_floor()`. Never accept upstream's `⚕ Hermes Agent` prefix. |
-| `scripts/whatsapp-bridge/bridge.js` | KEEP BOTH: capsule sandbox + rate-limit code AND emoji-first `DEFAULT_REPLY_PREFIX`. Run `node --check` after. |
+| `gateway/run.py` (WhatsApp header block) | Keep the generic upstream gateway flow and its call into `ensure_single_whatsapp_header(...)`; do not duplicate formatting in the gateway. |
+| `hermes_cli/hussh_one_header.py` | Hussh-owned canonical header/finalizer. Extend its parsers only for verified new echo forms. |
+| `plugins/platforms/whatsapp/adapter.py` | Keep upstream transport changes and retain only final idempotent normalization before a payload reaches the bridge. |
+| `scripts/whatsapp-bridge/bridge.js` | Keep upstream/capsule/rate-limit behavior, but it must never compose a header or honor a fallback prefix. Run `node --check` after. |
 | `agent/conversation_loop.py` | Adopt upstream refactors (e.g. `turn_context.py`, `TurnRetryState`) but RE-PORT our Vertex Claude pre-turn access check and `vertex_claude_locations_attempted` location recovery on top. |
 | `scripts/install.sh`, `install.ps1` | `BRANCH="main"` and `origin` pointing at `hushh-labs/hussh-one-hermes`. |
 
@@ -135,6 +153,36 @@ node --check scripts/whatsapp-bridge/bridge.js
 but prefer the explicit flow above whenever Hussh One has carried commits,
 because it leaves merge conflicts visible and makes the guard mandatory before
 restart.
+
+## WhatsApp Delivery Contract
+
+There is one presentation owner for every WhatsApp text or caption: the Python
+delivery boundary (`ensure_single_whatsapp_header` in
+`hermes_cli/hussh_one_header.py`). The Node Baileys bridge is transport only.
+
+Normal delivery is exactly:
+
+```text
+🤫 Hussh One
+<Display Model> · <Safe Route> · [A|S]
+════════════════════
+<body>
+```
+
+- `[A]` is the configured automatic route, including automatic escalation.
+- `[S]` is retained only from an explicit per-session model selection; the
+  finalizer preserves an already-composed selected header rather than replacing
+  it with the current default.
+- Gateway replies, direct `send_message` calls, cron delivery, and media
+  captions all pass through the same idempotent finalizer. If a model echoes a
+  second header, it is removed before send.
+- `WHATSAPP_REPLY_PREFIX` / `whatsapp.reply_prefix` remain explicit emergency
+  operator overrides. They are applied once in Python; they are never passed
+  to the bridge. An empty override intentionally emits no header.
+
+When a repeated header appears, inspect the exact payload at the Python
+boundary and run the focused header/adapter tests before changing bridge
+formatting. Adding another prefix in the Node process is a regression.
 
 ## Plugin Updates
 
