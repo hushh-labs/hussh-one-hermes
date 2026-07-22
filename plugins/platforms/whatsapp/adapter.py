@@ -622,13 +622,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
 
-            # Build bridge subprocess environment.
-            # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
-            # can use it without the user needing to set a separate env var.
+            # The Python delivery layer is the sole WhatsApp header composer.
+            # A managed bridge must never add a fallback prefix: gateway replies
+            # already carry session-specific `[A]`/`[S]` identity and a second
+            # bridge prefix produces duplicate brand lines in self-chat.
             # with_hermes_node_path() copies os.environ when called with no arg.
             bridge_env = with_hermes_node_path()
-            if self._reply_prefix is not None:
-                bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            bridge_env["WHATSAPP_REPLY_PREFIX"] = ""
             # Pass the profile-aware cache directories so the bridge writes
             # media where the Python side reads it.  Without these the bridge
             # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
@@ -845,25 +845,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return self.DEFAULT_REPLY_PREFIX
 
     def _outgoing_chunk_limit(self) -> int:
-        """Keep direct bridge messages within WhatsApp's mobile-friendly size."""
-        return max(1024, self.MAX_MESSAGE_LENGTH - len(self._effective_reply_prefix()))
+        """Keep already-finalized Python messages within WhatsApp's limit."""
+        return self.MAX_MESSAGE_LENGTH
 
     def _ensure_brand_floor(self, content: str) -> str:
         """Brand proactive/direct sends that bypass the normal gateway reply path."""
         body = content or ""
-        if not body.strip() or self._effective_reply_prefix() == "":
-            return body
-        from hermes_cli.brand import BRAND_DISPLAY_NAME
-
-        if body.lstrip().lower().startswith((
-            BRAND_DISPLAY_NAME.lower(), "🤫 hussh one", "hussh 🤫 one", "hussh one",
-        )):
+        if not body.strip():
             return body
         try:
             from gateway.run import _resolve_gateway_model
-            from hermes_cli.hussh_one_header import apply_whatsapp_header
+            from hermes_cli.hussh_one_header import ensure_single_whatsapp_header
 
-            return apply_whatsapp_header(
+            return ensure_single_whatsapp_header(
                 body,
                 _resolve_gateway_model() or None,
                 is_select_mode=False,
@@ -1641,6 +1635,26 @@ async def _standalone_send(
         # A caption only applies to a single media file; guard defensively so
         # a caption is never silently repeated across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
+        if text.strip() or media_caption:
+            # Cron and tool delivery bypass the long-lived gateway's reply
+            # wrapper. Normalize here so those messages obey the same single
+            # header contract as conversational replies.
+            from gateway.run import _resolve_gateway_model
+            from hermes_cli.hussh_one_header import ensure_single_whatsapp_header
+
+            header_kwargs = {
+                "is_select_mode": False,
+                "config_prefix": extra.get("reply_prefix"),
+            }
+            model = _resolve_gateway_model() or None
+            if text.strip():
+                text = ensure_single_whatsapp_header(text, model, **header_kwargs)
+            if media_caption:
+                media_caption = ensure_single_whatsapp_header(
+                    media_caption,
+                    model,
+                    **header_kwargs,
+                )
         last_message_id = None
         async with aiohttp.ClientSession() as session:
             # 1) Text first (skip the /send call when this chunk is media-only

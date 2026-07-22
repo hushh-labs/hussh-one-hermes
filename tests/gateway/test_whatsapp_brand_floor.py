@@ -33,12 +33,24 @@ def test_full_header_reply_is_not_double_stamped():
     assert out == reply
 
 
+def test_selected_header_is_preserved_and_later_echo_removed():
+    a = _adapter()
+    reply = (
+        "🤫 Hussh One\nClaude Opus 4.8 · Vertex ADC · [S]\n════════════════════\n"
+        "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\n"
+        "body"
+    )
+    with patch.dict(os.environ, {}, clear=True):
+        out = a._ensure_brand_floor(reply)
+    assert out == "🤫 Hussh One\nClaude Opus 4.8 · Vertex ADC · [S]\n════════════════════\nbody"
+
+
 def test_legacy_emoji_middle_brand_is_not_double_stamped():
     a = _adapter()
     legacy = "hussh 🤫 One\nold style body"
     with patch.dict(os.environ, {}, clear=True):
          out = a._ensure_brand_floor(legacy)
-    assert out == legacy
+    assert out == "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\nold style body"
 
 
 def test_empty_override_disables_branding():
@@ -52,8 +64,7 @@ def test_branding_is_case_insensitive_on_existing_header():
     a = _adapter()
     with patch.dict(os.environ, {}, clear=True):
         out = a._ensure_brand_floor("🤫 HUSSH ONE\nshouty body")
-    # Already branded (case-insensitive) -> cleaned and standard 3-line header applied.
-    assert out == "🤫 HUSSH ONE\nshouty body"
+    assert out == "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\nshouty body"
 
 
 def test_empty_content_passthrough():

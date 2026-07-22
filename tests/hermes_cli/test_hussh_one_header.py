@@ -122,6 +122,32 @@ class TestContaminationStripping:
         out = h.apply_whatsapp_header("Just text", "gemini", is_select_mode=False)
         assert out == "Just text"
 
+    def test_finalizer_preserves_selected_gateway_identity_and_removes_echo(self):
+        h = _h()
+        reply = (
+            "🤫 Hussh One\nClaude Opus 4.8 · Vertex ADC · [S]\n════════════════════\n"
+            "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\n"
+            "The selected-model answer."
+        )
+        assert h.ensure_single_whatsapp_header(
+            reply,
+            "gemini-3.5-flash",
+            is_select_mode=False,
+        ) == (
+            "🤫 Hussh One\nClaude Opus 4.8 · Vertex ADC · [S]\n════════════════════\n"
+            "The selected-model answer."
+        )
+
+    def test_finalizer_applies_explicit_override_even_to_existing_header(self):
+        h = _h()
+        existing = "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\nBody"
+        assert h.ensure_single_whatsapp_header(
+            existing,
+            "gemini",
+            is_select_mode=False,
+            config_prefix="Custom\\n",
+        ) == "Custom\nBody"
+
     def test_strips_bare_variant_model_line(self):
         # Regression: the model sometimes echoes a bare variant header
         # ("Opus 4.8 [A]") WITHOUT the family prefix. The original regex only

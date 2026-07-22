@@ -128,13 +128,10 @@ function capsuleRateLimited(chatId, senderId) {
   }
   return false;
 }
-// Emoji-first canonical brand (matches hermes_cli.brand.BRAND_DISPLAY_NAME).
-// NB: gateway forces WHATSAPP_REPLY_PREFIX="" so this is only a fallback when
-// the bridge runs standalone; the Python gateway is the real header composer.
-const DEFAULT_REPLY_PREFIX = '🤫 Hussh One\n';
-const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
-  ? DEFAULT_REPLY_PREFIX
-  : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+// Header composition belongs exclusively to the Python Hussh delivery layer.
+// The bridge only transports already-finalized payloads; otherwise self-chat
+// replies can acquire one prefix in Python and a second prefix here.
+const REPLY_PREFIX = '';
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever

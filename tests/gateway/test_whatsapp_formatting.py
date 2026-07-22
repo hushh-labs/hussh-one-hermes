@@ -168,14 +168,12 @@ class TestMessageLimits:
         from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
         assert WhatsAppAdapter.MAX_MESSAGE_LENGTH == 4096
 
-    def test_chunk_limit_reserves_default_self_chat_prefix(self, monkeypatch):
+    def test_chunk_limit_is_final_python_message_limit(self, monkeypatch):
         adapter = _make_adapter()
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
         monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
 
-        assert adapter._outgoing_chunk_limit() == (
-            adapter.MAX_MESSAGE_LENGTH - len(adapter.DEFAULT_REPLY_PREFIX)
-        )
+        assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
 
     def test_chunk_limit_does_not_reserve_prefix_in_bot_mode(self, monkeypatch):
         adapter = _make_adapter()
@@ -219,7 +217,7 @@ class TestSendChunking:
         assert adapter._http_session.post.call_count > 1
 
     @pytest.mark.asyncio
-    async def test_chunks_leave_room_for_bridge_prefix(self, monkeypatch):
+    async def test_chunks_fit_without_bridge_prefix(self, monkeypatch):
         adapter = _make_adapter()
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
         monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
@@ -233,8 +231,7 @@ class TestSendChunking:
 
         for call in adapter._http_session.post.call_args_list:
             payload = call.kwargs.get("json") or call[1].get("json")
-            final_text = adapter.DEFAULT_REPLY_PREFIX + payload["message"]
-            assert len(final_text) <= adapter.MAX_MESSAGE_LENGTH
+            assert len(payload["message"]) <= adapter.MAX_MESSAGE_LENGTH
 
     @pytest.mark.asyncio
     async def test_empty_message_no_send(self):
@@ -265,7 +262,7 @@ class TestSendChunking:
         # converted (**bold** -> *bold*) and appear after the brand line.
         call_args = adapter._http_session.post.call_args
         payload = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert payload["message"] == "🤫 Hussh One\nGemini 3.5 Flash [A]\n════════════════════\n*bold text*"
+        assert payload["message"] == "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\n*bold text*"
 
     @pytest.mark.asyncio
     async def test_reply_to_only_on_first_chunk(self):

@@ -168,3 +168,70 @@ def apply_whatsapp_header(
     if not header:
         return body
     return header + body
+
+
+def _split_leading_stacked_header(text: str) -> tuple[str, str] | None:
+    """Return an existing Hussh stacked header and its body, when present.
+
+    This is deliberately narrower than :func:`strip_contaminated_header`: it
+    recognizes only a complete three-line delivery header.  The final adapter
+    can therefore retain a gateway-composed `[S]` identity while removing any
+    duplicate header that follows it.
+    """
+    content = (text or "").lstrip()
+    lines = content.splitlines(keepends=True)
+    if len(lines) < 3:
+        return None
+    brand_line, _model_line, divider_line = lines[:3]
+    if not _BRAND_LINE_RE.match(brand_line):
+        return None
+    if not _DIVIDER_RE.match(divider_line):
+        return None
+    return "".join(lines[:3]), "".join(lines[3:])
+
+
+def ensure_single_whatsapp_header(
+    response: str,
+    model: Optional[str],
+    *,
+    is_select_mode: bool,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    brand_prefix: Optional[str] = None,
+    config_prefix: Optional[str] = None,
+) -> str:
+    """Return a delivery-ready WhatsApp message with exactly one SOP header.
+
+    Gateway replies arrive with their session-specific header already composed.
+    Preserve that header (and therefore its model and `[S]`/`[A]` provenance),
+    while removing any later echo.  Direct and proactive sends have no header,
+    so compose the canonical one here at the final Python delivery boundary.
+    """
+    # An explicit operator override (including an empty "disable" value) must
+    # take precedence over an earlier gateway header.  Otherwise changing the
+    # config would leave stale identity text in replies already composed by a
+    # long-lived gateway process.
+    if _env_or_config_override(config_prefix) is not None:
+        return apply_whatsapp_header(
+            response,
+            model,
+            is_select_mode=is_select_mode,
+            provider=provider,
+            base_url=base_url,
+            brand_prefix=brand_prefix,
+            config_prefix=config_prefix,
+        )
+
+    existing = _split_leading_stacked_header(response)
+    if existing is not None:
+        header, body = existing
+        return header + strip_contaminated_header(body)
+    return apply_whatsapp_header(
+        response,
+        model,
+        is_select_mode=is_select_mode,
+        provider=provider,
+        base_url=base_url,
+        brand_prefix=brand_prefix,
+        config_prefix=config_prefix,
+    )

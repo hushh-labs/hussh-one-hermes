@@ -1371,10 +1371,17 @@ async def _send_whatsapp(extra, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        from hermes_cli.hussh_one_header import apply_whatsapp_header
+        from hermes_cli.hussh_one_header import ensure_single_whatsapp_header
         config_prefix = extra.get("reply_prefix") if extra else None
-        # Always apply the canonical 3-line header stack (idempotently)
-        message = apply_whatsapp_header(message, None, is_select_mode=False, config_prefix=config_prefix)
+        # This path can receive a gateway-composed reply.  Preserve its
+        # session `[S]`/`[A]` identity while removing any later echo; direct
+        # tool sends get the canonical automatic header.
+        message = ensure_single_whatsapp_header(
+            message,
+            None,
+            is_select_mode=False,
+            config_prefix=config_prefix,
+        )
     except Exception as e:
         logger.warning("Failed to apply WhatsApp header in send_message_tool (non-fatal): %s", e)
 
