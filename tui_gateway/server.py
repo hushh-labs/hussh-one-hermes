@@ -3419,10 +3419,53 @@ def _apply_model_switch(
         _persist_model_switch(result)
     return {
         "value": result.new_model,
+        "provider": result.target_provider,
+        "provider_label": getattr(result, "provider_label", "") or result.target_provider,
         "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session"),
     }
+
+
+def _maybe_handle_natural_model_switch_submit(
+    rid: str,
+    sid: str,
+    session: dict,
+    text: Any,
+) -> dict | None:
+    """Apply an unambiguous natural-language model request without an LLM turn."""
+    try:
+        from hermes_cli.natural_model_switch import parse_natural_model_switch
+
+        intent = parse_natural_model_switch(text if isinstance(text, str) else "")
+    except Exception:
+        intent = None
+    if intent is None:
+        return None
+
+    try:
+        result = _apply_model_switch(sid, session, intent.raw_args)
+    except Exception as exc:
+        _emit("message.start", sid, {})
+        _emit("message.complete", sid, {"text": f"model switch failed: {exc}"})
+        return _ok(rid, {"status": "model_switch_failed", "error": str(exc)})
+
+    lines = [f"model -> {result['value']}"]
+    if result.get("provider_label"):
+        lines.append(f"provider -> {result['provider_label']}")
+    lines.append("session only; default config unchanged")
+    if result.get("warning"):
+        lines.append(f"warning: {result['warning']}")
+    _emit("message.start", sid, {})
+    _emit("message.complete", sid, {"text": "\n".join(lines)})
+    return _ok(
+        rid,
+        {
+            "status": "model_switched",
+            "model": result["value"],
+            "provider": result.get("provider", ""),
+        },
+    )
 
 
 def _sync_agent_model_with_config(sid: str, session: dict) -> None:
@@ -6035,6 +6078,85 @@ def _(rid, params: dict) -> dict:
     except Exception:
         logger.exception("session.most_recent failed")
         return _ok(rid, {"session_id": None})
+
+
+@method("session.resumable_recent")
+def _(rid, params: dict) -> dict:
+    """Return live interactive sessions eligible for post-restart restoration.
+
+    A dashboard or TUI restart drops the in-memory session registry while the
+    durable transcript remains in ``state.db``.  Restore only recently-active,
+    un-ended interactive sessions; never resurrect a tool sub-agent, cron run,
+    or messaging-platform conversation as a TUI tab.  This endpoint is
+    deliberately fail-open: an unavailable/locked database simply gives the UI
+    an empty list and it starts a new session.
+    """
+    db = _get_db()
+    if db is None:
+        return _ok(rid, {"sessions": []})
+
+    try:
+        limit = int(params.get("limit", 8))
+    except (TypeError, ValueError):
+        limit = 8
+    limit = max(1, min(limit, 20))
+
+    try:
+        window_hours = float(params.get("window_hours", 24))
+    except (TypeError, ValueError):
+        window_hours = 24.0
+    cutoff = time.time() - max(0.0, window_hours) * 3600.0
+
+    try:
+        with _sessions_lock:
+            live_keys = {
+                str(session.get("session_key") or "")
+                for session in _sessions.values()
+                if not session.get("_finalized")
+            }
+    except Exception:
+        live_keys = set()
+
+    try:
+        rows = db.list_sessions_rich(
+            limit=200,
+            include_children=False,
+            order_by_last_active=True,
+        )
+    except Exception:
+        logger.exception("session.resumable_recent failed")
+        return _ok(rid, {"sessions": []})
+
+    interactive_sources = {"tui", "cli", "api_server"}
+    sessions: list[dict] = []
+    for row in rows:
+        if len(sessions) >= limit:
+            break
+        if row.get("ended_at") is not None:
+            continue
+        source = (row.get("source") or "").strip().lower()
+        if source not in interactive_sources:
+            continue
+        last_active = float(row.get("last_active") or row.get("started_at") or 0)
+        if last_active < cutoff:
+            continue
+        session_id = row.get("id")
+        if not session_id or session_id in live_keys:
+            continue
+        if int(row.get("message_count") or 0) <= 0:
+            continue
+        sessions.append(
+            {
+                "session_id": session_id,
+                "title": row.get("title") or "",
+                "started_at": float(row.get("started_at") or 0),
+                "last_active": last_active,
+                "source": source,
+                "message_count": int(row.get("message_count") or 0),
+            }
+        )
+
+    return _ok(rid, {"sessions": sessions})
 
 
 @method("project.facts")
@@ -9464,6 +9586,11 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        natural_switch = _maybe_handle_natural_model_switch_submit(
+            rid, sid, session, text
+        )
+        if natural_switch is not None:
+            return natural_switch
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
