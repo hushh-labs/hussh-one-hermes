@@ -4339,8 +4339,13 @@ class AIAgent:
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
             client = build_anthropic_bedrock_client(region)
         else:
-            from agent.anthropic_adapter import build_anthropic_client
-            client = build_anthropic_client(
+            # Request-local clients must use the same provider-aware factory
+            # as the shared runtime. Calling the generic builder here turned
+            # Vertex Claude into a plain Anthropic client and sent requests to
+            # Google at `/v1/messages` instead of Vertex rawPredict.
+            from agent.anthropic_adapter import build_anthropic_provider_client
+            client = build_anthropic_provider_client(
+                self.provider,
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),

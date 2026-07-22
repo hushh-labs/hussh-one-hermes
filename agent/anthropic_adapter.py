@@ -93,6 +93,28 @@ _ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8", "fabl
 # Models where temperature/top_p/top_k return 400 if set to non-default values.
 # This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
 _NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
+
+# Claude 4.6 introduced adaptive thinking. Keep the legacy set explicit so a
+# newly released Claude model follows the current contract by default, while
+# non-Claude Anthropic-compatible models remain on their own compatibility
+# paths. This helper was lost while reconciling the upstream 0.19 adapter
+# refactor, leaving every Vertex Claude request with a NameError before I/O.
+_LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
+    "claude-3",
+    "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
+    "claude-sonnet-4-0", "claude-sonnet-4.0",
+    "claude-opus-4-2025", "claude-sonnet-4-2025",
+    "claude-opus-4-5", "claude-opus-4.5",
+    "claude-sonnet-4-5", "claude-sonnet-4.5",
+    "claude-haiku-4-5", "claude-haiku-4.5",
+)
+
+
+def _is_claude_model(model: str | None) -> bool:
+    """Return whether a model belongs to the Claude family."""
+    return "claude" in (model or "").lower()
+
+
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -890,23 +912,10 @@ def build_anthropic_provider_client(
     """Build the Anthropic SDK client appropriate for a provider profile."""
     if should_use_anthropic_vertex(provider, api_key, base_url):
         inferred_region = region or _vertex_region_from_base_url(base_url)
-        vertex_base_url = None
-        if inferred_region:
-            try:
-                from hermes_cli.vertex_ai_locations import vertex_aiplatform_base_url
-
-                vertex_base_url = vertex_aiplatform_base_url(
-                    inferred_region,
-                    with_version=True,
-                )
-            except Exception:
-                vertex_base_url = None
         kwargs = {
             "project_id": project_id,
             "region": inferred_region,
         }
-        if vertex_base_url:
-            kwargs["base_url"] = vertex_base_url
         if timeout is not None:
             kwargs["timeout"] = timeout
         return build_anthropic_vertex_client(**kwargs)
@@ -970,14 +979,6 @@ def build_anthropic_vertex_client(
     if not region:
         region = "global"
 
-    if base_url is None:
-        try:
-            from hermes_cli.vertex_ai_locations import vertex_aiplatform_base_url
-
-            base_url = vertex_aiplatform_base_url(region, with_version=True)
-        except Exception:
-            base_url = None
-
     logger.info("Initializing AnthropicVertex client with project_id=%s, region=%s", project_id, region)
 
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
@@ -985,7 +986,6 @@ def build_anthropic_vertex_client(
     return _anthropic_sdk.AnthropicVertex(
         project_id=project_id,
         region=region,
-        base_url=base_url,
         timeout=Timeout(timeout=float(_read_timeout), connect=10.0),
         default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
     )
@@ -2586,3 +2586,65 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
+
+
+# These fields are valid for OpenAI Responses but invalid on Anthropic
+# Messages. Keep the boundary here so a runtime api-mode transition cannot
+# crash a Vertex Claude turn before it reaches the provider.
+_RESPONSES_ONLY_KWARGS = frozenset({
+    "instructions", "input", "store", "parallel_tool_calls",
+})
+
+
+def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
+    """Remove Responses-only fields from an Anthropic Messages payload."""
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs)
+    if leaked:
+        for key in leaked:
+            api_kwargs.pop(key, None)
+        logger.warning(
+            "%sStripped Responses-only kwargs from an Anthropic Messages call: %s",
+            log_prefix,
+            sorted(leaked),
+        )
+    return api_kwargs
+
+
+def _is_stream_unavailable_error(exc: Exception) -> bool:
+    """Whether an Anthropic-compatible endpoint requires non-streaming calls."""
+    text = str(exc).lower()
+    if "stream" in text and "not supported" in text:
+        return True
+    if "invokemodelwithresponsestream" in text:
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+
+        return is_streaming_access_denied_error(exc)
+    return False
+
+
+def create_anthropic_message(
+    client: Any,
+    api_kwargs: dict,
+    *,
+    log_prefix: str = "",
+    prefer_stream: bool = True,
+) -> Any:
+    """Create an Anthropic message, preferring the SDK stream aggregator."""
+    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+    messages_api = getattr(client, "messages", None)
+    stream = getattr(messages_api, "stream", None)
+    if prefer_stream and callable(stream):
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs.pop("stream", None)
+        try:
+            with stream(**stream_kwargs) as response_stream:
+                return response_stream.get_final_message()
+        except Exception as exc:
+            if not _is_stream_unavailable_error(exc):
+                raise
+            logger.debug("%sAnthropic stream unavailable; using create(): %s", log_prefix, exc)
+    create_kwargs = dict(api_kwargs)
+    create_kwargs.pop("stream", None)
+    return messages_api.create(**create_kwargs)

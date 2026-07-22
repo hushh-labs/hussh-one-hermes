@@ -246,7 +246,6 @@ def try_recover_vertex_claude_location(
             agent._anthropic_client = build_anthropic_vertex_client(
                 project_id=project_id,
                 region=location,
-                base_url=vertex_aiplatform_base_url(location, with_version=True),
                 timeout=get_provider_request_timeout("google-vertex-claude", model),
             )
             agent.provider = "google-vertex-claude"

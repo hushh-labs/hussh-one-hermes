@@ -6,6 +6,37 @@ from unittest.mock import MagicMock, patch
 from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient, AsyncAnthropicAuxiliaryClient
 
 
+class TestVertexClaudeRequestClient:
+    def test_request_local_client_uses_provider_aware_factory(self):
+        """A request-local Vertex call must retain AnthropicVertex rawPredict routing."""
+        from run_agent import AIAgent
+
+        agent = AIAgent.__new__(AIAgent)
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "google-vertex-claude"
+        agent.model = "claude-opus-4-8"
+        agent._anthropic_api_key = "gcp-sdk"
+        agent._anthropic_base_url = "https://aiplatform.googleapis.com"
+        agent._oauth_1m_beta_disabled = False
+        agent._try_refresh_anthropic_client_credentials = MagicMock()
+        expected_client = MagicMock()
+
+        with (
+            patch("agent.anthropic_adapter.build_anthropic_provider_client", return_value=expected_client) as factory,
+            patch("run_agent.get_provider_request_timeout", return_value=42),
+        ):
+            client = agent._create_request_anthropic_client(reason="test")
+
+        assert client is expected_client
+        factory.assert_called_once_with(
+            "google-vertex-claude",
+            "gcp-sdk",
+            "https://aiplatform.googleapis.com",
+            timeout=42,
+            drop_context_1m_beta=False,
+        )
+
+
 class TestGoogleModelRuntimeNormalization:
     def test_claude_on_google_runtime_normalizes_to_vertex_claude(self):
         from agent.vertex_claude_runtime import normalize_google_model_runtime
@@ -119,10 +150,12 @@ class TestAuxiliaryClientVertexClaudeResolution:
         assert client is not None
         assert "europe-west1" in client.base_url
         assert "custom-proj" in client.base_url
+        # AnthropicVertex derives its rawPredict endpoint from project+region.
+        # Passing a generic aiplatform base URL makes the SDK call `/v1/messages`
+        # instead of Vertex's project-scoped publisher endpoint.
         mock_builder.assert_called_once_with(
             project_id="custom-proj",
             region="europe-west1",
-            base_url="https://europe-west1-aiplatform.googleapis.com/v1",
         )
 
     def test_vertex_claude_auxiliary_uses_global_endpoint(self):
@@ -150,7 +183,6 @@ class TestAuxiliaryClientVertexClaudeResolution:
         mock_builder.assert_called_once_with(
             project_id="custom-proj",
             region="global",
-            base_url="https://aiplatform.googleapis.com/v1",
         )
 
     def test_vertex_claude_auxiliary_uses_multi_region_endpoint(self):
@@ -177,7 +209,6 @@ class TestAuxiliaryClientVertexClaudeResolution:
         mock_builder.assert_called_once_with(
             project_id="custom-proj",
             region="us",
-            base_url="https://aiplatform.us.rep.googleapis.com/v1",
         )
 
     def test_auto_uses_profile_aux_model_for_vertex_main_runtime(self):
@@ -350,6 +381,5 @@ class TestVertexClaudeRuntimeRecovery:
         mock_builder.assert_called_once_with(
             project_id="test-project",
             region="us",
-            base_url="https://aiplatform.us.rep.googleapis.com/v1",
             timeout=None,
         )

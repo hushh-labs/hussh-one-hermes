@@ -122,10 +122,14 @@ class _OpenAIProxy:
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from utils import (
+    base_url_host_matches,
+    base_url_hostname,
+    model_forces_max_completion_tokens,
+    normalize_proxy_env_vars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -480,8 +484,8 @@ def _compression_threshold_for_model(
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt55(model, provider):
-        return _CODEX_GPT55_COMPACTION_THRESHOLD
+    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
+        return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -1243,7 +1247,7 @@ class _AnthropicCompletionsAdapter:
         self._is_oauth = is_oauth
 
     def create(self, **kwargs) -> Any:
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from agent.anthropic_adapter import build_anthropic_kwargs, create_anthropic_message
         from agent.transports import get_transport
 
         messages = kwargs.get("messages", [])
@@ -2928,6 +2932,44 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """Return whether an exception represents a full request timeout."""
+    try:
+        from openai import APITimeoutError
+        if isinstance(exc, APITimeoutError):
+            return True
+    except ImportError:
+        pass
+    return "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower()
+
+
+def _is_transient_transport_error(exc: Exception) -> bool:
+    """Return whether a same-provider retry is safe before fallback."""
+    if _is_connection_error(exc):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    return isinstance(status, int) and (status == 408 or 500 <= status < 600)
+
+
+_DEFAULT_TRANSIENT_RETRIES = 2
+_TRANSIENT_RETRY_BACKOFF_BASE = 1.0
+
+
+def _transient_retry_count() -> int:
+    """Read bounded same-provider retry count from config."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        value = cfg_get(load_config(), "auxiliary", "transient_retries")
+        if value is not None:
+            return max(0, min(int(value), 6))
+    except Exception:
+        pass
+    return _DEFAULT_TRANSIENT_RETRIES
+
+
 def _is_auth_error(exc: Exception) -> bool:
     """Detect auth failures that should trigger provider-specific refresh."""
     status = getattr(exc, "status_code", None)
@@ -3027,6 +3069,38 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "model_not_found",
         "unknown model",
     ))
+
+
+def _is_model_incompatible_error(exc: Exception) -> bool:
+    """Detect a valid model that the current route/account cannot serve."""
+    status = getattr(exc, "status_code", None)
+    if status not in {400, None}:
+        return False
+    text = str(exc).lower()
+    if _is_model_not_found_error(exc) or any(token in text for token in (
+        "credits", "insufficient funds", "billing", "out of funds",
+        "balance_depleted", "no usable credits", "payment required",
+        "free tier", "free-tier", "not available on the free tier",
+        "model_not_supported_on_free_tier", "quota",
+    )):
+        return False
+    return any(token in text for token in (
+        "is not supported when using", "model is not supported",
+        "not supported with this", "not supported for this account",
+        "model_not_supported", "does not support this model", "unsupported model",
+    ))
+
+
+def _is_invalid_aux_response_error(exc: Exception) -> bool:
+    """Detect malformed successful responses that need provider fallback."""
+    if not isinstance(exc, RuntimeError):
+        return False
+    text = str(exc).lower()
+    return (
+        "auxiliary " in text
+        and "llm returned invalid response" in text
+        and "choices[0].message" in text
+    )
 
 
 def _evict_cached_clients(provider: str) -> None:
@@ -5103,21 +5177,29 @@ def get_auxiliary_extra_body() -> dict:
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 
-def auxiliary_max_tokens_param(value: int) -> dict:
+def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Return the correct max tokens kwarg for the auxiliary client's provider.
     
     OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
-    models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
+    models (gpt-4o, gpt-4.1, gpt-5+, o-series) requires 'max_completion_tokens'.
     The Codex adapter translates max_tokens internally, so we use max_tokens
-    for it as well.
+    for it as well. Pass ``model`` so third-party OpenAI-compatible endpoints
+    fronting the newer families are also recognised.
     """
     custom_base = _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
     # Use max_completion_tokens for direct OpenAI-compatible providers that reject
     # max_tokens on newer GPT-4o/o-series/GPT-5-style models.
+    custom_host = base_url_hostname(custom_base) or ""
     if (not or_key
             and _read_nous_auth() is None
-            and base_url_hostname(custom_base) in {"api.openai.com", "api.githubcopilot.com"}):
+            and (
+                custom_host == "api.openai.com"
+                or custom_host == "api.githubcopilot.com"
+                or custom_host.endswith(".githubcopilot.com")
+            )):
+        return {"max_completion_tokens": value}
+    if model_forces_max_completion_tokens(model):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 
@@ -5186,6 +5268,8 @@ def _client_cache_key(
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(
@@ -5258,6 +5342,7 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        model=final_model,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -5396,6 +5481,7 @@ def _get_cached_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -5433,6 +5519,8 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=main_runtime,
         is_vision=is_vision,
+        task=task,
+        model=model,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -6551,8 +6639,9 @@ def call_llm(
                         resolved_provider, task, reason=reason)
 
             if fb_client is not None:
-                fb_kwargs = _build_call_kwargs(
-                    fb_label, fb_model, messages,
+                fb_resp = _call_fallback_candidate_sync(
+                    fb_client, fb_model, fb_label,
+                    task=task, messages=messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, effective_timeout=effective_timeout,
                     effective_extra_body=effective_extra_body,
