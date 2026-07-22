@@ -22592,6 +22592,29 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
+def _start_background_gateway_mcp_discovery(loop: asyncio.AbstractEventLoop) -> None:
+    """Start optional MCP discovery without delaying the gateway listener.
+
+    ``discover_mcp_tools()`` can wait up to 120 seconds for a configured MCP
+    server.  It is useful background work, but it must not prevent WhatsApp,
+    API health checks, or other channels from becoming available.
+    """
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        future = loop.run_in_executor(None, discover_mcp_tools)
+
+        def _report_result(completed: "asyncio.Future[Any]") -> None:
+            try:
+                completed.result()
+            except Exception as exc:
+                logger.debug("Background MCP tool discovery failed: %s", exc)
+
+        future.add_done_callback(_report_result)
+    except Exception as exc:
+        logger.debug("Could not start background MCP tool discovery: %s", exc)
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -23025,18 +23048,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _ensure_windows_gateway_venv_imports()
 
-    # MCP tool discovery — run in an executor so the asyncio event loop
-    # stays responsive even when a configured MCP server is slow or
-    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
-    # internally; calling it from the loop thread would freeze platform
-    # heartbeats (Discord shard, Telegram polling) until it returned.
-    # See #16856.
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+    _start_background_gateway_mcp_discovery(asyncio.get_running_loop())
 
     # Start the gateway
     success = await runner.start()
