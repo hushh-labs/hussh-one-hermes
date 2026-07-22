@@ -129,6 +129,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-21 | `dd540f007` | Reconciled Hussh One's dashboard/TUI runtime contracts with the upstream v2026.7.20 update, preserving the Hussh identity, Vertex ADC routing, WhatsApp header, and Open WebUI overlays. |
 | 2026-07-18 | `41eae5c88` | **Single-owner dashboard and quiet self-chat doctor.** macOS launchd now owns one versioned watchdog (which owns the `:9119` child) instead of racing a detached watchdog. The managed no-agent doctor persists alert state, reports only new/recovered failures (six-hour unresolved reminder), and silently prunes only regenerable WhatsApp session files. |
 | 2026-07-10 | `be100c2f1` | Eliminated dashboard chat freezes caused by stale PTY/session state and added deterministic doctor diagnostics for the two failure modes that previously required a manual browser refresh. |
 | 2026-06-24 | `7de58e588` | Full Ink cache evict on session reset — stops layout mismatch after `/new`. |
