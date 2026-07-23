@@ -152,6 +152,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🔀 Natural-Language Model Switching & Cron
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-23 | `8b8fe757d` | **Gemini 3.6 Flash is now Hussh One's native default** for new chats, automatic low-complexity routes, and unqualified WhatsApp headers; explicit Gemini 3.5 selections remain available. Bootstrap also enables Hermes' bundled, bounded no-key DDGS provider so `web_search` is usable on a fresh install instead of being silently omitted for lack of a configured backend. |
 | 2026-06-24 | `e374e89e5` | Per-job `max_iterations` + graceful iteration-cap delivery for cron. |
 | 2026-05-30 | `fa2ffdd19` | `/model auto\|reset\|clear\|default` restores auto-routing from any messaging platform. |
 | 2026-05-30 | `f1b639fd4` | Natural-language model switching ("switch to opus 4.8") without slash-command syntax. |
