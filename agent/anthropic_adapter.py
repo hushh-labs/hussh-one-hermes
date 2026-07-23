@@ -75,30 +75,9 @@ ADAPTIVE_EFFORT_MAP = {
     "minimal": "low",
 }
 
-# Models that accept the "xhigh" output_config.effort level.  Opus 4.7 added
-# xhigh as a distinct level between high and max; older adaptive-thinking
-# models (4.6) reject it with a 400.  Keep this substring list in sync with
-# the Anthropic migration guide as new model families ship.
-_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
-
-# Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
-# is the only supported mode; 4.7 additionally forbids manual thinking entirely
-# and drops temperature/top_p/top_k).
-# Named next-gen models (5-series) don't carry a 4.x version token, so match
-# them by family name.  Do NOT use a bare "-5" substring: it would wrongly
-# match the legacy claude-3-5-haiku / claude-3-5-sonnet, which do not support
-# adaptive thinking.
-_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
-
-# Models where temperature/top_p/top_k return 400 if set to non-default values.
-# This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7", "4-8", "4.8", "fable", "sonnet-5")
-
-# Claude 4.6 introduced adaptive thinking. Keep the legacy set explicit so a
-# newly released Claude model follows the current contract by default, while
-# non-Claude Anthropic-compatible models remain on their own compatibility
-# paths. This helper was lost while reconciling the upstream 0.19 adapter
-# refactor, leaving every Vertex Claude request with a NameError before I/O.
+# New Claude families default to the modern adaptive-thinking contract.  Keep
+# the older manual-thinking and pre-xhigh families explicit instead of relying
+# on a release-name allowlist that becomes stale as soon as a model ships.
 _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
     "claude-3",
     "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
@@ -107,6 +86,11 @@ _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
     "claude-opus-4-5", "claude-opus-4.5",
     "claude-sonnet-4-5", "claude-sonnet-4.5",
     "claude-haiku-4-5", "claude-haiku-4.5",
+)
+
+_NO_XHIGH_CLAUDE_SUBSTRINGS = (
+    "claude-opus-4-6", "claude-opus-4.6",
+    "claude-sonnet-4-6", "claude-sonnet-4.6",
 )
 
 
@@ -132,11 +116,7 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-opus-4-7":   128_000,
     # Claude 4.6
     "claude-opus-4-6":   128_000,
-    # sonnet-4-6: live-probed on Vertex 2026-07-07 — oversized max_tokens
-    # request returns "> 128000, which is the maximum allowed number of
-    # output tokens for claude-sonnet-4-6". Previously 64_000 (the 4.5-era
-    # value), which silently halved the output budget.
-    "claude-sonnet-4-6": 128_000,
+    "claude-sonnet-4-6":  64_000,
     # Claude 4.5
     "claude-opus-4-5":    64_000,
     "claude-sonnet-4-5":  64_000,
@@ -271,7 +251,9 @@ def _supports_xhigh_effort(model: str) -> bool:
     and reject xhigh with an HTTP 400. Callers should downgrade xhigh→max
     when this returns False.
     """
-    return any(v in model for v in _XHIGH_EFFORT_SUBSTRINGS)
+    if not _supports_adaptive_thinking(model):
+        return False
+    return not any(v in model.lower() for v in _NO_XHIGH_CLAUDE_SUBSTRINGS)
 
 
 def _forbids_sampling_params(model: str) -> bool:
@@ -281,7 +263,12 @@ def _forbids_sampling_params(model: str) -> bool:
     expected to follow suit.  Callers should omit these fields entirely rather
     than passing zero/default values (the API rejects anything non-null).
     """
-    return any(v in model for v in _NO_SAMPLING_PARAMS_SUBSTRINGS)
+    if not _is_claude_model(model):
+        return False
+    model_name = model.lower()
+    if any(v in model_name for v in _NO_XHIGH_CLAUDE_SUBSTRINGS):
+        return False
+    return not any(v in model_name for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
 
 
 def _supports_fast_mode(model: str) -> bool:
@@ -764,6 +751,9 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    if normalized_base_url:
+        import re as _re
+        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
@@ -1342,6 +1332,29 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _resolve_anthropic_pool_token() -> Optional[str]:
+    """Return the first available Anthropic OAuth token from credential_pool.
+
+    This is deliberately read-only: resolving credentials must not mutate
+    ``auth.json`` or cause a network refresh from diagnostics or model listing.
+    """
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+        pool = load_pool("anthropic")
+        entries = pool._available_entries(clear_expired=False, refresh=False)
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
+        return None
+
+    for entry in entries:
+        if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
+            continue
+        token = (getattr(entry, "access_token", None) or "").strip()
+        if token:
+            return token
+    return None
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1350,7 +1363,8 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -1377,7 +1391,12 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 4. Hermes credential_pool OAuth entry.
+    resolved_pool_token = _resolve_anthropic_pool_token()
+    if resolved_pool_token:
+        return resolved_pool_token
+
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -1685,6 +1704,18 @@ def _sanitize_replay_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _apply_assistant_cache_control_to_last_cacheable_block(
+    blocks: List[Dict[str, Any]], cache_control: Any
+) -> None:
+    """Apply an assistant turn's cache marker to its last cacheable block."""
+    if not isinstance(cache_control, dict):
+        return
+    for block in reversed(blocks):
+        if isinstance(block, dict) and block.get("type") in {"text", "tool_use"}:
+            block.setdefault("cache_control", dict(cache_control))
+            return
+
+
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     """Normalize tool schemas before sending them to Anthropic.
 
@@ -1931,12 +1962,35 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # removing SDK output-only fields before a later request replays them.
     ordered_blocks = m.get("anthropic_content_blocks")
     if isinstance(ordered_blocks, list) and ordered_blocks:
-        replayed = [
-            clean
-            for block in ordered_blocks
-            if (clean := _sanitize_replay_block(block)) is not None
-        ]
+        # The persisted tool_calls map is credential-redacted; the captured
+        # provider blocks are not.  Preserve the original ordering while
+        # replaying only the redacted arguments.
+        redacted_input_by_id: Dict[str, Any] = {}
+        for tool_call in m.get("tool_calls", []) or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function", {}) or {}
+            raw_args = function.get("arguments", "{}")
+            try:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except (json.JSONDecodeError, ValueError):
+                parsed_args = {}
+            redacted_input_by_id[_sanitize_tool_id(tool_call.get("id", ""))] = parsed_args
+
+        replayed: List[Dict[str, Any]] = []
+        for block in ordered_blocks:
+            clean = _sanitize_replay_block(block)
+            if clean is None:
+                continue
+            if clean.get("type") == "tool_use":
+                redacted = redacted_input_by_id.get(clean.get("id", ""))
+                if redacted is not None:
+                    clean["input"] = redacted
+            replayed.append(clean)
         if replayed:
+            _apply_assistant_cache_control_to_last_cacheable_block(
+                replayed, m.get("cache_control")
+            )
             return {"role": "assistant", "content": replayed}
     blocks = _extract_preserved_thinking_blocks(m)
     if content:
@@ -1961,6 +2015,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name", ""),
             "input": parsed_args,
         })
+    _apply_assistant_cache_control_to_last_cacheable_block(
+        blocks, m.get("cache_control")
+    )
     # Kimi's /coding endpoint (Anthropic protocol) requires assistant
     # tool-call messages to carry reasoning_content when thinking is
     # enabled server-side.  Preserve it as a thinking block so Kimi
@@ -2076,57 +2133,71 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
     """Strip tool_use blocks with no matching tool_result, and vice versa.
 
     Context compression or session truncation can remove either side of a
-    tool-call pair.  Anthropic rejects both orphans with HTTP 400.
+    tool-call pair, or insert messages between a tool_use and its result.
+    Anthropic requires each tool_use to have a matching tool_result in the
+    immediately following user message.
 
     Mutates ``result`` in place.
     """
-    # Strip orphaned tool_use blocks (no matching tool_result follows)
-    tool_result_ids = set()
-    for m in result:
-        if m["role"] == "user" and isinstance(m["content"], list):
-            for block in m["content"]:
-                if block.get("type") == "tool_result":
-                    tool_result_ids.add(block.get("tool_use_id"))
-    for m in result:
-        if m["role"] == "assistant" and isinstance(m["content"], list):
-            kept = [
-                b
-                for b in m["content"]
-                if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
-            ]
-            # If stripping an orphaned tool_use mutated a turn that also carries a
-            # signed thinking block, that block's Anthropic signature was computed
-            # against the ORIGINAL (un-stripped) turn content and is now invalid.
-            # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
-            # the latest assistant message cannot be modified".  Flag the turn so
-            # _manage_thinking_signatures can demote the dead signature instead of
-            # replaying it verbatim.  See hermes-agent: extended-thinking + parallel
-            # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
-            if len(kept) != len(m["content"]) and any(
-                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
-                for b in m["content"]
-            ):
-                m["_thinking_signature_invalidated"] = True
-            m["content"] = kept
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool call removed)"}]
+    # Pass 1: only retain tool uses whose result is in the next user turn.
+    for index, message in enumerate(result):
+        if message.get("role") != "assistant" or not isinstance(message.get("content"), list):
+            continue
+        tool_use_ids = {
+            block.get("id")
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        }
+        if not tool_use_ids:
+            continue
+        adjacent_result_ids = set()
+        if index + 1 < len(result):
+            following = result[index + 1]
+            if following.get("role") == "user" and isinstance(following.get("content"), list):
+                adjacent_result_ids = {
+                    block.get("tool_use_id")
+                    for block in following["content"]
+                    if isinstance(block, dict) and block.get("type") == "tool_result"
+                }
+        orphaned_ids = tool_use_ids - adjacent_result_ids
+        if not orphaned_ids:
+            continue
+        kept = [
+            block
+            for block in message["content"]
+            if not (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and block.get("id") in orphaned_ids
+            )
+        ]
+        # If stripping an orphaned tool_use mutated a turn that also carries a
+        # signed thinking block, its signature was computed against the original
+        # turn content and can no longer be replayed.
+        if len(kept) != len(message["content"]) and any(
+            isinstance(block, dict)
+            and block.get("type") in {"thinking", "redacted_thinking"}
+            for block in message["content"]
+        ):
+            message["_thinking_signature_invalidated"] = True
+        message["content"] = kept or [{"type": "text", "text": "(tool call removed)"}]
 
-    # Strip orphaned tool_result blocks (no matching tool_use precedes them)
-    tool_use_ids = set()
+    # Pass 2: strip results whose matching tool use did not survive pass 1.
+    surviving_tool_use_ids = set()
     for m in result:
         if m["role"] == "assistant" and isinstance(m["content"], list):
             for block in m["content"]:
                 if block.get("type") == "tool_use":
-                    tool_use_ids.add(block.get("id"))
+                    surviving_tool_use_ids.add(block.get("id"))
     for m in result:
         if m["role"] == "user" and isinstance(m["content"], list):
-            m["content"] = [
+            new_content = [
                 b
                 for b in m["content"]
-                if b.get("type") != "tool_result" or b.get("tool_use_id") in tool_use_ids
+                if b.get("type") != "tool_result" or b.get("tool_use_id") in surviving_tool_use_ids
             ]
-            if not m["content"]:
-                m["content"] = [{"type": "text", "text": "(tool result removed)"}]
+            if len(new_content) != len(m["content"]):
+                m["content"] = new_content or [{"type": "text", "text": "(tool result removed)"}]
 
 
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
