@@ -83,7 +83,7 @@ def build_whatsapp_header(
         The header string ending in a newline, e.g.::
 
             hussh 🤫 One
-            Gemini 3.5 Flash · [A]
+            Gemini 3.6 Flash · [A]
             ════════════════════
 
         Or "" when an override explicitly disables the header.

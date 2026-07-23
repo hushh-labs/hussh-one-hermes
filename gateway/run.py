@@ -21226,7 +21226,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return apply_whatsapp_header(
                     response_text,
-                    _resolved_model or result.get("model") or "gemini-3.5-flash",
+                    _resolved_model or result.get("model") or "gemini-3.6-flash",
                     is_select_mode=(
                         selection_mode_from_override(model_override) == "select"
                     ),

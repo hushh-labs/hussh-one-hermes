@@ -52,7 +52,7 @@ class TestComposition:
 
     def test_none_model_defaults_to_gemini(self):
         h = _h()
-        assert h.display_model_name(None) == "Gemini 3.5 Flash"
+        assert h.display_model_name(None) == "Gemini 3.6 Flash"
 
     def test_mode_token(self):
         h = _h()

@@ -22,12 +22,12 @@ SELECT_MODE: SelectionMode = "select"
 
 def display_model_name(model: Optional[str]) -> str:
     """Return a concise, stable display name for a model identifier."""
-    raw = (model or "").strip() or "gemini-3.5-flash"
+    raw = (model or "").strip() or "gemini-3.6-flash"
     short = raw.rsplit("/", 1)[-1].lower()
 
     if "gemini" in short:
         match = re.search(r"gemini-(\d+(?:\.\d+)?)", short)
-        version = match.group(1) if match else "3.5"
+        version = match.group(1) if match else "3.6"
         variant = "Flash" if "flash" in short else "Pro" if "pro" in short else ""
         return f"Gemini {version} {variant}".strip()
 

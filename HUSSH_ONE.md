@@ -44,7 +44,7 @@ configuration_schema_mutations:
     display.skin: "hussh-one"
     dashboard.theme: "hussh-one"
     model.provider: "gemini"
-    model.default: "gemini-3.5-flash"
+    model.default: "gemini-3.6-flash"
     cron.wrap_response: false
     whatsapp.require_mention_on_replies: true
     display.tool_progress: false
@@ -205,7 +205,12 @@ Disable automated cron wrappers and set the Hussh One local defaults:
 .venv/bin/hermes config set display.skin hussh-one
 .venv/bin/hermes config set dashboard.theme hussh-one
 .venv/bin/hermes config set model.provider gemini
-.venv/bin/hermes config set model.default gemini-3.5-flash
+.venv/bin/hermes config set model.default gemini-3.6-flash
+
+# Enable the bundled no-key search backend (search only; extraction stays opt-in)
+.venv/bin/hermes plugins enable web-ddgs
+.venv/bin/hermes tools post-setup ddgs
+.venv/bin/hermes config set web.search_backend ddgs
 
 # Configure strict, noise-free group tagging and auto-approvals
 .venv/bin/hermes config set whatsapp.require_mention_on_replies true
@@ -241,7 +246,7 @@ The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in suppor
 Hussh One ships a one-command setup that wires **VS Code Copilot Custom
 Endpoints (BYOK)** to Google Vertex AI through Application Default Credentials —
 so Copilot's native chat, inline edit, apply, `@workspace`, and **agent-mode
-tool calling** run on the same Vertex models (`gemini-3.5-flash`,
+tool calling** run on its separately live-probed Vertex models (`gemini-3.5-flash`,
 `claude-sonnet-4-6`, `claude-opus-4-8`) Hussh One uses, with no third-party
 extension.
 
@@ -389,7 +394,7 @@ Future machines must run these tests to verify the integrity of the abstraction 
 *   **Verification:** Run `scripts/hussh-one-supervisor.sh restart`, then `scripts/hussh-one-doctor.sh --require-services` and `scripts/hussh-one-guard.sh`. The guard fails if the dashboard is reachable without `__HERMES_DASHBOARD_EMBEDDED_CHAT__=true`.
 
 ### Contract E: Natural-Language Model Switching
-*   **Invariant:** The TUI and WhatsApp channel may accept short, direct user text such as `switch to opus 4.8`, `switch to sonnet 4.6`, or `switch back to gemini 3.5 flash` as a session-only `/model` switch. The default config remains Gemini 3.5 Flash unless `/model ... --global` is used.
+*   **Invariant:** The TUI and WhatsApp channel may accept short, direct user text such as `switch to opus 4.8`, `switch to sonnet 4.6`, or `switch back to gemini 3.6 flash` as a session-only `/model` switch. The default config remains Gemini 3.6 Flash unless `/model ... --global` is used.
 *   **Prompt-injection safeguard:** Detection must stay deterministic and reject slash commands, quoted text, URLs, code blocks, lists, long pasted text, help questions, negations, and injection-shaped phrases such as `ignore previous`, `system prompt`, `developer message`, or `webpage says`.
 *   **Vertex safeguard:** Vertex Claude model switches must run a Hermes-runtime-shaped live access check before mutating the session. Long-lived sessions must also fail fast before the next model call if a stale Vertex Claude runtime points at a model such as `claude-opus-4-8` that the active project cannot run. Stale runtimes carrying `gcp-sdk` plus a Vertex AI base URL must normalize back to the `google-vertex-claude` adapter instead of using the native Anthropic client.
 *   **Verification:** Run `tests/hermes_cli/test_natural_model_switch.py`, `tests/gateway/test_natural_model_switch.py`, and the TUI prompt-submit natural switch test.

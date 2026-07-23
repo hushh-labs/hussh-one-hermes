@@ -112,7 +112,10 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "safe_suffix" in text
     assert "WhatsApp pairing is per-machine" in text
     assert "model.provider gemini" in text
-    assert "model.default gemini-3.5-flash" in text
+    assert "model.default gemini-3.6-flash" in text
+    assert "plugins enable web-ddgs" in text
+    assert "tools post-setup ddgs" in text
+    assert "web.search_backend ddgs" in text
     assert "WHATSAPP_REPLY_PREFIX" not in text
 
 

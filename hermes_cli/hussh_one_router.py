@@ -6,7 +6,7 @@ This module implements the custom workload-gated routing capability for the
 🤫 Hussh One variant of Hermes Agent. It analyzes incoming prompts for complexity
 and intent to determine the optimal execution model dynamically:
 
-  * Low complexity (chit-chat, simple queries) -> Gemini 3.5 Flash (low cost, fast)
+  * Low complexity (chit-chat, simple queries) -> Gemini 3.6 Flash (low cost, fast)
   * High complexity (coding, filesystem edits, deploy, deep reasoning) ->
     Claude Opus on GCP Vertex AI (deep reasoning)
 
@@ -38,7 +38,7 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.hussh_one_router")
 
 # Default model definitions for the routing tiers
-MODEL_LOW = "gemini-3.5-flash"
+MODEL_LOW = "gemini-3.6-flash"
 MODEL_HIGH = "claude-opus-4-8"
 
 # Escalation threshold on the normalized confidence score [0.0, 1.0].

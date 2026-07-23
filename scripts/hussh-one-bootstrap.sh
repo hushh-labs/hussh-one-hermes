@@ -196,6 +196,30 @@ build_assets() {
   build_node_project web build
 }
 
+configure_web_search() {
+  local hermes
+  hermes="$(hermes_bin)"
+  if [[ "$DRY_RUN" != "1" && ! -x "$hermes" ]]; then
+    warn "Hermes binary unavailable; web search was not configured"
+    return 0
+  fi
+
+  # Hermes deliberately hides web_search until a real provider is available.
+  # Use its bundled, no-key DDGS plugin for a working fresh-install baseline.
+  # Every step is non-fatal: a restricted network must not block Hermes setup.
+  if ! run_cmd "$hermes" plugins enable web-ddgs; then
+    warn "Could not enable the bundled DuckDuckGo search plugin; configure web search with 'hermes tools'."
+    return 0
+  fi
+  if ! run_cmd "$hermes" tools post-setup ddgs; then
+    warn "Could not install the DuckDuckGo search dependency; configure web search with 'hermes tools'."
+    return 0
+  fi
+  if ! run_cmd "$hermes" config set web.search_backend ddgs; then
+    warn "Could not select the DuckDuckGo search backend; configure web search with 'hermes tools'."
+  fi
+}
+
 set_config_defaults() {
   local hermes
   hermes="$(hermes_bin)"
@@ -206,7 +230,7 @@ set_config_defaults() {
   run_cmd "$hermes" config set display.skin hussh-one
   run_cmd "$hermes" config set dashboard.theme hussh-one
   run_cmd "$hermes" config set model.provider gemini
-  run_cmd "$hermes" config set model.default gemini-3.5-flash
+  run_cmd "$hermes" config set model.default gemini-3.6-flash
   run_cmd "$hermes" config set agent.reasoning_effort high
   run_cmd "$hermes" config set display.show_reasoning true
   # Compact sessions well before the dashboard memory ceiling so a long Hussh
@@ -222,6 +246,8 @@ set_config_defaults() {
   run_cmd "$hermes" config set display.platforms.whatsapp.tool_progress off
   run_cmd "$hermes" config set display.platforms.whatsapp.show_reasoning false
   run_cmd "$hermes" config set display.interim_assistant_messages false
+
+  configure_web_search
 }
 
 env_value() {

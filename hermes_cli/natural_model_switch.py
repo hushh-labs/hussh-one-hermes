@@ -130,11 +130,20 @@ def _canonical_model(text: str) -> str:
     if re.search(r"\bgemini[-\s]*3(?:[.\-\s]*1)\b[-\s]*(?:pro(?:[-\s]*preview)?)?", normalized):
         return "gemini-3.1-pro-preview"
 
-    if re.search(r"\bgemini(?:[-\s]*3(?:[.\-\s]*5)?)?[-\s]*flash\b", normalized):
+    if re.search(r"\bgemini[-\s]*3(?:[.\-\s]*6)\b[-\s]*flash\b", normalized):
+        return "gemini-3.6-flash"
+
+    if re.search(r"\bgemini[-\s]*3(?:[.\-\s]*6)\b", normalized):
+        return "gemini-3.6-flash"
+
+    if re.search(r"\bgemini[-\s]*3(?:[.\-\s]*5)\b[-\s]*flash\b", normalized):
         return "gemini-3.5-flash"
 
     if re.search(r"\bgemini[-\s]*3(?:[.\-\s]*5)\b", normalized):
         return "gemini-3.5-flash"
+
+    if re.search(r"\b(?:gemini(?:[-\s]*3)?[-\s]*)?flash\b", normalized):
+        return "gemini-3.6-flash"
 
     return ""
 
@@ -145,7 +154,7 @@ def parse_natural_model_switch(text: str) -> NaturalModelSwitchIntent | None:
     Supported examples:
       - "switch to opus 4.8"
       - "can you use sonnet 4.6 on vertex?"
-      - "switch back to gemini 3.5 flash"
+      - "switch back to gemini 3.6 flash"
 
     Rejected examples include quoted instructions, URLs, code blocks, lists,
     long pasted text, negations, and help questions.

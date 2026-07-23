@@ -25,7 +25,10 @@ git switch main
 .venv/bin/hermes config set display.skin hussh-one
 .venv/bin/hermes config set dashboard.theme hussh-one
 .venv/bin/hermes config set model.provider gemini
-.venv/bin/hermes config set model.default gemini-3.5-flash
+.venv/bin/hermes config set model.default gemini-3.6-flash
+.venv/bin/hermes plugins enable web-ddgs
+.venv/bin/hermes tools post-setup ddgs
+.venv/bin/hermes config set web.search_backend ddgs
 .venv/bin/hermes config set cron.wrap_response false
 
 # Strict, noise-free, secure messaging
@@ -43,6 +46,8 @@ scripts/hussh-one-bootstrap.sh --manager auto --start
 > tuning (`compression.threshold=0.35`, `compression.hygiene_hard_message_limit=250`).
 > See [Crash resilience](./crash-resilience.md). Optionally cap dashboard memory
 > on small-RAM boxes: `export HUSSH_ONE_DASHBOARD_MEM_CAP_MB=4096` (default 6144).
+> It also enables Hermes' bundled no-key DDGS provider for `web_search`; it is
+> search-only, while page extraction remains an explicit provider choice.
 
 ## .env keys (local, git-ignored)
 ```

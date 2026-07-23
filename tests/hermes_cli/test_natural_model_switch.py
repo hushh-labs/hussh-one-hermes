@@ -22,12 +22,26 @@ def test_parse_natural_switch_sonnet_vertex():
 
 
 def test_parse_natural_switch_gemini_default_provider():
-    intent = parse_natural_model_switch("switch back to gemini 3.5 flash")
+    intent = parse_natural_model_switch("switch back to gemini 3.6 flash")
+
+    assert intent is not None
+    assert intent.model == "gemini-3.6-flash"
+    assert intent.provider == "gemini"
+    assert intent.raw_args == "gemini-3.6-flash --provider gemini"
+
+
+def test_parse_natural_switch_keeps_explicit_gemini_35_available():
+    intent = parse_natural_model_switch("switch to gemini 3.5 flash")
 
     assert intent is not None
     assert intent.model == "gemini-3.5-flash"
-    assert intent.provider == "gemini"
-    assert intent.raw_args == "gemini-3.5-flash --provider gemini"
+
+
+def test_parse_natural_switch_bare_flash_uses_hussh_default():
+    intent = parse_natural_model_switch("switch to flash")
+
+    assert intent is not None
+    assert intent.model == "gemini-3.6-flash"
 
 
 def test_parse_natural_switch_rejects_help_question():

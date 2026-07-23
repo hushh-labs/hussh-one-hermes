@@ -125,7 +125,7 @@ def test_text_plus_mixed_media_routes_native_types():
         # text first, then three media uploads in order
         assert calls[0][0].endswith("/send")
         assert calls[0][1]["message"] == (
-            "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\nhello"
+            "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nhello"
         )
         media_types = [c[1]["mediaType"] for c in calls if c[0].endswith("/send-media")]
         assert media_types == ["image", "video", "audio"]
@@ -243,7 +243,7 @@ def test_caption_rides_media_no_separate_text_send():
         assert len(calls) == 1
         assert calls[0][0].endswith("/send-media")
         assert calls[0][1]["caption"] == (
-            "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\n"
+            "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\n"
             "2-bedroom floor plan"
         )
         assert calls[0][1]["mediaType"] == "image"
@@ -299,5 +299,5 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == (
-        "🤫 Hussh One\nGemini 3.5 Flash · [A]\n════════════════════\nfloor plan"
+        "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nfloor plan"
     )

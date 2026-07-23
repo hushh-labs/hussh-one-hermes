@@ -1,7 +1,7 @@
 # Feature — Natural-Language Model Switching
 
 ## What it does
-Lets the owner switch models with plain text ("switch to opus 4.8", "back to gemini 3.5
+Lets the owner switch models with plain text ("switch to opus 4.8", "back to gemini 3.6
 flash") from WhatsApp or the TUI, as a session-only override — without slash-command syntax.
 
 ## How it works
@@ -9,14 +9,14 @@ flash") from WhatsApp or the TUI, as a session-only override — without slash-c
 - Session-scoped `/model` override; global default unchanged unless `--global` is used.
 
 ## Config knobs
-- `model.default` / `model.provider` — the global default (Gemini 3.5 Flash for Hussh One).
+- `model.default` / `model.provider` — the global default (Gemini 3.6 Flash for Hussh One).
 - `/model <id>` — session override (`[S]` in the header).
 - `/model auto|reset|clear|default` — restore config routing (`[A]` in the header).
 - `/model <id> --global` — change the global default.
 
 ## Native provider quirk
-- Native `gemini` provider: use prefix-free `gemini-3.5-flash` (the vendor-prefixed
-  `gemini/gemini-3.5-flash` returns HTTP 404 on the native API).
+- Native `gemini` provider: use prefix-free `gemini-3.6-flash` (the vendor-prefixed
+  `gemini/gemini-3.6-flash` is not a native API model identifier).
 
 ## Prompt-injection safeguard
 Detection rejects slash commands, quoted text, URLs, code blocks, lists, long pastes, help
@@ -37,10 +37,11 @@ prompts natively** (no beta header) and cap output at **128k**:
 | claude-sonnet-5 | global | "sonnet 5" |
 | claude-fable-5 | **global only** | "fable", "fable 5" |
 
-## Gemini catalog (native `gemini` provider + Vertex ADC)
+## Gemini catalog (native `gemini` provider)
 | Model | Aliases understood | Context | Thinking levels |
 |-------|--------------------|---------|------------------|
-| gemini-3.5-flash (default) | "gemini 3.5", "gemini 3.5 flash", "flash" | 1,048,576 in / 65,536 out | low / medium / high |
+| gemini-3.6-flash (default) | "gemini 3.6", "gemini 3.6 flash", "flash" | 1,048,576 in / 65,536 out | low / medium / high |
+| gemini-3.5-flash | "gemini 3.5", "gemini 3.5 flash" | 1,048,576 in / 65,536 out | low / medium / high |
 | gemini-3.1-pro-preview | "gemini 3.1", "gemini 3.1 pro", "gemini 3.1 pro preview" | 2,097,152 in / 65,536 out | low / medium / high |
 
 `gemini-3.1-pro` and `gemini-3.1-pro-preview` both resolve to the same model —
@@ -53,8 +54,9 @@ gemini 3.1") resolve the same as "switch to gemini 3.1 pro". This pattern must b
 extended for every future Gemini/Claude minor version so version-only phrasing
 never silently falls through to `None` (no-op).
 
-The same limits are mirrored to VS Code Copilot BYOK by
-`scripts/hussh-one-copilot-setup.sh` — see `scripts/copilot-byok/README.md`.
+The native Gemini default is separate from VS Code Copilot BYOK's explicitly
+live-probed Vertex pool. Do not add Gemini 3.6 to that pool until its target
+Vertex region has been verified; see `scripts/copilot-byok/README.md`.
 
 ## TUI model popover sync
 The model picker popover (opened by clicking/selecting the status-bar model) opens

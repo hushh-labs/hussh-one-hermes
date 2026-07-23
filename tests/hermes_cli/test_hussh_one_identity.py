@@ -3,9 +3,19 @@
 from hermes_cli.hussh_one_identity import (
     AUTO_MODE,
     SELECT_MODE,
+    display_model_name,
     resolve_runtime_identity,
     selection_mode_from_override,
 )
+from hermes_cli.models import get_default_model_for_provider
+
+
+def test_missing_model_identity_uses_current_hussh_default():
+    assert display_model_name(None) == "Gemini 3.6 Flash"
+
+
+def test_native_gemini_catalog_uses_current_hussh_default():
+    assert get_default_model_for_provider("gemini") == "gemini-3.6-flash"
 
 
 def test_vertex_identity_includes_safe_route_and_explicit_selection():

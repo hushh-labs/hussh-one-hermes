@@ -222,6 +222,7 @@ def test_route_workload_returns_vertex_runtime_for_high():
 def test_route_workload_low_is_plain_gemini():
     model, runtime = asyncio.run(route_workload("hi there"))
     assert model == MODEL_LOW
+    assert model == "gemini-3.6-flash"
     assert runtime == {}
 
 
