@@ -131,6 +131,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-22 | `458646ea6` | Documented the dashboard watchdog's active-TUI memory policy and recovery expectations in the deployment runbook. |
 | 2026-07-22 | `81967b1e4` | **Dashboard live-chat stability.** The launchd-owned dashboard watchdog now treats its memory ceiling as a sustained idle-only safety limit and preserves an active embedded TUI, preventing watchdog SIGTERM/SIGKILL cycles from surfacing as browser WebSocket `1006` disconnects. Added focused watchdog/PTY regression coverage and live authenticated PTY verification. |
 | 2026-07-21 | `dd540f007` | Reconciled Hussh One's dashboard/TUI runtime contracts with the upstream v2026.7.20 update, preserving the Hussh identity, Vertex ADC routing, WhatsApp header, and Open WebUI overlays. |
 | 2026-07-18 | `41eae5c88` | **Single-owner dashboard and quiet self-chat doctor.** macOS launchd now owns one versioned watchdog (which owns the `:9119` child) instead of racing a detached watchdog. The managed no-agent doctor persists alert state, reports only new/recovered failures (six-hour unresolved reminder), and silently prunes only regenerable WhatsApp session files. |
