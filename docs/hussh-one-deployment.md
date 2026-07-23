@@ -24,6 +24,13 @@ The bootstrap creates or updates `.venv`, installs Hermes dependencies, builds t
 
 The dashboard service runs `hermes dashboard --tui --no-open` on `127.0.0.1:9119`. The gateway/WhatsApp bridge keeps its health endpoint on `127.0.0.1:8473/health`. The supervisor refuses mixed screen/service-manager state unless `--clean-conflicts` is passed.
 
+The launchd dashboard watchdog owns that one dashboard child. Its memory cap is
+an **idle-only sustained safety limit**: it waits 15 minutes before restarting
+an over-limit idle tree and never terminates a tree containing an embedded TUI.
+This prevents an active chat from being dropped as a browser WebSocket `1006`.
+If the dashboard remains over the cap after the user leaves chat, the watchdog
+restarts it cleanly; do not add a second dashboard launcher to work around it.
+
 ## Daily Commands
 
 ```bash
