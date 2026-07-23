@@ -75,6 +75,12 @@ def test_supervisor_service_definitions_restart_and_raise_fd_limit():
     assert '<string>$(xml_escape "$DASHBOARD_WATCHDOG_SCRIPT")</string>' in text
     assert "retire_legacy_dashboard_watchdog" in text
     assert "start_dashboard_watchdog" not in text
+    assert "launchd_start_gateway" in text
+    assert 'launchctl kickstart -k "$(launchd_gateway_target)"' in text
+    assert 'gateway_service restart\n        launchd_start_dashboard' not in text
+    assert 'launchctl bootstrap "$(launchd_domain)" "$plist" >/dev/null 2>&1 || true' not in text
+    assert 'for attempt in 1 2 3; do' in text
+    assert 'failed to bootstrap dashboard launchd service after 3 attempts' in text
     assert "socket.create_connection" in watchdog
     assert "hermes_cli.main" in watchdog
     assert "start_new_session=True" in watchdog

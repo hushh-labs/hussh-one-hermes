@@ -316,7 +316,24 @@ launchd_job_active() {
 
 launchd_gateway_active() {
   command -v launchctl >/dev/null 2>&1 || return 1
-  launchctl print "$(launchd_domain)/ai.hermes.gateway" >/dev/null 2>&1
+  launchctl print "$(launchd_gateway_target)" >/dev/null 2>&1
+}
+
+launchd_gateway_target() {
+  printf '%s/ai.hermes.gateway\n' "$(launchd_domain)"
+}
+
+launchd_start_gateway() {
+  # `hermes gateway restart` intentionally exits non-zero after signalling its
+  # launchd-owned child. With `set -e` that previously aborted this script
+  # before the dashboard watchdog could be restarted. Once launchd already
+  # owns the gateway, restart it through launchd directly; retain Hermes' own
+  # setup command for a genuinely absent service.
+  if launchd_gateway_active; then
+    run_cmd launchctl kickstart -k "$(launchd_gateway_target)"
+  else
+    gateway_service start
+  fi
 }
 
 systemd_job_active() {
@@ -638,6 +655,7 @@ PLIST
 
 launchd_bootstrap_dashboard() {
   local plist="$HOME/Library/LaunchAgents/${DASHBOARD_LABEL}.plist"
+  local attempt
   write_launchd_dashboard_plist
   if [[ "$DRY_RUN" == "1" ]]; then
     log "dry-run: launchctl bootstrap $(launchd_domain) $plist"
@@ -648,13 +666,29 @@ launchd_bootstrap_dashboard() {
   # that orphan before bootstrapping the single launchd-owned watchdog, or the
   # new watchdog would correctly wait on an unowned listener forever.
   kill_port_listeners "$DASHBOARD_PORT"
-  launchctl bootstrap "$(launchd_domain)" "$plist" >/dev/null 2>&1 || true
+  # launchd can return EIO for the first bootstrap immediately after bootout,
+  # even after its old job has disappeared from `launchctl print`. Retry the
+  # narrow handoff rather than silently continuing without a dashboard.
+  for attempt in 1 2 3; do
+    if launchctl bootstrap "$(launchd_domain)" "$plist"; then
+      return 0
+    fi
+    if launchd_job_active; then
+      log "Dashboard launchd service remained loaded after bootstrap handoff; using it."
+      return 0
+    fi
+    if [[ "$attempt" != "3" ]]; then
+      sleep 1
+    fi
+  done
+  echo "error: failed to bootstrap dashboard launchd service after 3 attempts: $plist" >&2
+  return 1
 }
 
 launchd_start_dashboard() {
   retire_legacy_dashboard_watchdog
   launchd_bootstrap_dashboard
-  run_cmd launchctl kickstart -k "$(launchd_target)" || true
+  run_cmd launchctl kickstart -k "$(launchd_target)"
 }
 
 launchd_stop_dashboard() {
@@ -847,7 +881,7 @@ case "$ACTION" in
     require_no_conflicts "$manager"
     case "$manager" in
       launchd)
-        gateway_service start
+        launchd_start_gateway
         launchd_start_dashboard
         ;;
       systemd)
@@ -884,7 +918,7 @@ case "$ACTION" in
     require_no_conflicts "$manager"
     case "$manager" in
       launchd)
-        gateway_service restart
+        launchd_start_gateway
         launchd_start_dashboard
         ;;
       systemd)
