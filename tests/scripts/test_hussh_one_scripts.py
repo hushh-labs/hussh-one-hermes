@@ -119,6 +119,9 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "WhatsApp pairing is per-machine" in text
     assert "model.provider gemini" in text
     assert "model.default gemini-3.6-flash" in text
+    assert "configure_hussh_persona" in text
+    assert "docs/hussh-one/persona/SOUL.md" in text
+    assert "Preserving a customized SOUL.md" in text
     assert "plugins enable web-ddgs" in text
     assert "tools post-setup ddgs" in text
     assert "web.search_backend ddgs" in text
@@ -180,8 +183,52 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert 'RUNTIME_CONFIG_PATH="$HERMES_HOME/open-webui.env"' in text
     assert "write_runtime_config" in text
     assert 'OPEN_WEBUI_NAME="${OPEN_WEBUI_NAME:-🤫 Hussh One}"' in text
+    assert 'OPEN_WEBUI_VERSION="${OPEN_WEBUI_VERSION:-0.10.2}"' in text
+    assert 'OPEN_WEBUI_AUTH="${OPEN_WEBUI_AUTH:-False}"' in text
+    assert "prepare_passwordless_database" in text
+    assert "Passwordless Hussh One migration requires exactly one matching local" in text
+    assert "OPEN_WEBUI_AUTH=False is allowed only on a loopback host." in text
+    assert "export ENABLE_LOGIN_FORM=False" in text
+    assert "enforce_passwordless_ui_config" in text
+    assert "expose_provider_models" in text
+    assert "preserving the healthy gateway process" in text
+    assert 'for attempt in $(seq 1 90)' in text
+    assert '"hushh-model-select"' in text
+    assert '"hushh-reasoning-select"' in text
+    assert "Hussh One — Changelog &amp; Features" in text
+    assert "hushh-changelog-content" in text
+    assert "reasoning_effort" in text
+    assert "#chat-input[contenteditable='true']" in text
+    assert '"open-webui==${OPEN_WEBUI_VERSION}"' in text
+    assert "HUSSH_ONE_OPEN_WEBUI_SETUP_REVISION" in text
+    assert 'MANAGED_SETUP_SCRIPT="$HERMES_HOME/scripts/setup_open_webui.sh"' in text
+    assert "HUSSH_ONE_OPEN_WEBUI_MANAGED_SETUP" in text
+    assert "temporary.replace(destination)" in text
+    assert 'bash "\\$HUSSH_ONE_OPEN_WEBUI_MANAGED_SETUP"' in text
+    assert "continuing with the last known-good Open WebUI runtime" in text
+    assert "verify_hermes_models" in text
+    assert "wait_for_open_webui" in text
+    assert "/static/loader.js" in text
+    assert "wait_for_hermes_api" in text
+    assert '"setuptools<82"' in text
+    assert "python3.11 -c" in text
+    assert '"$OPEN_WEBUI_VENV/bin/python" -c' in text
+    assert "A runnable Python 3.11 or 3.12 interpreter is required." in text
+    for performance_default in (
+        "export ENABLE_BASE_MODELS_CACHE=True",
+        "export MODELS_CACHE_TTL=",
+        "export AIOHTTP_CLIENT_TIMEOUT=",
+        "export AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST=",
+        "export CORS_ALLOW_ORIGIN=",
+        "export ENABLE_REALTIME_CHAT_SAVE=False",
+        "export UVICORN_WORKERS=1",
+    ):
+        assert performance_default in text
     for stale in ("Google Ads", "Google Agent Development Kit", "Hussh One ADK", "applyAdkLogo"):
         assert stale not in text
+
+    supervisor = (ROOT / "scripts/hussh-one-supervisor.sh").read_text(encoding="utf-8")
+    assert "/static/loader.js" in supervisor
 
 
 def test_copilot_setup_writes_a_loopback_vertex_endpoint_to_a_temp_editor_profile(tmp_path):

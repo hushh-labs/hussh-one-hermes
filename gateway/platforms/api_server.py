@@ -1007,6 +1007,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
+        if self._registry_models_enabled():
+            self._model_routes = {
+                **self._configured_provider_model_routes(),
+                **self._model_routes,
+            }
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1768,6 +1773,59 @@ class APIServerAdapter(BasePlatformAdapter):
             return None
         return self._model_routes.get(model_alias)
 
+    @staticmethod
+    def _registry_models_enabled() -> bool:
+        """Whether API clients should see the active provider's model registry."""
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            return bool(
+                cfg_get(
+                    load_config(),
+                    "gateway",
+                    "api_server",
+                    "expose_provider_models",
+                    default=False,
+                )
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _configured_provider_model_routes() -> Dict[str, Dict[str, str]]:
+        """Build safe routes from Hermes' canonical catalog for the active provider."""
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            from hermes_cli.models import provider_model_ids
+
+            config = load_config()
+            provider = str(
+                cfg_get(config, "model", "provider", default="") or ""
+            ).strip()
+            if not provider:
+                return {}
+            return {
+                model_id: {"model": model_id, "provider": provider}
+                for model_id in provider_model_ids(provider)
+                if isinstance(model_id, str) and model_id.strip()
+            }
+        except Exception:
+            logger.debug("Could not build API provider-model registry", exc_info=True)
+            return {}
+
+    @staticmethod
+    def _configured_default_model() -> str:
+        """Return the configured runtime model without exposing provider secrets."""
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            return str(
+                cfg_get(load_config(), "model", "default", default="") or ""
+            ).strip()
+        except Exception:
+            logger.debug("Could not resolve configured API default model", exc_info=True)
+            return ""
+
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """Return the gateway's session ``/model`` override for *session_key*, if any.
 
@@ -1801,6 +1859,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        reasoning_config_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1834,7 +1893,11 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        reasoning_config = GatewayRunner._load_reasoning_config()
+        reasoning_config = (
+            reasoning_config_override
+            if reasoning_config_override is not None
+            else GatewayRunner._load_reasoning_config()
+        )
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -2015,23 +2078,17 @@ class APIServerAdapter(BasePlatformAdapter):
             if _api_request_profile.get()
             else self._model_name
         )
-        models = [
-            {
-                "id": model_name,
-                "object": "model",
-                "created": now,
-                "owned_by": "hermes",
-                "permission": [],
-                "root": model_name,
-                "parent": None,
-            }
-        ]
-        # Expose configured model route aliases so clients can discover them.
-        # Only the alias and resolved model name are exposed — never provider
-        # credentials.
-        for alias, route_cfg in self._model_routes.items():
-            if alias == model_name:
-                continue  # already listed above
+        # A branded adapter name identifies the agent, not an inference model.
+        # When concrete routes are configured, advertise only those models so
+        # clients cannot present "Hussh One" as a model choice. Keep the legacy
+        # primary id only when no routes exist for stock/older clients.
+        route_items = list(self._model_routes.items())
+        default_model = self._configured_default_model()
+        if default_model:
+            route_items.sort(key=lambda item: item[0] != default_model)
+
+        models = []
+        for alias, route_cfg in route_items:
             models.append({
                 "id": alias,
                 "object": "model",
@@ -2039,7 +2096,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 "owned_by": "hermes",
                 "permission": [],
                 "root": route_cfg.get("model", alias),
-                "parent": model_name,
+                "parent": None,
+            })
+        if not models:
+            models.append({
+                "id": model_name,
+                "object": "model",
+                "created": now,
+                "owned_by": "hermes",
+                "permission": [],
+                "root": model_name,
+                "parent": None,
             })
 
         return web.json_response({"object": "list", "data": models})
@@ -2830,6 +2897,20 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+        reasoning_config_override = None
+        if "reasoning_effort" in body:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning_config_override = parse_reasoning_effort(body.get("reasoning_effort"))
+            if reasoning_config_override is None:
+                return web.json_response(
+                    _openai_error(
+                        "Invalid reasoning_effort; use none, low, medium, high, or xhigh.",
+                        code="invalid_reasoning_effort",
+                        param="reasoning_effort",
+                    ),
+                    status=400,
+                )
 
         # Per-client model routing: if the requested model matches a
         # configured model_routes alias, this request's agent is created
@@ -2935,6 +3016,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                reasoning_config_override=reasoning_config_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2955,6 +3037,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                reasoning_config_override=reasoning_config_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -4720,6 +4803,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        reasoning_config_override: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4763,6 +4847,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        reasoning_config_override=reasoning_config_override,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

@@ -22,7 +22,9 @@ set -euo pipefail
 #   OPEN_WEBUI_ENABLE_SERVICE=auto   # auto|true|false
 #   OPEN_WEBUI_ENABLE_TITLE_GENERATION=False  # True = LLM auto-titles (extra agent call/msg)
 #   OPEN_WEBUI_ENABLE_TAGS_GENERATION=False   # True = LLM auto-tags (extra agent call/msg)
-#   OPEN_WEBUI_AUTH=*** False = open access, no login (fresh DB only)
+#   OPEN_WEBUI_AUTH=False  # default; passwordless and loopback-only
+#   OPEN_WEBUI_VERSION=0.10.2
+#   OPEN_WEBUI_MODELS_CACHE_TTL=300
 #   OPEN_WEBUI_VENV=~/.local/open-webui-venv
 #   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
 #   HERMES_API_PORT=8642
@@ -41,13 +43,20 @@ OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
 # (each costs a full extra server-side agent run on the heavy engine).
 OPEN_WEBUI_ENABLE_TITLE_GENERATION="${OPEN_WEBUI_ENABLE_TITLE_GENERATION:-False}"
 OPEN_WEBUI_ENABLE_TAGS_GENERATION="${OPEN_WEBUI_ENABLE_TAGS_GENERATION:-False}"
-# Open-access (no login) toggle. Only engages on a fresh database with zero
-# users; if a user already exists, Open WebUI keeps the login form regardless.
-OPEN_WEBUI_AUTH="${OPEN_WEBUI_AUTH:-True}"
+# Hussh One is a personal, loopback-only agent by default. Existing single-user
+# databases are migrated without changing the user ID, preserving chats and
+# settings. Authenticated or multi-user deployments must opt in explicitly.
+OPEN_WEBUI_AUTH="${OPEN_WEBUI_AUTH:-False}"
+OPEN_WEBUI_VERSION="${OPEN_WEBUI_VERSION:-0.10.2}"
+OPEN_WEBUI_MODELS_CACHE_TTL="${OPEN_WEBUI_MODELS_CACHE_TTL:-300}"
+OPEN_WEBUI_API_TIMEOUT="${OPEN_WEBUI_API_TIMEOUT:-300}"
+OPEN_WEBUI_MODEL_LIST_TIMEOUT="${OPEN_WEBUI_MODEL_LIST_TIMEOUT:-10}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
+OPEN_WEBUI_CORS_ALLOW_ORIGIN="${OPEN_WEBUI_CORS_ALLOW_ORIGIN:-http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT};http://localhost:${OPEN_WEBUI_PORT}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE_SETUP_SCRIPT="${HUSSH_ONE_SOURCE_SETUP:-$SCRIPT_DIR/setup_open_webui.sh}"
+REPO_ROOT="${HUSSH_ONE_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HERMES_HOME/.env}"
 HERMES_BIN="${HERMES_BIN:-$REPO_ROOT/.venv/bin/hermes}"
@@ -59,6 +68,8 @@ HERMES_API_BASE_URL="http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/v1"
 LAUNCHER_PATH="$HOME/.local/bin/start-open-webui-hermes.sh"
 LOG_DIR="$HERMES_HOME/logs"
 RUNTIME_CONFIG_PATH="$HERMES_HOME/open-webui.env"
+SETUP_REVISION_PATH="$HERMES_HOME/open-webui-setup.sha256"
+MANAGED_SETUP_SCRIPT="$HERMES_HOME/scripts/setup_open_webui.sh"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
@@ -81,12 +92,17 @@ require_hermes_bin() {
 }
 
 choose_python() {
-  if command -v python3.11 >/dev/null 2>&1; then
+  if [[ -x "$OPEN_WEBUI_VENV/bin/python" ]] &&
+      "$OPEN_WEBUI_VENV/bin/python" -c 'import sys; raise SystemExit(not ((3, 11) <= sys.version_info[:2] < (3, 13)))' >/dev/null 2>&1; then
+    echo "$OPEN_WEBUI_VENV/bin/python"
+  elif command -v python3.11 >/dev/null 2>&1 &&
+      python3.11 -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 11))' >/dev/null 2>&1; then
     echo python3.11
-  elif command -v python3 >/dev/null 2>&1; then
+  elif command -v python3 >/dev/null 2>&1 &&
+      python3 -c 'import sys; raise SystemExit(not ((3, 11) <= sys.version_info[:2] < (3, 13)))' >/dev/null 2>&1; then
     echo python3
   else
-    echo "Python 3 is required." >&2
+    echo "A runnable Python 3.11 or 3.12 interpreter is required." >&2
     exit 1
   fi
 }
@@ -149,6 +165,16 @@ print(secrets.token_urlsafe(32))
 PY
 }
 
+file_sha256() {
+  python3 - "$1" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
 shell_quote() {
   python3 - "$1" <<'PY'
 import shlex
@@ -189,11 +215,154 @@ install_open_webui() {
   local py
   py="$(choose_python)"
   log "Using Python interpreter: $py"
-  "$py" -m venv "$OPEN_WEBUI_VENV"
+  if [[ "$py" != "$OPEN_WEBUI_VENV/bin/python" ]]; then
+    "$py" -m venv "$OPEN_WEBUI_VENV"
+  fi
   # shellcheck disable=SC1090
   source "$OPEN_WEBUI_VENV/bin/activate"
-  "$py" -m pip install --upgrade pip setuptools wheel
-  "$py" -m pip install open-webui
+  if "$OPEN_WEBUI_VENV/bin/python" - "$OPEN_WEBUI_VERSION" <<'PY'
+import importlib.metadata
+import sys
+
+try:
+    installed = importlib.metadata.version("open-webui")
+except importlib.metadata.PackageNotFoundError:
+    raise SystemExit(1)
+raise SystemExit(installed != sys.argv[1])
+PY
+  then
+    log "Open WebUI ${OPEN_WEBUI_VERSION} is already installed; reusing the tested runtime."
+    return 0
+  fi
+  # Open WebUI's pinned torch stack currently requires setuptools<82.
+  # Keep bootstrap tooling inside that tested constraint instead of briefly
+  # installing an incompatible latest setuptools and relying on backtracking.
+  "$py" -m pip install --upgrade pip wheel "setuptools<82"
+  "$py" -m pip install "open-webui==${OPEN_WEBUI_VERSION}"
+}
+
+prepare_passwordless_database() {
+  case "$OPEN_WEBUI_AUTH" in
+    false|False|FALSE|0) ;;
+    *) return 0 ;;
+  esac
+
+  case "$OPEN_WEBUI_HOST" in
+    127.0.0.1|localhost|::1|\[::1\]) ;;
+    *)
+      echo "OPEN_WEBUI_AUTH=False is allowed only on a loopback host." >&2
+      echo "Set OPEN_WEBUI_AUTH=True before binding Open WebUI to a network interface." >&2
+      exit 1
+      ;;
+  esac
+
+  local database="$OPEN_WEBUI_DATA_DIR/webui.db"
+  [[ -f "$database" ]] || return 0
+
+  WEBUI_AUTH=False "$OPEN_WEBUI_VENV/bin/python" - "$database" <<'PY'
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+import bcrypt
+import sqlite3
+import sys
+
+database = Path(sys.argv[1])
+with sqlite3.connect(database) as connection:
+    users = connection.execute('SELECT id, email FROM "user"').fetchall()
+    auths = connection.execute("SELECT id, email FROM auth").fetchall()
+
+if not users:
+    raise SystemExit(0)
+if len(users) != 1 or len(auths) != 1 or users[0][0] != auths[0][0]:
+    raise SystemExit(
+        "Passwordless Hussh One migration requires exactly one matching local "
+        "Open WebUI user. Re-run with OPEN_WEBUI_AUTH=True."
+    )
+if users[0][1] == "admin@localhost" and auths[0][1] == "admin@localhost":
+    raise SystemExit(0)
+
+backup_dir = database.parent / "backups"
+backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+backup = backup_dir / f"webui.db.pre-passwordless-{timestamp}.bak"
+with sqlite3.connect(database) as source, sqlite3.connect(backup) as target:
+    source.backup(target)
+backup.chmod(0o600)
+
+user_id = users[0][0]
+with sqlite3.connect(database) as connection:
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        'UPDATE "user" SET email = ? WHERE id = ?',
+        ("admin@localhost", user_id),
+    )
+    connection.execute(
+        "UPDATE auth SET email = ?, password = ?, active = 1 WHERE id = ?",
+        (
+            "admin@localhost",
+            bcrypt.hashpw(b"admin", bcrypt.gensalt()).decode("utf-8"),
+            user_id,
+        ),
+    )
+    connection.commit()
+
+print(
+    "[open-webui-bootstrap] Preserved the existing user and chats while "
+    f"enabling loopback passwordless access. Backup: {backup}"
+)
+PY
+}
+
+enforce_passwordless_ui_config() {
+  case "$OPEN_WEBUI_AUTH" in
+    false|False|FALSE|0) ;;
+    *) return 1 ;;
+  esac
+
+  local database="$OPEN_WEBUI_DATA_DIR/webui.db"
+  [[ -f "$database" ]] || return 1
+
+  "$OPEN_WEBUI_VENV/bin/python" - "$database" <<'PY'
+from pathlib import Path
+import sqlite3
+import sys
+
+database = Path(sys.argv[1])
+with sqlite3.connect(database) as connection:
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(config)").fetchall()
+    }
+    if not {"key", "value"}.issubset(columns):
+        raise SystemExit(1)
+    current = connection.execute(
+        'SELECT value FROM config WHERE "key" = ?',
+        ("ui.enable_login_form",),
+    ).fetchone()
+    if current is not None and str(current[0]).lower() == "false":
+        raise SystemExit(1)
+    connection.execute(
+        """
+        INSERT INTO config ("key", value, updated_at)
+        VALUES (?, json('false'), unixepoch())
+        ON CONFLICT ("key") DO UPDATE
+        SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        ("ui.enable_login_form",),
+    )
+    connection.commit()
+PY
+}
+
+restart_open_webui_service() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    launchctl kickstart -k "gui/$(id -u)/ai.openwebui.hermes"
+  elif can_use_systemd_user; then
+    systemctl --user restart openwebui-hermes.service
+  else
+    return 1
+  fi
 }
 
 # Open WebUI auto-loads /static/custom.css and /static/loader.js from its bundled
@@ -259,6 +428,110 @@ PY
 
 .dark [data-hushh-thinking-body]::-webkit-scrollbar-thumb {
   background-color: rgb(107 114 128 / 0.5);
+}
+
+#hushh-composer-controls {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 0.35rem;
+  margin-inline: 0.25rem;
+  min-width: 0;
+  max-width: min(23rem, 42vw);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+#hushh-composer-controls select {
+  min-width: 0;
+  max-width: 10rem;
+  height: 2rem;
+  border: 1px solid rgb(209 213 219 / 0.8);
+  border-radius: 9999px;
+  background: rgb(255 255 255 / 0.9);
+  color: rgb(55 65 81);
+  padding: 0 1.6rem 0 0.65rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  text-overflow: ellipsis;
+}
+
+#hushh-model-select {
+  width: clamp(7rem, 14vw, 10rem);
+}
+
+#hushh-reasoning-select {
+  width: clamp(6.6rem, 12vw, 8.6rem);
+}
+
+.dark #hushh-composer-controls select {
+  border-color: rgb(75 85 99 / 0.8);
+  background: rgb(17 24 39 / 0.9);
+  color: rgb(229 231 235);
+}
+
+#hushh-changelog-menu-item {
+  min-width: 0;
+}
+
+#sidebar-changelog-button {
+  min-width: 0;
+}
+
+.hushh-changelog-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hushh-changelog-topbar {
+  padding: 1rem clamp(1rem, 3vw, 2rem);
+}
+
+.hushh-changelog-content {
+  width: min(100%, 64rem);
+  margin-inline: auto;
+  padding: clamp(1rem, 4vw, 3rem);
+}
+
+#hushh-changelog-view table {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  #hushh-composer-controls {
+    gap: 0.2rem;
+    margin-inline: 0.1rem;
+    max-width: 44vw;
+  }
+
+  #hushh-composer-controls select {
+    height: 1.9rem;
+    padding-inline: 0.5rem 1.25rem;
+    font-size: 0.6875rem;
+  }
+
+  #hushh-model-select {
+    width: min(26vw, 7rem);
+  }
+
+  #hushh-reasoning-select {
+    width: min(18vw, 5.8rem);
+  }
+
+  .hushh-changelog-topbar {
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  #hushh-changelog-view .overflow-hidden {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  #hushh-changelog-view table {
+    min-width: 34rem;
+  }
 }
 CSS
 
@@ -507,6 +780,131 @@ CSS
   };
 
   // ---------------------------------------------------------------------------
+  // Part 2c: Registry-driven model + reasoning controls
+  // ---------------------------------------------------------------------------
+  const MODEL_STORAGE_KEY = "hushh.openwebui.model";
+  const REASONING_STORAGE_KEY = "hushh.openwebui.reasoning";
+  let selectedModel = localStorage.getItem(MODEL_STORAGE_KEY) || "";
+  let selectedReasoning = localStorage.getItem(REASONING_STORAGE_KEY) || "medium";
+  let composerControlsPending = false;
+
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : input && input.url;
+    if (
+      url &&
+      /\/api\/chat\/completions(?:\?|$)/.test(url) &&
+      init &&
+      typeof init.body === "string"
+    ) {
+      try {
+        const payload = JSON.parse(init.body);
+        if (selectedModel) payload.model = selectedModel;
+        payload.reasoning_effort = selectedReasoning;
+        init = { ...init, body: JSON.stringify(payload) };
+      } catch (_error) {
+        // Preserve the upstream request untouched if its body is not JSON.
+      }
+    }
+    return nativeFetch(input, init);
+  };
+
+  const modelEntries = async () => {
+    try {
+      const response = await nativeFetch("/api/models");
+      if (!response.ok) return [];
+      const payload = await response.json();
+      const values = Array.isArray(payload) ? payload : payload.data || payload.models || [];
+      return values
+        .map((entry) => ({
+          id: String(entry && (entry.id || entry.name) || "").trim(),
+          name: String(entry && (entry.name || entry.id) || "").trim(),
+        }))
+        .filter((entry) => entry.id);
+    } catch (_error) {
+      return [];
+    }
+  };
+
+  const composerForm = () => {
+    const input = document.querySelector(
+      "textarea, #chat-input[contenteditable='true'], [contenteditable='true'][data-placeholder]",
+    );
+    if (!input) return null;
+    return input.closest("form") || input.parentElement?.parentElement || null;
+  };
+
+  const installComposerControls = async () => {
+    if (composerControlsPending || document.getElementById("hushh-composer-controls")) return;
+    const form = composerForm();
+    if (!form) return;
+
+    composerControlsPending = true;
+    const models = await modelEntries();
+    composerControlsPending = false;
+    if (!models.length || document.getElementById("hushh-composer-controls")) return;
+    if (!selectedModel || !models.some((entry) => entry.id === selectedModel)) {
+      selectedModel = models[0].id;
+      localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+    }
+
+    const controls = document.createElement("div");
+    controls.id = "hushh-composer-controls";
+    controls.setAttribute("aria-label", "Hussh One model controls");
+
+    const modelSelect = document.createElement("select");
+    modelSelect.id = "hushh-model-select";
+    modelSelect.title = "Model";
+    modelSelect.setAttribute("aria-label", "Model");
+    for (const entry of models) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = entry.name;
+      option.selected = entry.id === selectedModel;
+      modelSelect.appendChild(option);
+    }
+    modelSelect.addEventListener("change", () => {
+      selectedModel = modelSelect.value;
+      localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+    });
+
+    const reasoningSelect = document.createElement("select");
+    reasoningSelect.id = "hushh-reasoning-select";
+    reasoningSelect.title = "Thinking level";
+    reasoningSelect.setAttribute("aria-label", "Thinking level");
+    for (const [value, label] of [
+      ["none", "Thinking off"],
+      ["low", "Thinking low"],
+      ["medium", "Thinking medium"],
+      ["high", "Thinking high"],
+      ["xhigh", "Thinking max"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.selected = value === selectedReasoning;
+      reasoningSelect.appendChild(option);
+    }
+    reasoningSelect.addEventListener("change", () => {
+      selectedReasoning = reasoningSelect.value;
+      localStorage.setItem(REASONING_STORAGE_KEY, selectedReasoning);
+    });
+
+    controls.append(modelSelect, reasoningSelect);
+    const buttons = Array.from(form.querySelectorAll("button"));
+    const dictate = buttons.find((button) =>
+      /dictat|voice|microphone|record/i.test(
+        `${button.getAttribute("aria-label") || ""} ${button.title || ""}`,
+      ),
+    );
+    if (dictate && dictate.parentElement) {
+      dictate.insertAdjacentElement("afterend", controls);
+    } else {
+      form.appendChild(controls);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
   // Part 3: Reasoning / "thinking" block UX
   // ---------------------------------------------------------------------------
   const LIVE_RE = /Thinking|Analyzing|Exploring/i;
@@ -625,8 +1023,8 @@ CSS
       </svg>
     </div>
     <div>
-      <h1 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">🤫 Hussh One — Features</h1>
-      <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono">v1.0.0 · Active &amp; Verified</p>
+      <h1 class="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">🤫 Hussh One — Changelog &amp; Features</h1>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">What changed, what is available, and the contracts that keep it reliable.</p>
     </div>
   </div>
 
@@ -635,6 +1033,30 @@ CSS
       <strong>hussh</strong> = <strong>Hu</strong>man <strong>S</strong>ecure <strong>S</strong>ocket <strong>H</strong>ost. Overlay on Hermes Agent — a single, secure personal agent present across every surface. Every feature has a module, a config knob, a test, and a doc page.
     </p>
   </div>
+
+  <section class="space-y-4">
+    <div class="flex items-end justify-between gap-4">
+      <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">Latest improvements</h2>
+      <span class="text-xs text-gray-400 dark:text-gray-500">July 2026</span>
+    </div>
+    <div class="grid gap-3">
+      <article class="rounded-2xl border border-gray-100 dark:border-gray-800 p-4">
+        <div class="flex items-center justify-between gap-3">
+          <h3 class="m-0 text-sm font-semibold text-gray-900 dark:text-gray-100">Agent and model identity separated</h3>
+          <span class="rounded-full bg-green-50 dark:bg-green-950/40 px-2 py-1 text-[0.65rem] font-semibold text-green-700 dark:text-green-300">NEW</span>
+        </div>
+        <p class="mb-0 mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">Hussh One remains the private agent. The composer now lists only real models from Hermes' shared provider registry, with the configured default first.</p>
+      </article>
+      <article class="rounded-2xl border border-gray-100 dark:border-gray-800 p-4">
+        <h3 class="m-0 text-sm font-semibold text-gray-900 dark:text-gray-100">Native streaming and thinking controls</h3>
+        <p class="mb-0 mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">Streaming answers, bounded thinking panels, model choice, and reasoning effort travel through the same OpenAI-compatible Hermes route.</p>
+      </article>
+      <article class="rounded-2xl border border-gray-100 dark:border-gray-800 p-4">
+        <h3 class="m-0 text-sm font-semibold text-gray-900 dark:text-gray-100">Passwordless personal browser access</h3>
+        <p class="mb-0 mt-2 text-sm leading-6 text-gray-600 dark:text-gray-300">Open WebUI 0.10.2 remains passwordless on loopback, supervised, health-checked, and reconciled during Hussh One onboarding.</p>
+      </article>
+    </div>
+  </section>
 
   <section class="space-y-4">
     <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">Three first-class surfaces</h2>
@@ -752,26 +1174,44 @@ CSS
   `;
 
   const injectChangelogButton = () => {
-    const list = document.getElementById('pinned-menu-items-list') || document.querySelector('.pb-1.5');
-    if (!list) return;
-
-    if (!document.getElementById('hushh-changelog-menu-item')) {
+    const list = document.getElementById('pinned-menu-items-list') || document.querySelector('.pb-1\\.5');
+    if (list && !document.getElementById('hushh-changelog-menu-item')) {
       const item = document.createElement('div');
       item.id = 'hushh-changelog-menu-item';
       item.className = 'px-[0.4375rem] flex justify-center text-gray-800 dark:text-gray-200';
       item.innerHTML = `
-        <button class="group grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none" id="sidebar-changelog-button">
+        <button class="group grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none" id="sidebar-changelog-button" title="Changelog" aria-label="Open Hussh One changelog">
           <div class="flex self-center translate-y-[0.5px] text-gray-500 dark:text-gray-400 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-5">
               <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
             </svg>
           </div>
           <div class="flex flex-1 self-center translate-y-[0.5px]">
-            <div class="self-center text-sm font-primary font-medium text-gray-600 dark:text-gray-300 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition">Changelog</div>
+            <div class="hushh-changelog-label self-center text-sm font-primary font-medium text-gray-600 dark:text-gray-300 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition">Changelog</div>
           </div>
         </button>
       `;
       list.appendChild(item);
+      return;
+    }
+
+    // Open WebUI replaces the sidebar with a compact top bar on narrow
+    // screens. Keep Changelog reachable there as an icon-only peer rather
+    // than forcing a hidden desktop drawer.
+    if (!list && !document.getElementById('sidebar-changelog-button')) {
+      const anchor = document.querySelector("button[aria-label='Controls']");
+      if (!anchor || !anchor.parentElement) return;
+      const button = document.createElement('button');
+      button.id = 'sidebar-changelog-button';
+      button.className = 'hushh-mobile-changelog rounded-full p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900';
+      button.title = 'Changelog';
+      button.setAttribute('aria-label', 'Open Hussh One changelog');
+      button.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+        </svg>
+      `;
+      anchor.insertAdjacentElement('afterend', button);
     }
   };
 
@@ -795,16 +1235,16 @@ CSS
         view.id = 'hushh-changelog-view';
         view.className = 'h-full w-full overflow-y-auto bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 flex flex-col';
         view.innerHTML = `
-          <div class="border-b border-gray-100 dark:border-gray-800/50 px-8 py-5 flex justify-between items-center bg-gray-50/50 dark:bg-gray-950/20 backdrop-blur shrink-0">
+          <div class="hushh-changelog-topbar border-b border-gray-100 dark:border-gray-800/50 flex justify-between items-center bg-gray-50/50 dark:bg-gray-950/20 backdrop-blur shrink-0">
             <div class="flex items-center gap-3">
               <span class="text-xl">🤫</span>
-              <h1 class="text-lg font-semibold font-primary">Hussh One — Information</h1>
+              <h1 class="text-lg font-semibold font-primary">Hussh One — Changelog</h1>
             </div>
             <div class="text-xs text-gray-500 dark:text-gray-400 font-mono">
               ACTIVE
             </div>
           </div>
-          <div class="flex-1 p-8 @2xl:p-12 max-w-4xl mx-auto w-full">
+          <div class="hushh-changelog-content flex-1">
             <div class="prose prose-gray dark:prose-invert max-w-none font-primary">
               ${CHANGELOG_HTML}
             </div>
@@ -883,6 +1323,7 @@ CSS
     sanitizeVisibleLeakyTitles();
     syncDocumentTitle();
     processReasoning();
+    void installComposerControls();
     injectChangelogButton();
     checkRouteChanged();
     if (isChangelogActive) {
@@ -915,6 +1356,7 @@ write_launcher() {
   mkdir -p "$(dirname "$LAUNCHER_PATH")" "$OPEN_WEBUI_DATA_DIR" "$LOG_DIR"
 
   local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv quoted_home quoted_env
+  local quoted_repo_root quoted_setup_script quoted_setup_revision quoted_cors_origin quoted_hermes_bin
   quoted_data_dir="$(shell_quote "$OPEN_WEBUI_DATA_DIR")"
   quoted_name="$(shell_quote "$OPEN_WEBUI_NAME")"
   quoted_base_url="$(shell_quote "$HERMES_API_BASE_URL")"
@@ -923,6 +1365,13 @@ write_launcher() {
   quoted_venv="$(shell_quote "$OPEN_WEBUI_VENV")"
   quoted_home="$(shell_quote "$HERMES_HOME")"
   quoted_env="$(shell_quote "$HERMES_ENV_FILE")"
+  quoted_repo_root="$(shell_quote "$REPO_ROOT")"
+  quoted_setup_script="$(shell_quote "$SOURCE_SETUP_SCRIPT")"
+  quoted_setup_revision="$(shell_quote "$SETUP_REVISION_PATH")"
+  quoted_cors_origin="$(shell_quote "$OPEN_WEBUI_CORS_ALLOW_ORIGIN")"
+  quoted_hermes_bin="$(shell_quote "$HERMES_BIN")"
+  local quoted_managed_setup
+  quoted_managed_setup="$(shell_quote "$MANAGED_SETUP_SCRIPT")"
 
   cat > "$LAUNCHER_PATH" <<EOF
 #!/usr/bin/env bash
@@ -930,6 +1379,62 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export HERMES_HOME=${quoted_home}
 export HERMES_ENV_FILE=${quoted_env}
+HUSSH_ONE_REPO_ROOT=${quoted_repo_root}
+HUSSH_ONE_OPEN_WEBUI_SETUP=${quoted_setup_script}
+HUSSH_ONE_OPEN_WEBUI_SETUP_REVISION=${quoted_setup_revision}
+HUSSH_ONE_OPEN_WEBUI_MANAGED_SETUP=${quoted_managed_setup}
+
+# Reconcile only when the versioned Hussh companion contract changes. A failed
+# reconciliation falls through to the last known-good installed runtime.
+if [[ "\${HUSSH_ONE_OPEN_WEBUI_RECONCILE:-1}" == "1" && -f "\$HUSSH_ONE_OPEN_WEBUI_SETUP" ]]; then
+  current_revision=\$(python3 - "\$HUSSH_ONE_OPEN_WEBUI_SETUP" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)
+  installed_revision=\$(cat "\$HUSSH_ONE_OPEN_WEBUI_SETUP_REVISION" 2>/dev/null || true)
+  if [[ "\$current_revision" != "\$installed_revision" ]]; then
+    # Background launchd jobs cannot execute scripts directly from macOS
+    # protected Documents folders. Copy the reviewed source atomically into
+    # HERMES_HOME and execute that managed copy instead.
+    if ! python3 - "\$HUSSH_ONE_OPEN_WEBUI_SETUP" "\$HUSSH_ONE_OPEN_WEBUI_MANAGED_SETUP" <<'PY'
+from pathlib import Path
+import os
+import sys
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+destination.parent.mkdir(parents=True, exist_ok=True)
+temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
+temporary.write_bytes(source.read_bytes())
+temporary.chmod(0o700)
+temporary.replace(destination)
+PY
+    then
+      printf '%s\n' "warning: could not stage the managed Open WebUI reconciler" >&2
+    elif env \
+      HUSSH_ONE_OPEN_WEBUI_RECONCILE=0 \
+      HUSSH_ONE_SOURCE_SETUP="\$HUSSH_ONE_OPEN_WEBUI_SETUP" \
+      HUSSH_ONE_REPO_ROOT="\$HUSSH_ONE_REPO_ROOT" \
+      HERMES_HOME=${quoted_home} \
+      HERMES_BIN=${quoted_hermes_bin} \
+      OPEN_WEBUI_HOST=${quoted_host} \
+      OPEN_WEBUI_PORT=${quoted_port} \
+      OPEN_WEBUI_NAME=${quoted_name} \
+      OPEN_WEBUI_AUTH=${OPEN_WEBUI_AUTH} \
+      OPEN_WEBUI_ENABLE_SIGNUP=${OPEN_WEBUI_ENABLE_SIGNUP} \
+      OPEN_WEBUI_DATA_DIR=${quoted_data_dir} \
+      OPEN_WEBUI_VENV=${quoted_venv} \
+      OPEN_WEBUI_ENABLE_SERVICE=false \
+      bash "\$HUSSH_ONE_OPEN_WEBUI_MANAGED_SETUP"; then
+      exec env HUSSH_ONE_OPEN_WEBUI_RECONCILE=0 "\$0"
+    fi
+    printf '%s\n' "warning: Open WebUI companion reconciliation failed; continuing with the last known-good Open WebUI runtime" >&2
+  fi
+fi
+
 API_KEY=\$(python3 - <<'PY'
 import os
 from pathlib import Path
@@ -944,13 +1449,21 @@ PY
 export DATA_DIR=${quoted_data_dir}
 export WEBUI_NAME=${quoted_name}
 export ENABLE_SIGNUP=${OPEN_WEBUI_ENABLE_SIGNUP}
+export ENABLE_LOGIN_FORM=False
 export ENABLE_PUBLIC_ACTIVE_USERS_COUNT=False
 export ENABLE_VERSION_UPDATE_CHECK=False
 export OPENAI_API_BASE_URL=${quoted_base_url}
 export OPENAI_API_KEY="\$API_KEY"
 export ENABLE_OPENAI_API=True
 export ENABLE_OLLAMA_API=False
+export ENABLE_BASE_MODELS_CACHE=True
+export MODELS_CACHE_TTL=${OPEN_WEBUI_MODELS_CACHE_TTL}
+export AIOHTTP_CLIENT_TIMEOUT=${OPEN_WEBUI_API_TIMEOUT}
+export AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST=${OPEN_WEBUI_MODEL_LIST_TIMEOUT}
+export AIOHTTP_CLIENT_TIMEOUT_OPENAI_MODEL_LIST=${OPEN_WEBUI_MODEL_LIST_TIMEOUT}
+export CORS_ALLOW_ORIGIN=${quoted_cors_origin}
 export OFFLINE_MODE=True
+export HF_HUB_OFFLINE=1
 export BYPASS_EMBEDDING_AND_RETRIEVAL=True
 # Open WebUI still validates an embedding backend during startup even when
 # retrieval is bypassed. Keep this local OpenAI-compatible fallback so a fresh
@@ -976,11 +1489,27 @@ export ENABLE_SEARCH_QUERY_GENERATION=False
 export ENABLE_EVALUATION_ARENA_MODELS=False
 export ENABLE_MESSAGE_RATING=False
 export ENABLE_COMMUNITY_SHARING=False
-# Optional open-access mode (no login). Only engages on a fresh DB with zero users.
+export ENABLE_REALTIME_CHAT_SAVE=False
+# Open WebUI's default SQLite/Chroma persistence is single-worker only.
+export UVICORN_WORKERS=1
+# Hussh One defaults to passwordless access and enforces loopback binding during
+# setup. Existing single-user data is migrated before this launcher starts.
 export WEBUI_AUTH=${OPEN_WEBUI_AUTH}
 export HOST=${quoted_host}
 export PORT=${quoted_port}
 source ${quoted_venv}/bin/activate
+for _attempt in \$(seq 1 60); do
+  if curl -fsS --max-time 2 ${quoted_base_url}/models \
+      -H "Authorization: Bearer \$API_KEY" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+if ! curl -fsS --max-time 2 ${quoted_base_url}/models \
+    -H "Authorization: Bearer \$API_KEY" >/dev/null 2>&1; then
+  printf '%s\n' "Hermes API is unavailable; Open WebUI will retry through its service supervisor." >&2
+  exit 1
+fi
 exec open-webui serve --host "\$HOST" --port "\$PORT"
 EOF
 
@@ -996,9 +1525,52 @@ write_runtime_config() {
     printf 'OPEN_WEBUI_HOST=%q\n' "$OPEN_WEBUI_HOST"
     printf 'OPEN_WEBUI_PORT=%q\n' "$OPEN_WEBUI_PORT"
     printf 'OPEN_WEBUI_LAUNCHER=%q\n' "$LAUNCHER_PATH"
+    printf 'OPEN_WEBUI_VERSION=%q\n' "$OPEN_WEBUI_VERSION"
   } > "$temp"
   mv "$temp" "$RUNTIME_CONFIG_PATH"
   chmod 600 "$RUNTIME_CONFIG_PATH"
+}
+
+write_setup_revision() {
+  local temp
+  mkdir -p "$(dirname "$SETUP_REVISION_PATH")"
+  temp="${SETUP_REVISION_PATH}.tmp.$$"
+  file_sha256 "$SOURCE_SETUP_SCRIPT" > "$temp"
+  mv "$temp" "$SETUP_REVISION_PATH"
+  chmod 600 "$SETUP_REVISION_PATH"
+}
+
+verify_hermes_models() {
+  local api_key="$1"
+  curl -fsS \
+    -H "Authorization: Bearer ${api_key}" \
+    "${HERMES_API_BASE_URL}/models" |
+    python3 -c 'import json,sys; payload=json.load(sys.stdin); assert isinstance(payload.get("data"), list) and payload["data"], "Hermes advertised no models"'
+}
+
+wait_for_open_webui() {
+  local attempt
+  for attempt in $(seq 1 90); do
+    if curl -fsS "http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT}/health" >/dev/null 2>&1 \
+      && curl -fsS "http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT}/" 2>/dev/null \
+        | grep -q '/static/loader.js'; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Open WebUI did not become healthy at http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT}; another process may own the port" >&2
+  return 1
+}
+
+wait_for_hermes_api() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 ensure_env_permissions() {
@@ -1080,42 +1652,59 @@ main() {
 
   install_macos_dependencies
 
-  local api_key
+  local api_key gateway_restart_required=0 env_before env_after registry_models
   api_key="$(get_env_value API_SERVER_KEY "$HERMES_ENV_FILE")"
   if [[ -z "$api_key" ]]; then
     api_key="$(generate_secret)"
   fi
 
   log 'Ensuring Hermes API server is configured...'
+  env_before="$(file_sha256 "$HERMES_ENV_FILE" 2>/dev/null || true)"
   upsert_env API_SERVER_ENABLED true "$HERMES_ENV_FILE"
   upsert_env API_SERVER_HOST "$HERMES_API_HOST" "$HERMES_ENV_FILE"
   upsert_env API_SERVER_PORT "$HERMES_API_PORT" "$HERMES_ENV_FILE"
   upsert_env API_SERVER_MODEL_NAME "$HERMES_API_MODEL_NAME" "$HERMES_ENV_FILE"
   upsert_env API_SERVER_KEY "$api_key" "$HERMES_ENV_FILE"
   ensure_env_permissions
+  env_after="$(file_sha256 "$HERMES_ENV_FILE")"
+  [[ "$env_before" == "$env_after" ]] || gateway_restart_required=1
 
-  log 'Restarting Hermes gateway so API server settings take effect...'
-  "$HERMES_BIN" gateway restart >/dev/null 2>&1 || true
-  sleep 4
-  if ! curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null; then
+  registry_models="$("$HERMES_BIN" config get gateway.api_server.expose_provider_models 2>/dev/null || true)"
+  if [[ "$registry_models" != "true" ]]; then
+    "$HERMES_BIN" config set --force gateway.api_server.expose_provider_models true >/dev/null
+    gateway_restart_required=1
+  fi
+
+  if [[ "$gateway_restart_required" == "1" ]]; then
+    log 'Restarting Hermes gateway so changed API settings take effect...'
+    "$HERMES_BIN" gateway restart >/dev/null 2>&1 || true
+  else
+    log 'Hermes API settings are unchanged; preserving the healthy gateway process.'
+  fi
+  if ! wait_for_hermes_api; then
     log 'Hermes API server did not answer on the first check. Trying to start gateway in the background...'
     HERMES_HOME="$HERMES_HOME" nohup "$HERMES_BIN" gateway run >/dev/null 2>&1 &
-    sleep 6
+    wait_for_hermes_api
   fi
-  curl -fsS "http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/health" >/dev/null
+  verify_hermes_models "$api_key"
 
   log 'Installing Open WebUI into a dedicated virtualenv...'
   install_open_webui
+  prepare_passwordless_database
   install_static_assets
   write_launcher
   write_runtime_config
+  write_setup_revision
 
+  local service_started=0
   case "$OPEN_WEBUI_ENABLE_SERVICE" in
     true|auto)
       if [[ "$(uname -s)" == "Darwin" ]]; then
         install_launchd_service
+        service_started=1
       elif can_use_systemd_user; then
         install_systemd_user_service
+        service_started=1
       else
         log 'No usable user service manager detected; falling back to the launcher script.'
         start_foreground_hint
@@ -1129,6 +1718,14 @@ main() {
       exit 1
       ;;
   esac
+  if [[ "$service_started" == "1" ]]; then
+    wait_for_open_webui
+    if enforce_passwordless_ui_config; then
+      log 'Disabling persisted login-form chrome for passwordless Hussh One...'
+      restart_open_webui_service
+      wait_for_open_webui
+    fi
+  fi
 
   log "Done. Open WebUI should be available at: http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT}"
   log "Hermes API endpoint: ${HERMES_API_BASE_URL}"

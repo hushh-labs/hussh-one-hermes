@@ -51,11 +51,13 @@ def test_dangling_side_effect_is_recovered_as_unknown_not_erased():
 
     out = strip_dangling_tool_call_tail(history)
 
-    assert out[:-1] == history
-    assert out[-1]["role"] == "tool"
-    assert out[-1]["tool_call_id"] == "c1"
-    assert out[-1]["effect_disposition"] == "unknown"
-    assert "may have executed" in out[-1]["content"].lower()
+    assert out[:2] == history
+    assert out[-2]["role"] == "tool"
+    assert out[-2]["tool_call_id"] == "c1"
+    assert out[-2]["effect_disposition"] == "unknown"
+    assert "may have executed" in out[-2]["content"].lower()
+    assert out[-1]["role"] == "assistant"
+    assert "sequence is closed" in out[-1]["content"].lower()
 
 
 def test_dangling_session_mutation_is_recovered_as_unknown():
@@ -63,9 +65,10 @@ def test_dangling_session_mutation_is_recovered_as_unknown():
 
     out = strip_dangling_tool_call_tail(history)
 
-    assert out[:-1] == history
-    assert out[-1]["effect_disposition"] == "unknown"
-    assert "may have executed" in out[-1]["content"].lower()
+    assert out[:2] == history
+    assert out[-2]["effect_disposition"] == "unknown"
+    assert "may have executed" in out[-2]["content"].lower()
+    assert out[-1]["role"] == "assistant"
 
 
 def test_mixed_dangling_batch_uses_truthful_per_call_wording():
@@ -79,12 +82,13 @@ def test_mixed_dangling_batch_uses_truthful_per_call_wording():
     }
     out = strip_dangling_tool_call_tail([_user("hi"), assistant])
 
-    read_result, write_result = out[-2:]
+    read_result, write_result = out[-3:-1]
     assert read_result["effect_disposition"] == "none"
     assert "no effect" in read_result["content"].lower()
     assert "unknown" not in read_result["content"].lower()
     assert write_result["effect_disposition"] == "unknown"
     assert "unknown" in write_result["content"].lower()
+    assert out[-1]["role"] == "assistant"
 
 
 def test_strip_dangling_tool_call_tail_preserves_answered_pair():
@@ -104,9 +108,10 @@ def test_interrupted_side_effect_is_preserved_as_unknown():
 
     out = strip_interrupted_tool_tails(history)
 
-    assert out[:-1] == history[:-1]
-    assert out[-1]["role"] == "tool"
-    assert out[-1]["effect_disposition"] == "unknown"
+    assert out[:2] == history[:2]
+    assert out[-2]["role"] == "tool"
+    assert out[-2]["effect_disposition"] == "unknown"
+    assert out[-1]["role"] == "assistant"
 
 
 def test_strip_interrupted_tool_tails_preserves_successful_block():
@@ -136,6 +141,7 @@ def test_sanitize_replay_history_combines_both():
         _assistant_tc("terminal"),
     ]
     assert out[2]["effect_disposition"] == "unknown"
+    assert out[3]["role"] == "assistant"
     assert out[-1] == _user("second")
 
 

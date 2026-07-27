@@ -1031,6 +1031,8 @@ def switch_model(
             user_providers,
             custom_providers,
         )
+        if pdef is None and explicit_provider.strip().lower() == "custom":
+            pdef = _bare_custom_provider_def(current_base_url)
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
@@ -1313,6 +1315,8 @@ def switch_model(
 
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
+    if target_provider == "custom" and current_base_url:
+        provider_label = "Custom endpoint"
     if target_provider.startswith("custom:"):
         custom_pdef = resolve_provider_full(
             target_provider,
@@ -1364,6 +1368,10 @@ def switch_model(
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
+        elif target_provider == "custom" and current_base_url:
+            api_key = current_api_key
+            base_url = current_base_url
+            api_mode = determine_api_mode(target_provider, base_url)
         else:
             try:
                 runtime = resolve_runtime_provider(
@@ -2449,6 +2457,49 @@ def list_authenticated_providers(
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
 
+    # --- 3b. Active bare custom endpoint from model config ---
+    # A direct model.provider=custom endpoint has no named provider row. Keep
+    # the active endpoint visible and selectable in every model picker.
+    if (
+        _current_provider_norm == "custom"
+        and current_base_url
+        and "custom" not in seen_slugs
+        and not any(
+            isinstance(_cp, dict)
+            and str(
+                _cp.get("base_url", "")
+                or _cp.get("url", "")
+                or _cp.get("api", "")
+            ).strip().rstrip("/").lower()
+            == str(current_base_url).strip().rstrip("/").lower()
+            for _cp in (custom_providers or [])
+        )
+    ):
+        _models = [current_model] if current_model else []
+        if refresh or probe_current_custom_provider:
+            try:
+                from hermes_cli.models import fetch_api_models
+
+                _live_models = fetch_api_models(
+                    "",
+                    str(current_base_url).strip().rstrip("/"),
+                )
+                if _live_models:
+                    _models = _live_models
+            except Exception:
+                pass
+        results.append({
+            "slug": "custom",
+            "name": "Custom endpoint",
+            "is_current": True,
+            "is_user_defined": True,
+            "models": _models[:max_models] if max_models is not None else _models,
+            "total_models": len(_models),
+            "source": "model-config",
+            "api_url": str(current_base_url).strip().rstrip("/"),
+        })
+        seen_slugs.add("custom")
+
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
     # provider. Entries sharing the same endpoint, credential identity, and
@@ -2540,10 +2591,13 @@ def list_authenticated_providers(
                     "models": [],
                     "has_explicit_models": False,
                     "discover_models": discover,
+                    "extra_headers": entry_extra_headers,
                 }
             else:
                 if api_key and not groups[group_key].get("api_key"):
                     groups[group_key]["api_key"] = api_key
+                # extra_headers is part of group_key, so every entry in this
+                # group already carries identical headers — nothing to merge.
                 # If any entry in this group opts out of discovery,
                 # honour that for the whole grouped row.
                 if not discover:
@@ -2640,6 +2694,12 @@ def list_authenticated_providers(
             #   api_key is present. This supports endpoints that expose a
             #   full aggregator catalog via /models but only serve a subset
             #   (parity with section 3's user ``providers:`` behaviour).
+            _grp_is_current = slug.lower() == _current_provider_norm or (
+                _current_provider_norm == "custom"
+                and bool(_current_base_url_norm)
+                and _grp_url_norm == _current_base_url_norm
+                and _current_base_url_group_count == 1
+            )
             should_probe = (
                 _can_probe_custom_provider(row_is_current=_grp_is_current)
                 and bool(api_url)
@@ -2650,7 +2710,11 @@ def list_authenticated_providers(
                 try:
                     from hermes_cli.models import fetch_api_models
 
-                    live_models = fetch_api_models(api_key, api_url)
+                    live_models = fetch_api_models(
+                        api_key,
+                        api_url,
+                        headers=grp.get("extra_headers") or None,
+                    )
                     if live_models:
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
@@ -2665,12 +2729,7 @@ def list_authenticated_providers(
             results.append({
                 "slug": slug,
                 "name": grp["name"],
-                "is_current": slug == current_provider or (
-                    current_provider == "custom"
-                    and bool(_current_base_url_norm)
-                    and _grp_url_norm == _current_base_url_norm
-                    and _current_base_url_group_count == 1
-                ),
+                "is_current": _grp_is_current,
                 "is_user_defined": True,
                 "models": grp["models"],
                 "total_models": len(grp["models"]),

@@ -427,6 +427,15 @@ def build_turn_context(
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
+    if messages:
+        # A process can die after persisting assistant tool calls but before
+        # their results. Resume paths sanitize this already, but an active TUI
+        # or gateway session can receive the next user turn without resuming.
+        # Repair the copied API history at the shared turn boundary so every
+        # surface gets the same safe behavior.
+        from agent.replay_cleanup import sanitize_replay_history
+
+        messages = sanitize_replay_history(messages)
 
     # The CLI may already have staged this input outside the history passed to
     # ``run_conversation``. Reuse it only when its clean transcript text matches

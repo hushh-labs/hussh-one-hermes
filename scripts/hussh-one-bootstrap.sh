@@ -250,6 +250,29 @@ set_config_defaults() {
   configure_web_search
 }
 
+configure_hussh_persona() {
+  local source="$REPO_ROOT/docs/hussh-one/persona/SOUL.md"
+  local destination="$HERMES_HOME/SOUL.md"
+  local stock_persona
+  stock_persona="You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations."
+
+  if [[ ! -f "$source" ]]; then
+    warn "Canonical Hussh One persona is missing; preserving existing SOUL.md"
+    return 0
+  fi
+
+  if [[ ! -f "$destination" ]] \
+    || grep -q '<!-- hussh-one-persona:v1 -->' "$destination" \
+    || [[ "$(tr -d '\r\n' < "$destination")" == "$stock_persona" ]]; then
+    run_cmd mkdir -p "$HERMES_HOME"
+    run_cmd cp "$source" "$destination"
+    log "Configured the canonical Hussh One persona"
+    return 0
+  fi
+
+  warn "Preserving a customized SOUL.md; merge the canonical Hussh One persona manually if desired"
+}
+
 env_value() {
   local key="$1"
   local file="$HERMES_HOME/.env"
@@ -439,6 +462,7 @@ ensure_venv
 install_managed_doctor
 build_assets
 set_config_defaults
+configure_hussh_persona
 check_gcp_adc
 check_whatsapp_pairing
 setup_copilot_byok

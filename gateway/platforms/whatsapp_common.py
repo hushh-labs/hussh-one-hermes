@@ -353,6 +353,13 @@ class WhatsAppBehaviorMixin:
         # where the bridge may surface them as "fromMe" events.
         if self._is_broadcast_chat(chat_id_raw):
             return False
+
+        # Suppress processing if the message starts with an opt-out / silence prefix
+        # (e.g. @none, @no, @off, @mute). This allows taking personal notes in chat
+        # without triggering an agent response.
+        body = str(data.get("body") or data.get("text") or "").strip()
+        if re.match(r"^@(none|no|off|mute)\b", body, re.IGNORECASE):
+            return False
         is_group = data.get("isGroup", False)
         if is_group:
             chat_id = chat_id_raw

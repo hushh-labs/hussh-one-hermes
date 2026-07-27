@@ -1864,6 +1864,13 @@ _AGGREGATOR_PROVIDERS = frozenset(
     {"nous", "openrouter", "copilot", "kilocode"}
 )
 
+# Providers whose live endpoint is the authoritative rotating catalog. Their
+# picker merge stays live-first; single-provider catalogs remain curated-first
+# so a newly curated model is not hidden by a lagging endpoint.
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
+    {"opencode-zen", "opencode-go"}
+)
+
 
 def _resolve_static_model_alias(
     name_lower: str,

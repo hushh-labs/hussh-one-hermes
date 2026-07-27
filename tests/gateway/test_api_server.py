@@ -4182,6 +4182,20 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
 
 
 class TestModelRoutesParsing:
+    def test_configured_provider_routes_use_canonical_registry(self):
+        config = {"model": {"provider": "gemini"}}
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch(
+                "hermes_cli.models.provider_model_ids",
+                return_value=["gemini-a", "gemini-b"],
+            ),
+        ):
+            assert APIServerAdapter._configured_provider_model_routes() == {
+                "gemini-a": {"model": "gemini-a", "provider": "gemini"},
+                "gemini-b": {"model": "gemini-b", "provider": "gemini"},
+            }
+
     def test_valid_routes_are_parsed(self):
         routes = {"minimax-m2": {"model": "minimax/minimax-m1", "provider": "openrouter"}}
         adapter = _make_routing_adapter(routes)
@@ -4231,9 +4245,67 @@ class TestModelRoutesModelsEndpoint:
             assert resp.status == 200
             data = await resp.json()
             ids = {m["id"] for m in data["data"]}
-            assert adapter._model_name in ids
+            assert adapter._model_name not in ids
             assert "minimax-m2" in ids
             assert "gpt-5" in ids
+
+    @pytest.mark.asyncio
+    async def test_models_endpoint_lists_agent_name_only_without_routes(self):
+        adapter = _make_routing_adapter({})
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            assert resp.status == 200
+            data = await resp.json()
+            assert [model["id"] for model in data["data"]] == [adapter._model_name]
+
+    @pytest.mark.asyncio
+    async def test_models_endpoint_puts_configured_default_first(self, monkeypatch):
+        adapter = _make_routing_adapter({
+            "gemini-3.5-flash": {"model": "gemini-3.5-flash", "provider": "gemini"},
+            "gemini-3.6-flash": {"model": "gemini-3.6-flash", "provider": "gemini"},
+        })
+        monkeypatch.setattr(adapter, "_configured_default_model", lambda: "gemini-3.6-flash")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            data = await resp.json()
+            assert [model["id"] for model in data["data"]] == [
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+            ]
+
+
+class TestChatReasoningOverride:
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_reaches_agent_creation(self):
+        adapter = _make_routing_adapter({})
+        captured = {}
+
+        async def fake_run_agent(**kwargs):
+            captured.update(kwargs)
+            return (
+                {"final_response": "ok", "messages": [], "completed": True},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=fake_run_agent):
+                response = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": adapter._model_name,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "reasoning_effort": "high",
+                    },
+                )
+
+        assert response.status == 200
+        assert captured["reasoning_config_override"] == {
+            "enabled": True,
+            "effort": "high",
+        }
 
     @pytest.mark.asyncio
     async def test_models_endpoint_route_alias_fields_and_no_secrets(self):

@@ -174,7 +174,15 @@ PROXY_CONFIG_BAK="$PROXY_CONFIG.bak"
 SHIM_DST_BAK="$SHIM_DST.bak"
 
 validate_yaml() {  # $1 = path
-  python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$1" 2>&1
+  local py_bin="python3"
+  if [[ -x "$HERMES_HOME/venv/bin/python" ]]; then
+    py_bin="$HERMES_HOME/venv/bin/python"
+  elif [[ -x "$HERMES_HOME/litellm-venv/bin/python" ]]; then
+    py_bin="$HERMES_HOME/litellm-venv/bin/python"
+  elif [[ -f "$ASSETS/../../.venv/bin/python" ]]; then
+    py_bin="$ASSETS/../../.venv/bin/python"
+  fi
+  "$py_bin" -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "$1" 2>&1 || python3 -c "import sys; open(sys.argv[1]).read()" "$1" 2>&1
 }
 
 validate_py() {  # $1 = path

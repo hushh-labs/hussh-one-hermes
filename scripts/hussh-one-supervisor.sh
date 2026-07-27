@@ -475,14 +475,9 @@ open_webui_url() {
 
 open_webui_http_healthy() {
   command -v curl >/dev/null 2>&1 || return 1
-  local url status
-  for url in "$(open_webui_url)/health" "$(open_webui_url)/"; do
-    status="$(curl -sS -L --max-time 3 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
-    case "$status" in
-      2*|3*) return 0 ;;
-    esac
-  done
-  return 1
+  curl -fsS --max-time 3 "$(open_webui_url)/health" >/dev/null 2>&1 \
+    && curl -fsS -L --max-time 3 "$(open_webui_url)/" 2>/dev/null \
+      | grep -q '/static/loader.js'
 }
 
 open_webui_service_installed() {
@@ -662,6 +657,10 @@ launchd_bootstrap_dashboard() {
     return 0
   fi
   launchctl bootout "$(launchd_target)" >/dev/null 2>&1 || true
+  # Let launchd finish removing the old job before reusing the same label.
+  # Without this handoff window macOS commonly returns EIO and may expose a
+  # transient `launchctl print` entry that disappears seconds later.
+  sleep 1
   # The legacy detached watchdog did not terminate its child on exit.  Clear
   # that orphan before bootstrapping the single launchd-owned watchdog, or the
   # new watchdog would correctly wait on an unowned listener forever.
@@ -674,8 +673,10 @@ launchd_bootstrap_dashboard() {
       return 0
     fi
     if launchd_job_active; then
-      log "Dashboard launchd service remained loaded after bootstrap handoff; using it."
-      return 0
+      # A failed bootstrap can expose a stale job briefly. Remove it and retry
+      # instead of treating `launchctl print` alone as proof of ownership.
+      launchctl bootout "$(launchd_target)" >/dev/null 2>&1 || true
+      sleep 1
     fi
     if [[ "$attempt" != "3" ]]; then
       sleep 1
@@ -686,9 +687,21 @@ launchd_bootstrap_dashboard() {
 }
 
 launchd_start_dashboard() {
+  local attempt
   retire_legacy_dashboard_watchdog
   launchd_bootstrap_dashboard
   run_cmd launchctl kickstart -k "$(launchd_target)"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    return 0
+  fi
+  for attempt in 1 2 3 4 5; do
+    if launchd_job_active && [[ -n "$(port_pids "$DASHBOARD_PORT")" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "error: dashboard launchd job did not become healthy on port $DASHBOARD_PORT" >&2
+  return 1
 }
 
 launchd_stop_dashboard() {

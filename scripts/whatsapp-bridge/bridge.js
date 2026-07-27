@@ -399,6 +399,31 @@ async function startSocket() {
         isAllowlisted,
       });
 
+      // Explicit opt-out / silence initiator prefix (@none, @no, @off, @mute)
+      // When the message starts with @none (or @no, @off, @mute), suppress agent processing.
+      const optOutContent = getMessageContent(msg);
+      let optOutBody = '';
+      if (optOutContent.conversation) {
+        optOutBody = optOutContent.conversation;
+      } else if (optOutContent.extendedTextMessage?.text) {
+        optOutBody = optOutContent.extendedTextMessage.text;
+      } else if (optOutContent.imageMessage) {
+        optOutBody = optOutContent.imageMessage.caption || '';
+      } else if (optOutContent.videoMessage) {
+        optOutBody = optOutContent.videoMessage.caption || '';
+      }
+      if (/^@(none|no|off|mute)\b/i.test(optOutBody.trim())) {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'opt_out_prefix',
+            chatId,
+            senderId,
+          }));
+        } catch {}
+        continue;
+      }
+
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
         if (chatId.includes('status')) continue;
@@ -825,9 +850,11 @@ app.post('/send-media', async (req, res) => {
     switch (type) {
       case 'image':
         msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        if (req.body.gifPlayback === true) msgPayload.gifPlayback = true;
         break;
       case 'video':
         msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        if (req.body.gifPlayback === true) msgPayload.gifPlayback = true;
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.

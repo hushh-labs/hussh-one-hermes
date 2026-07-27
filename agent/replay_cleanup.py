@@ -26,6 +26,11 @@ from agent.turn_context import drop_stale_api_content
 
 logger = logging.getLogger(__name__)
 
+_SIDE_EFFECT_RECOVERY_CLOSURE = (
+    "[Recovery: the interrupted tool sequence is closed. Its side effects remain "
+    "UNKNOWN; inspect current state before retrying the action.]"
+)
+
 
 def is_interrupted_tool_result(content: Any) -> bool:
     """Return True if a tool result indicates the tool was interrupted."""
@@ -98,6 +103,10 @@ def strip_interrupted_tool_tails(
                             else "[Orphan recovery: interrupted read-only tool did not complete.]"
                         )
                         cleaned.append(recovered)
+                    cleaned.append({
+                        "role": "assistant",
+                        "content": _SIDE_EFFECT_RECOVERY_CLOSURE,
+                    })
                     i = j
                     continue
                 logger.debug(
@@ -174,6 +183,15 @@ def strip_dangling_tool_call_tail(
             recovered.append(make_tool_result_message(
                 name, content, call_id, effect_disposition=disposition,
             ))
+        # Close the recovered function-call exchange before a later real user
+        # turn is appended. Gemini 3.6 rejects a functionResponse merged with
+        # unrelated user text as an invalid model-prefill continuation. An
+        # explicit, truthful closure also prevents every provider from treating
+        # the stale call as an unfinished tool loop.
+        recovered.append({
+            "role": "assistant",
+            "content": _SIDE_EFFECT_RECOVERY_CLOSURE,
+        })
         logger.warning(
             "Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them"
         )

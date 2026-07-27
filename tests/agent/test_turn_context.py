@@ -179,6 +179,42 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+def test_active_turn_closes_dangling_side_effect_before_new_user():
+    agent = _FakeAgent()
+    history = [
+        {"role": "user", "content": "export the doodles"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": '{"command": "render"}',
+                    },
+                }
+            ],
+        },
+    ]
+
+    ctx = _build(
+        agent,
+        user_message="did we complete the last task",
+        conversation_history=history,
+    )
+
+    assert [message["role"] for message in ctx.messages[-4:]] == [
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert ctx.messages[-2]["content"].startswith("[Recovery:")
+    assert ctx.messages[-1]["content"] == "did we complete the last task"
+
+
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
@@ -450,4 +486,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-
