@@ -12185,22 +12185,11 @@ class HusshOneVaultEnrollRequest(BaseModel):
     profile: Optional[str] = None
 
 
-_HUSSH_ONE_BRIDGES: Dict[str, Any] = {}
-_HUSSH_ONE_BRIDGES_LOCK = threading.Lock()
-
-
 def _hussh_one_bridge():
     """Return the process-local bridge for the active Hermes profile."""
-    from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
+    from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
 
-    profile_home = get_hermes_home().resolve()
-    cache_key = str(profile_home)
-    with _HUSSH_ONE_BRIDGES_LOCK:
-        bridge = _HUSSH_ONE_BRIDGES.get(cache_key)
-        if bridge is None:
-            bridge = HusshVaultBridge(profile_home=profile_home)
-            _HUSSH_ONE_BRIDGES[cache_key] = bridge
-        return bridge
+    return get_profile_bridge()
 
 
 def _require_local_hussh_one_request(request: Request) -> None:
@@ -12399,7 +12388,7 @@ async def hussh_one_vault_enroll(
     request: Request,
 ):
     """Unwrap locally; the SecretStr value is never logged or persisted."""
-    from hermes_cli.mcp_config import install_hussh_one_mcp
+    from hermes_cli.mcp_config import migrate_hussh_one_native_connector
 
     _require_local_hussh_one_request(request)
     try:
@@ -12409,10 +12398,8 @@ async def hussh_one_vault_enroll(
                 bridge.enroll_vault,
                 body.passphrase.get_secret_value(),
             )
-            if not install_hussh_one_mcp():
-                bridge.lock()
-                raise RuntimeError("The local Hussh One MCP configuration was rejected.")
-            return {**result, "mcp_configured": True}
+            migrate_hussh_one_native_connector()
+            return {**result, "native_connector_ready": True}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -12438,14 +12425,14 @@ async def hussh_one_vault_lock(request: Request, profile: Optional[str] = None):
 
 @app.delete("/api/hussh-one/connection")
 async def hussh_one_disconnect(request: Request, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import remove_hussh_one_mcp
+    from hermes_cli.mcp_config import migrate_hussh_one_native_connector
 
     _require_local_hussh_one_request(request)
     try:
         with _config_profile_scope(profile):
             bridge = _hussh_one_bridge()
             result = await run_in_threadpool(bridge.revoke_and_disconnect)
-            remove_hussh_one_mcp()
+            migrate_hussh_one_native_connector()
             return result
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

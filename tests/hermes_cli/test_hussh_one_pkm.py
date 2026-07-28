@@ -29,6 +29,11 @@ from hermes_cli.hussh_one_pkm.pkm import (
     _patch_leaf_paths,
     _path_exists,
 )
+from hermes_cli.hussh_one_pkm.service import HusshPkmWriteService, PkmWriteDeclined
+from hermes_cli.mcp_config import (
+    HUSSH_ONE_MCP_TOOLS,
+    _is_first_party_hussh_one_mcp,
+)
 from hermes_cli.web_server import _require_local_hussh_one_request
 
 
@@ -103,7 +108,7 @@ def test_local_envelope_is_profile_and_device_bound(tmp_path: Path) -> None:
         unwrap_local_vault_key(envelope=unsupported, device_wrapping_key=wrapping_key)
 
 
-def test_profile_lock_state_coordinates_dashboard_and_mcp_processes(
+def test_profile_lock_state_requires_explicit_unlock_in_each_process(
     tmp_path: Path,
 ) -> None:
     class FakeKeychain:
@@ -155,6 +160,9 @@ def test_profile_lock_state_coordinates_dashboard_and_mcp_processes(
         profile_home=profile,
         keychain=keychain,  # type: ignore[arg-type]
     )
+    with pytest.raises(VaultCryptoError, match="Unlock"):
+        mcp_bridge.require_vault_key()
+    assert mcp_bridge.unlock()["unlocked"] is True
     assert mcp_bridge.require_vault_key() == vault_key
 
     dashboard_bridge.lock(reason="workstation_lock")
@@ -287,19 +295,17 @@ def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> N
 def test_vault_setup_control_plane_rejects_remote_dashboard() -> None:
     app = FastAPI()
     app.state.auth_required = True
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "scheme": "https",
-            "path": "/api/hussh-one/vault/enroll",
-            "query_string": b"",
-            "headers": [(b"host", b"remote.example")],
-            "server": ("remote.example", 443),
-            "client": ("203.0.113.10", 43119),
-            "app": app,
-        }
-    )
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/api/hussh-one/vault/enroll",
+        "query_string": b"",
+        "headers": [(b"host", b"remote.example")],
+        "server": ("remote.example", 443),
+        "client": ("203.0.113.10", 43119),
+        "app": app,
+    })
 
     with pytest.raises(HTTPException) as raised:
         _require_local_hussh_one_request(request)
@@ -328,6 +334,47 @@ def test_proposal_store_returns_only_safe_metadata_and_is_single_use() -> None:
     assert store.take(proposal.proposal_id) == proposal
     with pytest.raises(ValueError, match="missing or expired"):
         store.take(proposal.proposal_id)
+
+
+def test_native_write_service_requires_fresh_acceptance() -> None:
+    proposal = PkmProposal(
+        proposal_id="proposal",
+        domain="profile",
+        scope_path="details",
+        operation="update",
+        summary="Update a profile detail.",
+        merge_patch={"details": {"city": "Cupertino"}},
+        sharing_impact={"summary": "No active recipients are affected."},
+        source_revision=2,
+    )
+    bridge = SimpleNamespace(require_vault_key=lambda: b"k" * 32)
+    service = HusshPkmWriteService(
+        bridge,  # type: ignore[arg-type]
+        approve=lambda _message, _description: "decline",
+    )
+    service.client = SimpleNamespace(
+        propose=lambda **_kwargs: proposal,
+        commit=lambda _proposal: pytest.fail("commit must not run"),
+    )
+    with pytest.raises(PkmWriteDeclined):
+        service.save(
+            domain="profile",
+            scope_path="details",
+            merge_patch={"details": {"city": "Cupertino"}},
+            summary="Update a profile detail.",
+        )
+
+
+def test_legacy_mcp_cleanup_matches_only_exact_first_party_entry() -> None:
+    entry = {
+        "command": "/usr/bin/python3",
+        "args": ["-m", "hermes_cli.hussh_one_pkm.mcp_server"],
+        "enabled": True,
+        "tools": list(HUSSH_ONE_MCP_TOOLS),
+    }
+    assert _is_first_party_hussh_one_mcp(entry) is True
+    assert _is_first_party_hussh_one_mcp({**entry, "command": "node"}) is False
+    assert _is_first_party_hussh_one_mcp({**entry, "tools": ["custom"]}) is False
 
 
 def test_nested_write_scope_helpers_are_exact() -> None:

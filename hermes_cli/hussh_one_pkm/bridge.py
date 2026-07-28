@@ -199,7 +199,16 @@ class HusshVaultBridge:
 
     def _monitor_shared_lock_state(self) -> None:
         while True:
-            if self._profile_is_locked():
+            inactive = False
+            with self._lock:
+                inactive = (
+                    self._vault_key is not None
+                    and time.monotonic() - self._last_activity
+                    > self.INACTIVITY_TIMEOUT_SECONDS
+                )
+            if inactive:
+                self.lock(reason="inactivity")
+            elif self._profile_is_locked():
                 with self._lock:
                     self._clear_vault_key_locked()
                 self.identity.lock_identity()
@@ -229,15 +238,10 @@ class HusshVaultBridge:
 
     def require_vault_key(self) -> bytes:
         key = self._active_vault_key()
-        if (
-            key is None
-            and not self._profile_is_locked()
-            and self.envelope_path.exists()
-        ):
-            self.unlock(reason="authorized_local_restore")
-            key = self._active_vault_key()
         if key is None:
-            raise VaultCryptoError("Unlock the Hussh One vault before using PKM tools.")
+            raise VaultCryptoError(
+                "Unlock the Hussh One vault in this Hermes process before saving."
+            )
         return key
 
     def acquire_vault_owner_token(self) -> str:
@@ -302,3 +306,19 @@ class HusshVaultBridge:
         self.remove_local_vault()
         self.identity.disconnect(remove_device_key=True)
         return {"connected": False, "revoked": state is not None}
+
+
+_PROFILE_BRIDGES: dict[str, HusshVaultBridge] = {}
+_PROFILE_BRIDGES_LOCK = threading.Lock()
+
+
+def get_profile_bridge(profile_home: Path | None = None) -> HusshVaultBridge:
+    """Return the one in-process vault authority for a Hermes profile."""
+    resolved = (profile_home or get_hermes_home()).resolve()
+    cache_key = str(resolved)
+    with _PROFILE_BRIDGES_LOCK:
+        bridge = _PROFILE_BRIDGES.get(cache_key)
+        if bridge is None:
+            bridge = HusshVaultBridge(profile_home=resolved)
+            _PROFILE_BRIDGES[cache_key] = bridge
+        return bridge
