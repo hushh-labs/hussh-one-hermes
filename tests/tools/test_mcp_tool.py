@@ -739,6 +739,133 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    @pytest.mark.parametrize(
+        ("server_name", "tool_name"),
+        [
+            ("hushh-consent", "get_encrypted_scoped_export"),
+            ("hussh_consent", "get-encrypted-scoped-export"),
+        ],
+    )
+    def test_encrypted_consent_export_never_reaches_model_context(
+        self,
+        server_name,
+        tool_name,
+    ):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        encrypted_export = json.dumps({
+            "status": "success",
+            "ciphertext": "sensitive-ciphertext",
+            "wrapped_export_key": "sensitive-wrapped-key",
+            "sender_public_key": "sensitive-public-key",
+            "resource_url": "https://example.invalid/protected-export",
+        })
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(encrypted_export, is_error=False)
+        )
+        server = _make_mock_server(server_name, session=mock_session)
+        _servers[server_name] = server
+
+        try:
+            handler = _make_tool_handler(
+                server_name,
+                tool_name,
+                120,
+            )
+            with self._patch_mcp_loop():
+                raw_result = handler({
+                    "grant_ref": "opaque-grant",
+                    "expected_scope": "attr.financial.portfolio.*",
+                })
+
+            assert "sensitive-ciphertext" not in raw_result
+            assert "sensitive-wrapped-key" not in raw_result
+            assert "sensitive-public-key" not in raw_result
+            assert "example.invalid" not in raw_result
+
+            outer = json.loads(raw_result)
+            receipt = json.loads(outer["result"])
+            assert receipt["status"] == "encrypted_export_withheld_from_model"
+            assert receipt["delivery"] == "trusted_connector_only"
+            assert receipt["expected_scope"] == "attr.financial.portfolio.*"
+            assert "outside the model" in receipt["next_action"]
+        finally:
+            _servers.pop(server_name, None)
+
+    def test_decrypted_local_export_becomes_one_time_lease(
+        self,
+        tmp_path,
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        export = json.dumps({
+            "status": "success",
+            "delivery": "decrypted_local",
+            "expected_scope": "attr.financial.sources.*",
+            "granted_scope": "attr.financial.sources.*",
+            "information": {"sources": [{"name": "Example"}]},
+        })
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(export, is_error=False)
+        )
+        server_name = "hushh-consent"
+        server = _make_mock_server(server_name, session=mock_session)
+        _servers[server_name] = server
+        token = set_hermes_home_override(tmp_path)
+
+        try:
+            handler = _make_tool_handler(
+                server_name,
+                "get-encrypted-scoped-export",
+                120,
+            )
+            with self._patch_mcp_loop():
+                raw_result = handler({
+                    "grant_ref": "opaque-grant",
+                    "expected_scope": "attr.financial.sources.*",
+                })
+
+            assert "Example" not in raw_result
+            outer = json.loads(raw_result)
+            receipt = json.loads(outer["result"])
+            assert receipt["status"] == "decrypted_export_ready"
+            assert receipt["delivery"] == "trusted_local_one_time_lease"
+            assert receipt["lease_id"]
+            lease_path = (
+                tmp_path / "tmp" / "consent" / f"{receipt['lease_id']}.json"
+            )
+            assert lease_path.is_file()
+            assert lease_path.stat().st_mode & 0o777 == 0o600
+        finally:
+            reset_hermes_home_override(token)
+            _servers.pop(server_name, None)
+
+    def test_similarly_named_non_consent_server_is_not_redacted(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        server_name = "customer-consent-demo"
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ordinary result", is_error=False)
+        )
+        server = _make_mock_server(server_name, session=mock_session)
+        _servers[server_name] = server
+
+        try:
+            handler = _make_tool_handler(
+                server_name,
+                "get_encrypted_scoped_export",
+                120,
+            )
+            with self._patch_mcp_loop():
+                result = json.loads(handler({}))
+            assert result["result"] == "ordinary result"
+        finally:
+            _servers.pop(server_name, None)
+
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

@@ -122,6 +122,95 @@ logger = logging.getLogger(__name__)
 # handshake defeats the inner timeout (the #29184 failure mode).
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
+# Encrypted consent exports are a connector-delivery surface, not model input.
+# Keep this guard at the MCP transport boundary so ciphertext and wrapping
+# material cannot reach tool observers, logs, persistence, or conversation
+# history even when a model ignores the tool description.
+_CONSENT_EXPORT_TOOL_ID = "getencryptedscopedexport"
+_CONSENT_SERVER_IDS = frozenset({"hushhconsent", "husshconsent"})
+
+
+def _is_hussh_consent_server(server_name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", server_name.lower())
+    return normalized in _CONSENT_SERVER_IDS
+
+
+def _withhold_encrypted_consent_export(
+    server_name: str,
+    tool_name: str,
+    args: Dict[str, Any],
+    text_result: str,
+) -> Optional[str]:
+    """Return a model-safe receipt for encrypted Hussh consent exports.
+
+    The encrypted-export tool may return a large inline envelope, a resource
+    link, or structured metadata depending on connector transport. None of
+    those are model-readable delivery mechanisms: the trusted connector must
+    retain its private key and decrypt outside the LLM process. Locally
+    decrypted plaintext is handed off only through a bounded one-time lease;
+    it is never returned directly from this MCP handler.
+    """
+    normalized_tool = re.sub(r"[^a-z0-9]", "", tool_name.lower())
+    if (
+        normalized_tool != _CONSENT_EXPORT_TOOL_ID
+        or not _is_hussh_consent_server(server_name)
+    ):
+        return None
+
+    try:
+        payload = json.loads(text_result)
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+
+    if isinstance(payload, dict) and payload.get("delivery") == "decrypted_local":
+        information = payload.get("information")
+        if isinstance(information, dict):
+            from hermes_cli.hussh_consent_lease import materialize_decrypted_export
+
+            lease = materialize_decrypted_export(
+                information,
+                expected_scope=str(
+                    payload.get("expected_scope") or args.get("expected_scope") or ""
+                ),
+                granted_scope=str(payload.get("granted_scope") or ""),
+            )
+            return json.dumps(
+                {
+                    **lease,
+                    "delivery": "trusted_local_one_time_lease",
+                    "message": (
+                        lease.get("message")
+                        or "Authorized plaintext is available through a short-lived "
+                        "one-time lease."
+                    ),
+                    "next_action": (
+                        "Consume the lease only when the user explicitly requested "
+                        "model analysis of this approved scope. The lease is deleted "
+                        "before its information is emitted."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+    receipt: Dict[str, Any] = {
+        "status": "encrypted_export_withheld_from_model",
+        "delivery": "trusted_connector_only",
+        "message": (
+            "The approved encrypted export was delivered to the connector, "
+            "but ciphertext, resource links, and key material were withheld "
+            "from model context."
+        ),
+        "next_action": (
+            "Decrypt only inside the trusted connector outside the model. "
+            "Do not use terminal, code-execution, file-reading, or memory "
+            "tools to handle the envelope or connector private key."
+        ),
+    }
+    expected_scope = args.get("expected_scope")
+    if isinstance(expected_scope, str) and expected_scope:
+        receipt["expected_scope"] = expected_scope
+    return json.dumps(receipt, ensure_ascii=False)
+
 
 # ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
@@ -4683,6 +4772,23 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         server_name, block_type,
                     )
             text_result = "\n".join(parts) if parts else ""
+
+            protected_receipt = _withhold_encrypted_consent_export(
+                server_name,
+                tool_name,
+                args,
+                text_result,
+            )
+            if protected_receipt is not None:
+                logger.info(
+                    "MCP %s/%s: withheld encrypted export from model context",
+                    server_name,
+                    tool_name,
+                )
+                return json.dumps(
+                    {"result": protected_receipt},
+                    ensure_ascii=False,
+                )
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
