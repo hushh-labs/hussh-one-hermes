@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,16 @@ _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
         "args": ["mcp-server"],
     },
 }
+
+HUSSH_ONE_MCP_SERVER_NAME = "hussh-one-pkm"
+HUSSH_ONE_MCP_TOOLS = [
+    "hussh_identity_status",
+    "hussh_vault_status",
+    "hussh_pkm_request_scope",
+    "hussh_pkm_propose_write",
+    "hussh_pkm_commit_write",
+    "hussh_vault_lock",
+]
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
@@ -102,6 +113,27 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
     return True
+
+
+def install_hussh_one_mcp() -> bool:
+    """Install the first-party bridge in the active Hermes profile.
+
+    The config contains only executable metadata. Identity credentials, device
+    keys, vault material, and owner capabilities remain outside MCP config.
+    """
+    return _save_mcp_server(
+        HUSSH_ONE_MCP_SERVER_NAME,
+        {
+            "command": sys.executable,
+            "args": ["-m", "hermes_cli.hussh_one_pkm.mcp_server"],
+            "enabled": True,
+            "tools": list(HUSSH_ONE_MCP_TOOLS),
+        },
+    )
+
+
+def remove_hussh_one_mcp() -> bool:
+    return _remove_mcp_server(HUSSH_ONE_MCP_SERVER_NAME)
 
 
 def _remove_mcp_server(name: str) -> bool:

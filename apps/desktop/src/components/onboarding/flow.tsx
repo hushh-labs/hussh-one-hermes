@@ -23,6 +23,7 @@ import {
 } from '@/store/onboarding'
 
 import { DecodedLabel, GlyphText, HackeryButton, useScramble } from './glyph'
+import { HusshOneOnboarding } from './hussh-one'
 import { providerTitle } from './providers'
 
 export function FlowPanel({
@@ -290,6 +291,8 @@ function ConfirmingModelPanel({
           {t.onboarding.change}
         </Button>
       </div>
+
+      <HusshOneOnboarding />
 
       <div
         className={cn(

@@ -4722,6 +4722,41 @@ function sendPowerResume() {
   webContents.send('hermes:power-resume')
 }
 
+async function lockHusshVaultsForSystemEvent() {
+  const requests: Promise<unknown>[] = []
+  const primary = backendConnectionState.getPromise()
+
+  if (primary) {
+    requests.push(
+      primary.then(connection => {
+        if (connection?.mode !== 'local' || !connection.baseUrl || !connection.token) {
+          return null
+        }
+
+        return fetchJson(`${connection.baseUrl}/api/hussh-one/vault/lock`, connection.token, {
+          method: 'POST',
+          timeoutMs: 5_000
+        })
+      })
+    )
+  }
+
+  for (const backend of backendPool.values()) {
+    if (!backend?.port || !backend?.token) {
+      continue
+    }
+
+    requests.push(
+      fetchJson(`http://127.0.0.1:${backend.port}/api/hussh-one/vault/lock`, backend.token, {
+        method: 'POST',
+        timeoutMs: 5_000
+      })
+    )
+  }
+
+  await Promise.allSettled(requests)
+}
+
 let powerResumeRegistered = false
 
 function registerPowerResumeListeners() {
@@ -4736,6 +4771,8 @@ function registerPowerResumeListeners() {
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
+    powerMonitor.on('lock-screen', () => void lockHusshVaultsForSystemEvent())
+    powerMonitor.on('suspend', () => void lockHusshVaultsForSystemEvent())
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.

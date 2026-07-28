@@ -930,6 +930,86 @@ export interface McpOAuthFlow {
   tools?: { name: string; description: string }[]
 }
 
+export interface HusshOneStatus {
+  identity: {
+    connected: boolean
+    environment: string
+    device_id: string | null
+    profile_id: string
+  }
+  vault: {
+    connected: boolean
+    enrolled: boolean
+    unlocked: boolean
+    profile_locked: boolean
+    device_id: string | null
+    profile_id: string
+  }
+  authorization: {
+    status: 'idle' | 'waiting' | 'connected' | 'error'
+    error?: string | null
+  }
+}
+
+export function getHusshOneStatus(): Promise<HusshOneStatus> {
+  return window.hermesDesktop.api<HusshOneStatus>({
+    ...profileScoped(),
+    path: '/api/hussh-one/status'
+  })
+}
+
+export function connectHusshOne(deviceName = 'Hermes on Mac'): Promise<{
+  status: 'waiting'
+  authorization_url: string
+  expires_in: number
+}> {
+  return window.hermesDesktop.api({
+    ...profileScoped(),
+    path: '/api/hussh-one/connect',
+    method: 'POST',
+    body: { device_name: deviceName }
+  })
+}
+
+export function enrollHusshOneVault(passphrase: string): Promise<{
+  enrolled: boolean
+  unlocked: boolean
+  contract_compatible: boolean
+  mcp_configured: boolean
+}> {
+  return window.hermesDesktop.api({
+    ...profileScoped(),
+    path: '/api/hussh-one/vault/enroll',
+    method: 'POST',
+    body: { passphrase },
+    timeoutMs: 60_000
+  })
+}
+
+export function unlockHusshOneVault(): Promise<{ unlocked: boolean }> {
+  return window.hermesDesktop.api({
+    ...profileScoped(),
+    path: '/api/hussh-one/vault/unlock',
+    method: 'POST'
+  })
+}
+
+export function lockHusshOneVault(): Promise<{ locked: boolean }> {
+  return window.hermesDesktop.api({
+    ...profileScoped(),
+    path: '/api/hussh-one/vault/lock',
+    method: 'POST'
+  })
+}
+
+export function disconnectHusshOne(): Promise<{ connected: boolean; revoked: boolean }> {
+  return window.hermesDesktop.api({
+    ...profileScoped(),
+    path: '/api/hussh-one/connection',
+    method: 'DELETE'
+  })
+}
+
 /** Connect to the server, list its tools, disconnect. Slow (spawns/handshakes
  *  for real) — well past the 15s default fetch timeout. */
 export function testMcpServer(name: string): Promise<McpTestResult> {

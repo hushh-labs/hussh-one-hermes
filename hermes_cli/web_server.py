@@ -12175,6 +12175,43 @@ class MCPServersReplace(BaseModel):
     profile: Optional[str] = None
 
 
+class HusshOneConnectRequest(BaseModel):
+    device_name: str = "Hermes on Mac"
+    profile: Optional[str] = None
+
+
+class HusshOneVaultEnrollRequest(BaseModel):
+    passphrase: SecretStr
+    profile: Optional[str] = None
+
+
+_HUSSH_ONE_BRIDGES: Dict[str, Any] = {}
+_HUSSH_ONE_BRIDGES_LOCK = threading.Lock()
+
+
+def _hussh_one_bridge():
+    """Return the process-local bridge for the active Hermes profile."""
+    from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
+
+    profile_home = get_hermes_home().resolve()
+    cache_key = str(profile_home)
+    with _HUSSH_ONE_BRIDGES_LOCK:
+        bridge = _HUSSH_ONE_BRIDGES.get(cache_key)
+        if bridge is None:
+            bridge = HusshVaultBridge(profile_home=profile_home)
+            _HUSSH_ONE_BRIDGES[cache_key] = bridge
+        return bridge
+
+
+def _require_local_hussh_one_request(request: Request) -> None:
+    """Keep identity and vault setup on the trusted workstation."""
+    if not _local_dashboard_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Hussh One trusted-device setup is available only on the local workstation.",
+        )
+
+
 def _normalize_mcp_server_create(
     body: MCPServerCreate,
 ) -> tuple[str, Dict[str, Any], Optional[str]]:
@@ -12326,6 +12363,92 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return _mcp_server_summary(name, server_config)
+
+
+@app.get("/api/hussh-one/status")
+async def hussh_one_status(request: Request, profile: Optional[str] = None):
+    _require_local_hussh_one_request(request)
+    with _config_profile_scope(profile):
+        bridge = _hussh_one_bridge()
+        return {
+            "identity": await run_in_threadpool(bridge.identity_status),
+            "vault": await run_in_threadpool(bridge.vault_status),
+            "authorization": await run_in_threadpool(
+                bridge.identity.authorization_status
+            ),
+        }
+
+
+@app.post("/api/hussh-one/connect")
+async def hussh_one_connect(body: HusshOneConnectRequest, request: Request):
+    _require_local_hussh_one_request(request)
+    try:
+        with _config_profile_scope(body.profile):
+            bridge = _hussh_one_bridge()
+            return await run_in_threadpool(
+                bridge.identity.start_authorization,
+                device_name=body.device_name,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/hussh-one/vault/enroll")
+async def hussh_one_vault_enroll(
+    body: HusshOneVaultEnrollRequest,
+    request: Request,
+):
+    """Unwrap locally; the SecretStr value is never logged or persisted."""
+    from hermes_cli.mcp_config import install_hussh_one_mcp
+
+    _require_local_hussh_one_request(request)
+    try:
+        with _config_profile_scope(body.profile):
+            bridge = _hussh_one_bridge()
+            result = await run_in_threadpool(
+                bridge.enroll_vault,
+                body.passphrase.get_secret_value(),
+            )
+            if not install_hussh_one_mcp():
+                bridge.lock()
+                raise RuntimeError("The local Hussh One MCP configuration was rejected.")
+            return {**result, "mcp_configured": True}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/hussh-one/vault/unlock")
+async def hussh_one_vault_unlock(request: Request, profile: Optional[str] = None):
+    _require_local_hussh_one_request(request)
+    try:
+        with _config_profile_scope(profile):
+            bridge = _hussh_one_bridge()
+            return await run_in_threadpool(bridge.unlock)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/hussh-one/vault/lock")
+async def hussh_one_vault_lock(request: Request, profile: Optional[str] = None):
+    _require_local_hussh_one_request(request)
+    with _config_profile_scope(profile):
+        bridge = _hussh_one_bridge()
+        return await run_in_threadpool(bridge.lock)
+
+
+@app.delete("/api/hussh-one/connection")
+async def hussh_one_disconnect(request: Request, profile: Optional[str] = None):
+    from hermes_cli.mcp_config import remove_hussh_one_mcp
+
+    _require_local_hussh_one_request(request)
+    try:
+        with _config_profile_scope(profile):
+            bridge = _hussh_one_bridge()
+            result = await run_in_threadpool(bridge.revoke_and_disconnect)
+            remove_hussh_one_mcp()
+            return result
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.put("/api/mcp/servers")
