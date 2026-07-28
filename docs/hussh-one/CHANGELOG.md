@@ -82,6 +82,7 @@ GCP project, not a personal subscription token.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `pending` | **Exclusive Gemini authentication.** Native Gemini requests now select exactly one credential form: Vertex mode sends ADC bearer auth only, while AI Studio mode sends the API key only. This removes the Vertex 401 caused by retaining a shared Gemini key for other features. |
 | 2026-07-22 | `b545618a3` | **Vertex request-local routing repair.** Per-request Anthropic calls now retain the provider-aware Vertex client and its project-scoped `rawPredict` endpoint, rather than degrading to a generic Anthropic `/v1/messages` client. Restored the missing adapter/fallback helpers and title-client cache contract exposed by the partial upstream reconciliation. |
 | 2026-07-14 | `d3f9f111f` | **Gemini 3.1 Pro Preview onboarded** end-to-end: native `gemini` provider, `google-gemini-cli`, Vertex ADC (Copilot BYOK), and adaptive thinking (`low`/`medium`/`high`) extended to the full Gemini 3/3.1/3.5 family (was Pro-only `low`/`high`, Flash-only `low`/`medium`/`high` — now unified). Natural-language switch ("switch to gemini 3.1", "gemini 3.1 pro") added to `natural_model_switch.py`. Context window: 2,097,152 in / 65,536 out (live-probed). |
 | 2026-07-07 | `a717f82fb` | Vertex ADC context-window corrections; fixed a bare `SILENT` token leaking to user chat. |
@@ -108,6 +109,7 @@ authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `30fd07202` | **Deterministic launchd onboarding.** Proxy/shim registration now waits for asynchronous bootout, retries launchd EIO handoffs, verifies each registered label, and fails explicitly if both loopback ports do not recover. This prevents setup from silently leaving a live shim backed by a missing proxy. |
 | 2026-07-16 | `41c4ef2ca` | Accept blank or absent Copilot bearer headers only through the loopback-bound compatibility shim, restoring affected VS Code custom endpoints without exposing the proxy remotely. |
 | 2026-07-16 | `100b7e4e6` | Completed the headerless VS Code BYOK fallback path through the local LiteLLM auth shim. |
 | 2026-07-16 | `7ce5060b9` | Corrected VS Code custom-endpoint authentication to use provider-level credentials, preventing malformed/missing Authorization headers. |
@@ -136,6 +138,7 @@ browser chat UI talking to Hermes' OpenAI-compatible API server.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `30fd07202` | **Fresh-device bootstrap resilience.** A missing `pandoc` now remains an optional document-conversion limitation: non-writable or unhealthy Homebrew emits a warning while the pinned Open WebUI runtime, Hussh assets, launcher, and user service continue installing. |
 | 2026-06-24 | `462b804ec` | Render the Features catalog inline in the chat body; dropped the standalone pipe-file approach. |
 | 2026-06-22 | `703b4d3f9` | In-app Features page via an upgrade-safe Open WebUI Pipe Function. |
 | 2026-06-17 | `49e83fdf5` | Polished streaming UX — clean reasoning, ADK-style tool-activity status lines. |
@@ -187,6 +190,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🚀 Onboarding, Bootstrap, Doctor & Deployment
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `pending` | **Canonical-main completion invariant.** Short-lived branches remain mandatory for work, but an update is not complete until its PR is merged, the local checkout is clean and fast-forwarded to `origin/main`, and restart plus final doctor verification run from `main`. |
 | 2026-07-27 | `8ff62b859` | **Single-trunk onboarding contract made agent-visible.** Root agent instructions and the operations runbook now require `origin/main` as the sole Hussh product trunk and `upstream/main` as the stock comparison source; both installers again clone the real `hushh-labs/hussh-one-hermes` repository, with missing Apache SPDX headers repaired. |
 | 2026-07-17 | `040df65d3` | **Managed Open WebUI endpoint discovery.** Supervisor and doctor now read the persisted companion endpoint (or a legacy launcher) before health-checking, so a valid non-default loopback port is monitored and restarted instead of an unrelated process on `:8080`. |
 | 2026-07-17 | `152b1d655` | **Companion services self-heal by default.** Bootstrap now provisions VS Code BYOK only when a supported editor plus Vertex ADC are available, starts the loopback blank-bearer compatibility shim, and installs branded Open WebUI against this checkout's Hermes binary and `HERMES_HOME`. Supervisor/doctor now health-check and restart Open WebUI; stale Google Ads/ADK injected branding was removed. |

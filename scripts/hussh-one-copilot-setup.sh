@@ -510,12 +510,27 @@ bootout_label() {  # tolerant unload (ignore "not loaded")
   local label="$1"
   launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || \
     launchctl unload "$LAUNCHD_DIR/$label.plist" >/dev/null 2>&1 || true
+  # launchd removes jobs asynchronously. Reusing the label immediately can
+  # return EIO or expose a transient registration that disappears moments
+  # later, leaving the shim alive without its proxy.
+  sleep 1
 }
 
 bootstrap_label() {
   local label="$1" plist="$2"
-  launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || \
-    launchctl load "$plist" >/dev/null 2>&1 || true
+  local domain="gui/$(id -u)" attempt
+  for attempt in 1 2 3 4 5; do
+    if launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1; then
+      return 0
+    fi
+    if launchctl print "$domain/$label" >/dev/null 2>&1; then
+      launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+    sleep 1
+  done
+  err "launchd failed to register $label after $attempt attempts"
+  return 1
 }
 
 install_launchd() {
@@ -564,9 +579,13 @@ if [[ "$START_SERVICES" == "1" && "$DRY_RUN" != "1" ]]; then
       nohup_start "$LAUNCHER_SHIM" "$HERMES_HOME/logs/litellm-shim.log"
     fi
     for _ in $(seq 1 30); do
-      if listening "$PROXY_PORT" && listening "$SHIM_PORT"; then break; fi
+      if listening "$PROXY_PORT" && listening "$SHIM_PORT"; then
+        return 0
+      fi
       sleep 1
     done
+    err "proxy and shim did not become healthy after restart"
+    return 1
   }
   nohup_start() {
     local launcher="$1" logf="$2"

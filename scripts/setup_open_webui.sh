@@ -206,7 +206,9 @@ install_macos_dependencies() {
   if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
     if ! command -v pandoc >/dev/null 2>&1; then
       log 'Installing pandoc with Homebrew (recommended by Open WebUI docs)...'
-      brew install pandoc
+      if ! brew install pandoc; then
+        log 'Warning: optional pandoc installation failed; continuing without document conversion support.'
+      fi
     fi
   fi
 }
