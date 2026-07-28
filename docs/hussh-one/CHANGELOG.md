@@ -28,7 +28,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
-| 2026-07-27 | pending | **UAT-only trusted-device PKM bridge.** Added optional PKCE onboarding, Keychain-bound identity and vault-envelope custody, local PKM v6 validation/write support, six-tool additive MCP surface with existing Hermes elicitation, system-lock clearing, and profile-scoped rollback. Developer tokens remain application identity and cannot become `VAULT_OWNER`. |
+| 2026-07-27 | `e2b4231b1` | **UAT-only trusted-device PKM bridge.** Added optional PKCE onboarding, Keychain-bound identity and vault-envelope custody, local PKM v6 validation/write support, six-tool additive MCP surface with existing Hermes elicitation, system-lock clearing, and profile-scoped rollback. Developer tokens remain application identity and cannot become `VAULT_OWNER`. |
 
 📄 Feature page: [trusted-device-pkm.md](./features/trusted-device-pkm.md)
 
