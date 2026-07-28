@@ -144,11 +144,11 @@ def _terminate_child() -> None:
     if child is None or child.poll() is not None:
         return
     try:
-            os.killpg(child.pid, signal.SIGTERM)  # windows-footgun: ok
+        os.killpg(child.pid, signal.SIGTERM)  # windows-footgun: ok
         child.wait(timeout=15)
     except subprocess.TimeoutExpired:
         _log(f"[dashboard-watchdog] child {child.pid} ignored SIGTERM; SIGKILL")
-                os.killpg(child.pid, signal.SIGKILL)  # windows-footgun: ok
+        os.killpg(child.pid, signal.SIGKILL)  # windows-footgun: ok
         child.wait()
     except ProcessLookupError:
         pass
