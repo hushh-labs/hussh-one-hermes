@@ -3947,5 +3947,32 @@ def request_elicitation_consent(
     return "decline"
 
 
+def request_fresh_action_consent(
+    message: str,
+    description: str,
+    *,
+    timeout_seconds: int | None = None,
+    surface: str = "native-action",
+) -> str:
+    """Require a live, one-shot approval for an authority-bearing action.
+
+    YOLO, allowlists, and cron configuration cannot bypass this gate.
+    """
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        return "decline"
+    if not _is_gateway_approval_context():
+        try:
+            if not sys.stdin.isatty():
+                return "decline"
+        except Exception:
+            return "decline"
+    return request_elicitation_consent(
+        message,
+        description,
+        timeout_seconds=timeout_seconds,
+        surface=surface,
+    )
+
+
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()

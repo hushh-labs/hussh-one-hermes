@@ -147,29 +147,44 @@ def _patch_leaf_paths(value: Any, prefix: str = "") -> list[str]:
 
 def _path_descriptors(value: Any, prefix: str = "") -> list[dict[str, Any]]:
     paths: list[dict[str, Any]] = []
+    segment_id = prefix.split(".", 1)[0] if prefix else "root"
     if isinstance(value, dict):
         for key, item in value.items():
             path = f"{prefix}.{key}" if prefix else key
             paths.append({
                 "json_path": path,
                 "parent_path": prefix or None,
-                "path_type": "branch" if isinstance(item, (dict, list)) else "leaf",
-                "exposure_eligibility": True,
-                "source_agent": "hussh_one_hermes",
+                "path_type": (
+                    "array"
+                    if isinstance(item, list)
+                    else "object"
+                    if isinstance(item, dict)
+                    else "leaf"
+                ),
+                "exposure_eligibility": False,
+                "segment_id": path.split(".", 1)[0] or segment_id,
+                "source_agent": "hussh_one_hermes_local_planner",
             })
             paths.extend(_path_descriptors(item, path))
     elif isinstance(value, list):
-        for index, item in enumerate(value):
-            path = f"{prefix}[{index}]"
+        for item in value:
+            path = f"{prefix}._items" if prefix else "_items"
             paths.append({
                 "json_path": path,
                 "parent_path": prefix or None,
-                "path_type": "array_item",
-                "exposure_eligibility": True,
-                "source_agent": "hussh_one_hermes",
+                "path_type": (
+                    "array"
+                    if isinstance(item, list)
+                    else "object"
+                    if isinstance(item, dict)
+                    else "leaf"
+                ),
+                "exposure_eligibility": False,
+                "segment_id": segment_id,
+                "source_agent": "hussh_one_hermes_local_planner",
             })
             paths.extend(_path_descriptors(item, path))
-    return paths
+    return list({item["json_path"]: item for item in paths}.values())
 
 
 def _handle(user_id: str, domain: str, scope: str) -> str:
@@ -248,9 +263,9 @@ class PkmClient:
                     "externalizable_paths": manifest["externalizable_paths"],
                     "summary_projection": manifest["summary_projection"],
                     "confidence": 1.0,
-                    "source_agent": "pkm_structure_agent",
+                    "source_agent": "hussh_one_hermes_local_planner",
                     "writer_id": "hussh_one_hermes",
-                    "structure_agent_id": "pkm_structure_agent",
+                    "structure_agent_id": "hussh_one_hermes_local_planner",
                     "contract_version": 1,
                 },
                 "manifest": manifest,
@@ -429,7 +444,7 @@ class PkmClient:
             },
             "semantic_contract_version": _PKM_CONTRACT_VERSION,
             "writer_id": "hussh_one_hermes",
-            "structure_agent_id": "pkm_structure_agent",
+            "structure_agent_id": "hussh_one_hermes_local_planner",
             "source_revision": int((current or {}).get("content_revision") or 0),
             "confirmation_receipt": {
                 "version": 2,
@@ -512,9 +527,9 @@ class PkmClient:
                     "externalizable_paths": manifest["externalizable_paths"],
                     "summary_projection": manifest["summary_projection"],
                     "confidence": 1.0,
-                    "source_agent": "pkm_structure_agent",
+                    "source_agent": "hussh_one_hermes_local_planner",
                     "writer_id": "hussh_one_hermes",
-                    "structure_agent_id": "pkm_structure_agent",
+                    "structure_agent_id": "hussh_one_hermes_local_planner",
                     "contract_version": 1,
                 },
                 "manifest": manifest,

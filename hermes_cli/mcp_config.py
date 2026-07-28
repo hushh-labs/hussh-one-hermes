@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -115,25 +116,35 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     return True
 
 
-def install_hussh_one_mcp() -> bool:
-    """Install the first-party bridge in the active Hermes profile.
-
-    The config contains only executable metadata. Identity credentials, device
-    keys, vault material, and owner capabilities remain outside MCP config.
-    """
-    return _save_mcp_server(
-        HUSSH_ONE_MCP_SERVER_NAME,
-        {
-            "command": sys.executable,
-            "args": ["-m", "hermes_cli.hussh_one_pkm.mcp_server"],
-            "enabled": True,
-            "tools": list(HUSSH_ONE_MCP_TOOLS),
-        },
+def _is_first_party_hussh_one_mcp(entry: object) -> bool:
+    """Recognize only the legacy first-party bridge registration."""
+    if not isinstance(entry, dict):
+        return False
+    return (
+        entry.get("args") == ["-m", "hermes_cli.hussh_one_pkm.mcp_server"]
+        and entry.get("enabled") is True
+        and entry.get("tools") == HUSSH_ONE_MCP_TOOLS
+        and Path(str(entry.get("command") or "")).name.startswith("python")
     )
 
 
+def migrate_hussh_one_native_connector() -> bool:
+    """Remove only the exact legacy first-party local MCP entry."""
+    config = load_config()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return False
+    if not _is_first_party_hussh_one_mcp(servers.get(HUSSH_ONE_MCP_SERVER_NAME)):
+        return False
+    del servers[HUSSH_ONE_MCP_SERVER_NAME]
+    if not servers:
+        config.pop("mcp_servers", None)
+    save_config(config)
+    return True
+
+
 def remove_hussh_one_mcp() -> bool:
-    return _remove_mcp_server(HUSSH_ONE_MCP_SERVER_NAME)
+    return migrate_hussh_one_native_connector()
 
 
 def _remove_mcp_server(name: str) -> bool:
