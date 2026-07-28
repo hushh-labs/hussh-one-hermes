@@ -1019,7 +1019,6 @@ class GeminiNativeClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "x-goog-api-key": self.api_key,
             # Include Hermes client context following Gemini's partner
             # integration guidance.
             # See https://ai.google.dev/gemini-api/docs/partner-integration
@@ -1027,6 +1026,11 @@ class GeminiNativeClient:
             "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
         }
         if self._use_vertex:
+            # Vertex rejects requests carrying both an OAuth bearer token and
+            # an API key with 401 "Expected only one form of authentication."
+            # A GOOGLE_API_KEY may legitimately remain in the shared Hermes
+            # .env for AI Studio/TTS while this client is explicitly routed
+            # through Vertex, so auth selection must be exclusive here.
             headers["Authorization"] = f"Bearer {self._vertex_access_token()}"
         else:
             headers["x-goog-api-key"] = self.api_key

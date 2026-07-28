@@ -71,6 +71,26 @@ preserved forever in the tag `safety/hussh-one-hermes-20260607-232148`.
    difference must be either a small overlay at the boundary above or a
    documented, tested exception; it is never a reason to freeze upstream.
 
+### End-of-work invariant
+
+Short-lived branches are workspaces, never runtime destinations. Before
+declaring any update, repair, or feature complete, the change must be committed,
+pushed, merged into `origin/main`, and the local checkout returned to a clean,
+fast-forwarded `main`. Restart and final service verification must run from that
+canonical `main` checkout. A pushed branch or open PR alone is not a completed
+Hussh One deployment.
+
+Required final check:
+
+```bash
+git switch main
+git pull --ff-only origin main
+test "$(git branch --show-current)" = main
+test -z "$(git status --porcelain)"
+scripts/hussh-one-supervisor.sh restart --manager auto --clean-conflicts
+scripts/hussh-one-doctor.sh --require-services
+```
+
 ## Remotes & Sync State (quick check)
 
 ```bash

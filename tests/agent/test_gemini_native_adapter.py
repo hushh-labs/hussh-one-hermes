@@ -321,6 +321,32 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+def test_vertex_client_uses_bearer_auth_without_api_key(monkeypatch):
+    """Vertex and AI Studio credentials must never share one request."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+    monkeypatch.setattr(
+        GeminiNativeClient,
+        "_initialize_vertex_auth",
+        lambda self: setattr(self, "_vertex_credentials", object()),
+    )
+    monkeypatch.setattr(
+        GeminiNativeClient,
+        "_vertex_access_token",
+        lambda self: "vertex-access-token",
+    )
+
+    client = GeminiNativeClient(
+        api_key="AIza-key-retained-for-other-features",
+        http_client=SimpleNamespace(close=lambda: None),
+    )
+    headers = client._headers()
+
+    assert headers["Authorization"] == "Bearer vertex-access-token"
+    assert "x-goog-api-key" not in headers
+
+
 @pytest.mark.parametrize("model, expected", [
     ("google/gemini-2.0-flash", "gemini-2.0-flash"),
     ("gemini/gemini-3-pro-preview", "gemini-3-pro-preview"),
