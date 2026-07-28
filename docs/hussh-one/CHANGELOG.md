@@ -28,6 +28,7 @@ Baileys bridge, with owner-only triggering and sandboxed social-group capsules.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-27 | `7f97ac21a` | **Owner-directed WhatsApp media and response controls.** Added the `@none` opt-out prefix, native GIF playback, and the associated Open WebUI latency improvements while preserving the single canonical delivery boundary. |
 | 2026-07-22 | `32169ced6` | **One canonical outgoing WhatsApp header.** The Python delivery boundary now normalizes gateway replies, direct sends, cron delivery, and media captions idempotently; it preserves the selected `[S]` Vertex/route identity, removes model-echoed duplicate headers, and keeps the Node bridge transport-only with no fallback prefix. |
 | 2026-07-17 | `6346c137a` | Corrected the supervisor's WhatsApp health/status default from the obsolete `:3000` to the bridge's canonical `:8473`, so it now monitors the live connected service. |
 | 2026-07-17 | `08d8eef31` | **Self-chat JID/LID bridge fix.** Pure, Node-tested incoming self-chat classification now accepts the owner's linked-device identifiers without weakening capsule triggers, isolated memory, or the gateway's single canonical outgoing header. |
@@ -153,6 +154,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🔀 Natural-Language Model Switching & Cron
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-27 | `1d1c6369c` | **Explicit TUI model identity repaired.** Natural-language and `/model` switches now commit `[S]` provenance before persistence and `session.info`, retain it across resume, clear it on `/new`, and narrowly recognize the observed `gmeini` typo without broad fuzzy control matching. |
 | 2026-07-23 | `8b8fe757d` | **Gemini 3.6 Flash is now Hussh One's native default** for new chats, automatic low-complexity routes, and unqualified WhatsApp headers; explicit Gemini 3.5 selections remain available. Bootstrap also enables Hermes' bundled, bounded no-key DDGS provider so `web_search` is usable on a fresh install instead of being silently omitted for lack of a configured backend. |
 | 2026-06-24 | `e374e89e5` | Per-job `max_iterations` + graceful iteration-cap delivery for cron. |
 | 2026-05-30 | `fa2ffdd19` | `/model auto\|reset\|clear\|default` restores auto-routing from any messaging platform. |
@@ -165,6 +167,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🚀 Onboarding, Bootstrap, Doctor & Deployment
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-27 | `8ff62b859` | **Single-trunk onboarding contract made agent-visible.** Root agent instructions and the operations runbook now require `origin/main` as the sole Hussh product trunk and `upstream/main` as the stock comparison source; both installers again clone the real `hushh-labs/hussh-one-hermes` repository, with missing Apache SPDX headers repaired. |
 | 2026-07-17 | `040df65d3` | **Managed Open WebUI endpoint discovery.** Supervisor and doctor now read the persisted companion endpoint (or a legacy launcher) before health-checking, so a valid non-default loopback port is monitored and restarted instead of an unrelated process on `:8080`. |
 | 2026-07-17 | `152b1d655` | **Companion services self-heal by default.** Bootstrap now provisions VS Code BYOK only when a supported editor plus Vertex ADC are available, starts the loopback blank-bearer compatibility shim, and installs branded Open WebUI against this checkout's Hermes binary and `HERMES_HOME`. Supervisor/doctor now health-check and restart Open WebUI; stale Google Ads/ADK injected branding was removed. |
 | 2026-06-27 | `1810e8836` | Bootstrap now sets robust platform-specific config defaults. |
