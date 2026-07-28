@@ -42,6 +42,45 @@ git switch main
 scripts/hussh-one-bootstrap.sh --manager auto --start
 ```
 
+## Canonical branch and clone contract
+
+Hussh One has one product trunk:
+
+- `origin/main` is the Hussh One distribution, the GitHub default branch, the
+  installer default, and the only long-lived runtime branch.
+- `upstream/main` is the untouched Nous Research source used for comparison and
+  reconciliation. It is not a deployment branch.
+- `sync/upstream-*` and `fix/*` branches are temporary. They merge back into
+  `main` and are deleted.
+
+Do not create a parallel `home` or `hussh-one-hermes` trunk. That layout was
+previously retired after features drifted between two branches. The root
+`AGENTS.md` carries this rule so coding agents see it before making changes.
+
+Fresh clones land on Hussh One automatically because GitHub's default branch is
+`main`, and the bundled POSIX and PowerShell installers explicitly clone
+`hushh-labs/hussh-one-hermes.git` at `main`:
+
+```bash
+git clone https://github.com/hushh-labs/hussh-one-hermes.git
+cd hussh-one-hermes
+git branch --show-current             # main
+git remote get-url origin             # hushh-labs/hussh-one-hermes
+```
+
+For a stock side-by-side checkout, use a detached worktree instead of another
+product branch:
+
+```bash
+git fetch upstream main
+git worktree add --detach ../hermes-stock upstream/main
+git -C ../hermes-stock status --short --branch
+```
+
+This keeps stock Hermes runnable and diffable without allowing it to receive
+Hussh commits. Remove it with
+`git worktree remove ../hermes-stock` when the comparison is complete.
+
 > The bootstrap's `set_config_defaults()` also seeds the OOM-safe compression
 > tuning (`compression.threshold=0.35`, `compression.hygiene_hard_message_limit=250`).
 > See [Crash resilience](./crash-resilience.md). Optionally cap dashboard memory
@@ -108,6 +147,8 @@ resuming work on one after a gap:
 
 1. **Confirm remotes + branch.** `git remote -v` → `origin` = `hushh-labs/hussh-one-hermes`,
    `upstream` = `NousResearch/hermes-agent`; `git branch --show-current` → `main`.
+   If the active branch is not `main`, read root `AGENTS.md` before changing or
+   launching the runtime; only a short-lived branch based on `main` is valid.
 2. **Check upstream drift** (informational, don't merge yet):
    `git fetch upstream --quiet && git rev-list --left-right --count HEAD...upstream/main`.
    Large drift (500+) → read [`upgrading.md`](./upgrading.md) and the

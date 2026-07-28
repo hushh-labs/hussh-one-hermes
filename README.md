@@ -31,7 +31,11 @@ scripts/hussh-one-bootstrap.sh --manager auto --start
 scripts/hussh-one-doctor.sh --require-services
 ```
 
-Keep `upstream` pointed at `https://github.com/NousResearch/hermes-agent.git` and merge official Hermes updates into `hussh-one-hermes`. See `docs/hussh-one-deployment.md` and `docs/hussh-one-upstream-maintenance.md`.
+Keep `upstream` pointed at `https://github.com/NousResearch/hermes-agent.git`.
+`upstream/main` is the stock comparison source; reconcile it on a temporary
+`sync/upstream-*` branch and merge the verified result into the single Hussh
+product trunk, `main`. Do not create a second long-lived product branch. See
+`docs/hussh-one-deployment.md` and `docs/hussh-one-upstream-maintenance.md`.
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>

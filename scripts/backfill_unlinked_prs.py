@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """ id: backfill_unlinked_prs.py
 
 Idempotent, highly structured, and production-grade script to backfill

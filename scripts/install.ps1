@@ -136,8 +136,8 @@ foreach ($tmpVar in @('TEMP', 'TMP')) {
 # Configuration
 # ============================================================================
 
-$RepoUrlSsh = "git@github.com:hushh-labs/hussh-one.git"
-$RepoUrlHttps = "https://github.com/hushh-labs/hussh-one.git"
+$RepoUrlSsh = "git@github.com:hushh-labs/hussh-one-hermes.git"
+$RepoUrlHttps = "https://github.com/hushh-labs/hussh-one-hermes.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
 # available, in preference order.  uv discovers both uv-managed and system

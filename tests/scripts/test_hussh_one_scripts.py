@@ -388,3 +388,15 @@ def test_doctor_checks_clone_health_surfaces():
     assert "check_open_webui_health" in text
     assert "read_open_webui_setting" in text
     assert "loopback compatibility mode accepts missing or blank-bearer" in text
+
+
+def test_installers_clone_canonical_hussh_one_repository():
+    shell = (ROOT / "scripts/install.sh").read_text(encoding="utf-8")
+    powershell = (ROOT / "scripts/install.ps1").read_text(encoding="utf-8")
+
+    expected = "github.com/hushh-labs/hussh-one-hermes.git"
+    stale = "github.com/hushh-labs/hussh-one.git"
+    assert expected in shell
+    assert expected in powershell
+    assert stale not in shell
+    assert stale not in powershell

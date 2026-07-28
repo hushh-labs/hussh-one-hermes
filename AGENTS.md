@@ -4,6 +4,29 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Hussh One Branch Contract
+
+This checkout is the Hussh One distribution when `origin` points to
+`hushh-labs/hussh-one-hermes`.
+
+- `origin/main` is the single Hussh One product trunk and the default install
+  branch.
+- `upstream/main` is the untouched Nous Research comparison source. Inspect it
+  directly or in a separate worktree; never turn it into a second product
+  trunk.
+- Reconcile upstream on short-lived `sync/upstream-*` branches, verify the
+  Hussh guard and runtime smoke tests, then merge back to `main` and delete the
+  sync branch.
+- Feature and fix branches must start from `main` and return to `main`. Do not
+  create a long-lived `home`, `hussh-one-hermes`, or other parallel trunk.
+- Before changing or launching Hussh One, verify `git remote get-url origin`
+  and `git branch --show-current`. A checkout on `upstream/main` is stock
+  Hermes, not the Hussh One runtime.
+
+The historical two-trunk layout already split Hussh features across branches.
+The full recovery rationale and upgrade procedure are in
+`docs/hussh-one-upstream-maintenance.md`.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

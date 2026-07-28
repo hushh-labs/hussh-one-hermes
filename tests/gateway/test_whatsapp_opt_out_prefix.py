@@ -1,4 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 from unittest.mock import AsyncMock
+
 from gateway.config import Platform, PlatformConfig
 
 
