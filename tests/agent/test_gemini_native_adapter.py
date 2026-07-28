@@ -166,6 +166,48 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     assert roles == ["user", "model"], roles
 
 
+def test_content_filter_closure_separates_next_user_from_function_response():
+    """Reproduce the consent-export refusal followed by another user turn."""
+    from agent.conversation_loop import _append_content_policy_closure
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "decrypt the export"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path": "decrypt.py"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "source code",
+        },
+    ]
+    _append_content_policy_closure(messages, "The model declined this request.")
+    messages.append({"role": "user", "content": "Can we now decrypt it?"})
+
+    contents, _ = _build_gemini_contents(messages)
+
+    assert [content["role"] for content in contents] == [
+        "user",
+        "model",
+        "user",
+        "model",
+        "user",
+    ]
+    assert [next(iter(part)) for part in contents[-1]["parts"]] == ["text"]
+
+
 def test_build_native_request_strips_json_schema_only_fields_from_tool_parameters():
     from agent.gemini_native_adapter import build_gemini_request
 

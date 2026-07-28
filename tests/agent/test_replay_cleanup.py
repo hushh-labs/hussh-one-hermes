@@ -7,6 +7,7 @@ because the dangling tool-call tail was replayed on every resume).
 """
 
 from agent.replay_cleanup import (
+    close_completed_tool_sequences_before_user,
     is_interrupted_tool_result,
     strip_dangling_tool_call_tail,
     strip_interrupted_tool_tails,
@@ -95,6 +96,38 @@ def test_strip_dangling_tool_call_tail_preserves_answered_pair():
     history = [_user("hi"), _assistant_tc("read_file"), _tool("contents")]
     out = strip_dangling_tool_call_tail(history)
     assert out == history  # answered -> untouched
+
+
+def test_close_completed_tool_sequence_before_later_user():
+    history = [
+        _user("decrypt"),
+        _assistant_tc("read_file"),
+        _tool("source"),
+        _user("can we now decrypt"),
+    ]
+
+    out = close_completed_tool_sequences_before_user(history)
+
+    assert [message["role"] for message in out] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert "final assistant response was not recorded" in out[-2]["content"]
+
+
+def test_close_completed_tool_sequence_preserves_normal_completion():
+    history = [
+        _user("decrypt"),
+        _assistant_tc("read_file"),
+        _tool("source"),
+        {"role": "assistant", "content": "done"},
+        _user("thanks"),
+    ]
+
+    assert close_completed_tool_sequences_before_user(history) is history
 
 
 def test_strip_interrupted_tool_tails_removes_interrupted_read_only_block():

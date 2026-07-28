@@ -559,6 +559,35 @@ def _content_policy_blocked_result(
     }
 
 
+def _append_content_policy_closure(
+    messages: List[Dict],
+    final_response: str,
+) -> None:
+    """Close a terminal refusal as a real assistant turn.
+
+    A refusal can arrive immediately after a tool result. If Hermes returns the
+    refusal to the UI without adding an assistant message, the next human input
+    follows ``assistant(functionCall) -> tool(functionResponse)`` directly.
+    Gemini 3.6 then merges that unrelated text into the function-response turn
+    and rejects the request as an unsupported model-prefill continuation.
+
+    Persist the exact user-visible refusal as the assistant closure. This is
+    truthful, provider-neutral, and restores the same role contract as every
+    normal terminal response.
+    """
+    if (
+        messages
+        and messages[-1].get("role") == "assistant"
+        and messages[-1].get("content") == final_response
+    ):
+        return
+    messages.append({
+        "role": "assistant",
+        "content": final_response,
+        "finish_reason": "content_filter",
+    })
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -1873,6 +1902,7 @@ def run_conversation(
                         f"{_CONTENT_POLICY_RECOVERY_HINT}"
                     )
 
+                    _append_content_policy_closure(messages, _refusal_response)
                     agent._cleanup_task_resources(effective_task_id)
                     agent._persist_session(messages, conversation_history)
                     return _content_policy_blocked_result(
@@ -4068,6 +4098,15 @@ def run_conversation(
                             force=True,
                         )
                     logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    _policy_response = None
+                    if classified.reason == FailoverReason.content_policy_blocked:
+                        _policy_response = (
+                            "⚠️  The model provider's safety filter blocked this request "
+                            "(not a Hermes/gateway failure).\n\n"
+                            f"Provider message: {_nonretryable_summary}\n\n"
+                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                        )
+                        _append_content_policy_closure(messages, _policy_response)
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the
@@ -4081,13 +4120,7 @@ def run_conversation(
                         )
                     else:
                         agent._persist_session(messages, conversation_history)
-                    if classified.reason == FailoverReason.content_policy_blocked:
-                        _policy_response = (
-                            "⚠️  The model provider's safety filter blocked this request "
-                            "(not a Hermes/gateway failure).\n\n"
-                            f"Provider message: {_nonretryable_summary}\n\n"
-                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
-                        )
+                    if _policy_response is not None:
                         return _content_policy_blocked_result(
                             messages,
                             api_call_count,

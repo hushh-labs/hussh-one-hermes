@@ -6073,6 +6073,14 @@ class TestRetryExhaustion:
         assert "content_policy_blocked" in result.get("error", "")
         # The model's refusal text is surfaced to the user, not swallowed.
         assert "I won't help with that." in (result.get("final_response") or "")
+        # A refusal is a terminal assistant response, including when it follows
+        # a tool result. Persisting that closure prevents the next user input
+        # from being merged into Gemini's functionResponse turn.
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": result["final_response"],
+            "finish_reason": "content_filter",
+        }
         # Crucial regression guard: a deterministic refusal is NOT retried —
         # exactly one API call, no empty-response retry loop.
         assert agent.client.chat.completions.create.call_count == 1

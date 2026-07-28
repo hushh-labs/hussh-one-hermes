@@ -30,6 +30,10 @@ _SIDE_EFFECT_RECOVERY_CLOSURE = (
     "[Recovery: the interrupted tool sequence is closed. Its side effects remain "
     "UNKNOWN; inspect current state before retrying the action.]"
 )
+_MISSING_FINAL_RESPONSE_CLOSURE = (
+    "[Recovery: the previous tool sequence completed but its final assistant "
+    "response was not recorded. Continue from the recorded tool results.]"
+)
 
 
 def is_interrupted_tool_result(content: Any) -> bool:
@@ -204,6 +208,48 @@ def strip_dangling_tool_call_tail(
     return agent_history[:-1]
 
 
+def close_completed_tool_sequences_before_user(
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Close persisted ``assistant→tool→user`` sequences before replay.
+
+    This malformed shape occurs when a provider returns a terminal refusal or
+    the process exits after a tool result but before the final assistant
+    message is persisted. Gemini merges the following user text into the
+    functionResponse content and Gemini 3.6 rejects the request. Insert one
+    explicit recovery closure only when the tool row is backed by a preceding
+    assistant tool-call block.
+    """
+    if not agent_history:
+        return agent_history
+
+    cleaned: List[Dict[str, Any]] = []
+    changed = False
+    for message in agent_history:
+        if message.get("role") == "user" and cleaned and cleaned[-1].get("role") == "tool":
+            cursor = len(cleaned) - 1
+            while cursor >= 0 and cleaned[cursor].get("role") == "tool":
+                cursor -= 1
+            if (
+                cursor >= 0
+                and cleaned[cursor].get("role") == "assistant"
+                and cleaned[cursor].get("tool_calls")
+            ):
+                cleaned.append({
+                    "role": "assistant",
+                    "content": _MISSING_FINAL_RESPONSE_CLOSURE,
+                })
+                changed = True
+        cleaned.append(message)
+
+    if changed:
+        logger.warning(
+            "Closed completed tool sequence(s) missing a final assistant response"
+        )
+        return cleaned
+    return agent_history
+
+
 def sanitize_replay_history(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -216,7 +262,9 @@ def sanitize_replay_history(
     """
     if not agent_history:
         return agent_history
-    return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
+    cleaned = strip_interrupted_tool_tails(agent_history)
+    cleaned = close_completed_tool_sequences_before_user(cleaned)
+    return strip_dangling_tool_call_tail(cleaned)
 
 
 # ──────────────────────────────────────────────────────────────────────
