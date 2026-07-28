@@ -13,6 +13,10 @@ Not everyone lives in a terminal or WhatsApp. Open WebUI gives Hussh One a mobil
   - `GET /v1/runs/{id}` + `/v1/runs/{id}/events` — structured lifecycle events.
   - `GET /health` · `/health/detailed` — cross-container probes.
 - **`scripts/setup_open_webui.sh`** — idempotent bootstrap: seeds `~/.hermes/.env`, installs Open WebUI into a venv, writes a launcher, and optionally installs a user service (launchd / systemd `--user`).
+- **Optional document conversion** — on macOS the bootstrap attempts to install
+  `pandoc` when Homebrew is available. A missing or non-writable Homebrew
+  installation now produces a warning and continues, so the core browser chat
+  and service setup remain available on a fresh device.
 - **Streaming polish** — `_sanitize_reasoning_chunk()` cleans `<thinking>`/`<reasoning>` wrappers for GUI rendering; `_tool_status_description()` produces ADK-style human status lines ("Searching files…") instead of raw tool names; SSE token batching + error handling tuned for Open WebUI throughput.
 
 ## Config knobs (env, via setup script)

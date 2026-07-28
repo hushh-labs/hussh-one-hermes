@@ -108,6 +108,7 @@ authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `pending` | **Deterministic launchd onboarding.** Proxy/shim registration now waits for asynchronous bootout, retries launchd EIO handoffs, verifies each registered label, and fails explicitly if both loopback ports do not recover. This prevents setup from silently leaving a live shim backed by a missing proxy. |
 | 2026-07-16 | `41c4ef2ca` | Accept blank or absent Copilot bearer headers only through the loopback-bound compatibility shim, restoring affected VS Code custom endpoints without exposing the proxy remotely. |
 | 2026-07-16 | `100b7e4e6` | Completed the headerless VS Code BYOK fallback path through the local LiteLLM auth shim. |
 | 2026-07-16 | `7ce5060b9` | Corrected VS Code custom-endpoint authentication to use provider-level credentials, preventing malformed/missing Authorization headers. |
@@ -136,6 +137,7 @@ browser chat UI talking to Hermes' OpenAI-compatible API server.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `pending` | **Fresh-device bootstrap resilience.** A missing `pandoc` now remains an optional document-conversion limitation: non-writable or unhealthy Homebrew emits a warning while the pinned Open WebUI runtime, Hussh assets, launcher, and user service continue installing. |
 | 2026-06-24 | `462b804ec` | Render the Features catalog inline in the chat body; dropped the standalone pipe-file approach. |
 | 2026-06-22 | `703b4d3f9` | In-app Features page via an upgrade-safe Open WebUI Pipe Function. |
 | 2026-06-17 | `49e83fdf5` | Polished streaming UX — clean reasoning, ADK-style tool-activity status lines. |

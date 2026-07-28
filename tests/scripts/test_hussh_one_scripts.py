@@ -142,6 +142,17 @@ def test_bootstrap_auto_provisions_companions_only_when_prerequisites_exist():
     assert 'OPEN_WEBUI_ENABLE_SERVICE=auto' in text
 
 
+def test_copilot_launchd_registration_is_verified_and_retried():
+    text = (ROOT / "scripts/hussh-one-copilot-setup.sh").read_text(encoding="utf-8")
+
+    assert "for attempt in 1 2 3 4 5; do" in text
+    assert 'if launchctl bootstrap "$domain" "$plist"' in text
+    assert 'launchctl print "$domain/$label"' in text
+    assert "launchd removes jobs asynchronously" in text
+    assert "launchd failed to register $label after $attempt attempts" in text
+    assert "proxy and shim did not become healthy after restart" in text
+
+
 def test_bootstrap_skips_copilot_without_adc_but_keeps_setup_nonfatal(tmp_path):
     home = tmp_path / "home"
     (home / "Library/Application Support/Code/User").mkdir(parents=True)
@@ -214,6 +225,8 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert "python3.11 -c" in text
     assert '"$OPEN_WEBUI_VENV/bin/python" -c' in text
     assert "A runnable Python 3.11 or 3.12 interpreter is required." in text
+    assert "if ! brew install pandoc; then" in text
+    assert "optional pandoc installation failed; continuing" in text
     for performance_default in (
         "export ENABLE_BASE_MODELS_CACHE=True",
         "export MODELS_CACHE_TTL=",
