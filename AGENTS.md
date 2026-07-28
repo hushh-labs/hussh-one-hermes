@@ -19,6 +19,10 @@ This checkout is the Hussh One distribution when `origin` points to
   sync branch.
 - Feature and fix branches must start from `main` and return to `main`. Do not
   create a long-lived `home`, `hussh-one-hermes`, or other parallel trunk.
+- End-of-work is not complete on a feature or sync branch. After verification,
+  merge into `origin/main`, delete the temporary branch, switch back to local
+  `main`, fast-forward it to `origin/main`, and confirm the worktree is clean
+  before restarting or handing off the Hussh One runtime.
 - Before changing or launching Hussh One, verify `git remote get-url origin`
   and `git branch --show-current`. A checkout on `upstream/main` is stock
   Hermes, not the Hussh One runtime.

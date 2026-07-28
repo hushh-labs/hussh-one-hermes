@@ -740,6 +740,159 @@ class TestToolHandler:
             _servers.pop("test_srv", None)
 
     @pytest.mark.parametrize(
+        "server_name",
+        ["hushh-consent", "hussh_consent"],
+    )
+    def test_model_supplied_consent_connector_key_never_crosses_mcp(
+        self,
+        server_name,
+    ):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        server = _make_mock_server(server_name, session=mock_session)
+        _servers[server_name] = server
+
+        try:
+            handler = _make_tool_handler(server_name, "request-consent", 120)
+            result = json.loads(
+                handler(
+                    {
+                        "user_identifier": "person@example.com",
+                        "scope": "attr.financial.portfolio.*",
+                        "purpose": "Review the approved portfolio.",
+                        "connector_public_key": "model-generated-public-key",
+                        "connector_key_id": "model-generated-key-id",
+                        "connector_wrapping_alg": "X25519-AES256-GCM",
+                    }
+                )
+            )
+
+            assert result["error"]["status"] == "connector_setup_required"
+            assert result["error"]["recoverable"] is False
+            assert "trusted Hushh connector" in result["error"]["user_message"]
+            mock_session.call_tool.assert_not_called()
+        finally:
+            _servers.pop(server_name, None)
+
+    def test_registered_consent_connector_without_key_arguments_passes_through(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        server_name = "hushh-consent"
+        arguments = {
+            "user_identifier": "person@example.com",
+            "scope": "attr.financial.portfolio.*",
+            "purpose": "Review the approved portfolio.",
+        }
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(
+                json.dumps({"status": "pending", "request_ref": "opaque-request"}),
+                is_error=False,
+            )
+        )
+        server = _make_mock_server(server_name, session=mock_session)
+        _servers[server_name] = server
+
+        try:
+            handler = _make_tool_handler(server_name, "request-consent", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler(arguments))
+
+            assert json.loads(result["result"])["status"] == "pending"
+            mock_session.call_tool.assert_called_once_with(
+                "request-consent",
+                arguments=arguments,
+            )
+        finally:
+            _servers.pop(server_name, None)
+
+    def test_hosted_consent_request_gets_device_binding_after_model_validation(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        server_name = "hushh-consent"
+        arguments = {
+            "user_identifier": "person@example.com",
+            "scope": "attr.financial.portfolio.*",
+            "purpose": "Review the approved portfolio.",
+        }
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(
+                json.dumps({"status": "pending", "request_ref": "opaque-request"}),
+                is_error=False,
+            )
+        )
+        server = _make_mock_server(server_name, session=mock_session)
+        server._config = {"url": "https://api.uat.hushh.ai/mcp/"}
+        _servers[server_name] = server
+
+        try:
+            handler = _make_tool_handler(server_name, "request-consent", 120)
+            with (
+                patch(
+                    "hermes_cli.hussh_consent_connector._load_or_create_keypair",
+                    return_value=(object(), "device-public-key", "device-key-id"),
+                ),
+                self._patch_mcp_loop(),
+            ):
+                result = json.loads(handler(arguments))
+
+            assert json.loads(result["result"])["status"] == "pending"
+            mock_session.call_tool.assert_called_once_with(
+                "request-consent",
+                arguments={
+                    **arguments,
+                    "connector_public_key": "device-public-key",
+                    "connector_key_id": "device-key-id",
+                    "connector_wrapping_alg": "X25519-AES256-GCM",
+                },
+            )
+            assert set(arguments) == {"user_identifier", "scope", "purpose"}
+        finally:
+            _servers.pop(server_name, None)
+
+    def test_connector_required_error_is_terminal_and_user_safe(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        server_name = "hushh-consent"
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(
+                json.dumps(
+                    {
+                        "error_code": "CONNECTOR_KEY_REQUIRED",
+                        "message": "backend implementation detail",
+                    }
+                ),
+                is_error=True,
+            )
+        )
+        server = _make_mock_server(server_name, session=mock_session)
+        _servers[server_name] = server
+
+        try:
+            handler = _make_tool_handler(server_name, "request-consent", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(
+                    handler(
+                        {
+                            "user_identifier": "person@example.com",
+                            "scope": "attr.financial.portfolio.*",
+                            "purpose": "Review the approved portfolio.",
+                        }
+                    )
+                )
+
+            assert result["error"]["status"] == "connector_setup_required"
+            assert result["error"]["recoverable"] is False
+            assert "backend implementation detail" not in json.dumps(result)
+            assert "Do not retry" in result["error"]["agent_action"]
+            mock_session.call_tool.assert_called_once()
+        finally:
+            _servers.pop(server_name, None)
+
+    @pytest.mark.parametrize(
         ("server_name", "tool_name"),
         [
             ("hushh-consent", "get_encrypted_scoped_export"),
@@ -839,6 +992,61 @@ class TestToolHandler:
             )
             assert lease_path.is_file()
             assert lease_path.stat().st_mode & 0o777 == 0o600
+        finally:
+            reset_hermes_home_override(token)
+            _servers.pop(server_name, None)
+
+    def test_hosted_encrypted_export_is_decrypted_into_one_time_lease(
+        self,
+        tmp_path,
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        remote_export = json.dumps({
+            "status": "success",
+            "delivery": "encrypted_inline",
+            "expected_scope": "attr.financial.portfolio.*",
+            "granted_scope": "attr.financial.portfolio.*",
+            "ciphertext": "protected-ciphertext",
+            "crypto": {"export_envelope": {}, "wrapped_key_bundle": {}},
+        })
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result(remote_export, is_error=False)
+        )
+        server_name = "hushh-consent"
+        server = _make_mock_server(server_name, session=mock_session)
+        server._config = {"url": "https://api.uat.hushh.ai/mcp/"}
+        _servers[server_name] = server
+        token = set_hermes_home_override(tmp_path)
+
+        try:
+            handler = _make_tool_handler(
+                server_name,
+                "get-encrypted-scoped-export",
+                120,
+            )
+            with (
+                patch(
+                    "hermes_cli.hussh_consent_connector._decrypt_export",
+                    return_value={
+                        "financial": {"portfolio": {"total_value": 125000}}
+                    },
+                ) as decrypt,
+                self._patch_mcp_loop(),
+            ):
+                raw_result = handler({
+                    "grant_ref": "opaque-grant",
+                    "expected_scope": "attr.financial.portfolio.*",
+                })
+
+            assert "protected-ciphertext" not in raw_result
+            assert "125000" not in raw_result
+            receipt = json.loads(json.loads(raw_result)["result"])
+            assert receipt["status"] == "decrypted_export_ready"
+            assert receipt["delivery"] == "trusted_local_one_time_lease"
+            decrypt.assert_called_once()
         finally:
             reset_hermes_home_override(token)
             _servers.pop(server_name, None)

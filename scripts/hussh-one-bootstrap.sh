@@ -273,6 +273,32 @@ configure_hussh_persona() {
   warn "Preserving a customized SOUL.md; merge the canonical Hussh One persona manually if desired"
 }
 
+configure_hussh_consent_connector() {
+  local hermes token
+  hermes="$(hermes_bin)"
+
+  # Keep the hosted streamable MCP as the lifecycle source of truth. Hermes'
+  # transport boundary owns the local X25519 identity and decrypts approved
+  # envelopes into one-time leases; config contains neither token nor key.
+  run_cmd "$hermes" mcp remove hushh_consent >/dev/null 2>&1 || true
+  run_cmd "$hermes" config set --force \
+    mcp_servers.hushh_consent.url "https://api.uat.hushh.ai/mcp/"
+  run_cmd "$hermes" config set --force \
+    mcp_servers.hushh_consent.headers.Authorization \
+    'Bearer ${HUSHH_CONSENT_MCP_TOKEN}'
+
+  if command -v codex >/dev/null 2>&1; then
+    run_cmd codex mcp remove hushh_consent >/dev/null 2>&1 || true
+    run_cmd codex mcp add hushh_consent \
+      --url "https://api.uat.hushh.ai/mcp/" \
+      --bearer-token-env-var HUSHH_CONSENT_MCP_TOKEN
+    token="$(env_value HUSHH_CONSENT_MCP_TOKEN)"
+    if [[ -n "$token" && "$(uname -s)" == "Darwin" ]]; then
+      run_cmd launchctl setenv HUSHH_CONSENT_MCP_TOKEN "$token"
+    fi
+  fi
+}
+
 env_value() {
   local key="$1"
   local file="$HERMES_HOME/.env"
@@ -463,6 +489,7 @@ install_managed_doctor
 build_assets
 set_config_defaults
 configure_hussh_persona
+configure_hussh_consent_connector
 check_gcp_adc
 check_whatsapp_pairing
 setup_copilot_byok

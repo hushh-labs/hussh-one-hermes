@@ -32,15 +32,22 @@ exports produce no lease. Oversized exports require a narrower scope.
 
 ## Connector modes
 
-The hosted HTTPS connector supports lifecycle management and encrypted
-delivery. It cannot provide model-consumable plaintext because the model is
-not a connector key custodian.
+Hussh One uses the hosted streamable endpoint
+`https://api.uat.hushh.ai/mcp/` as the consent lifecycle source of truth. Its
+bearer header references the one-time developer credential in the active
+profile's mode-`0600` `.env`; the token is never embedded in MCP configuration.
 
-For explicit local consumption, configure the official trusted consent
-connector as a stdio MCP server. Its private export key remains in the
-connector's own state. Hussh One receives only locally decrypted,
-scope-limited information and immediately converts it into the bounded lease
-described above.
+Hermes' MCP transport boundary creates one persistent X25519 identity under
+that profile with mode-`0600`. For an `attr.*` consent request it adds the
+public binding after model argument validation. On an approved encrypted
+export it authenticates the envelope, decrypts locally, narrows to the exact
+approved scope, and immediately converts the result into the bounded lease.
+The model can neither submit connector keys nor observe the private key,
+ciphertext, or wrapping metadata.
+
+Codex uses the same hosted endpoint and bearer environment reference when its
+CLI is available. Neither host configuration contains the developer token or
+connector private key.
 
 ## TUI behavior
 
