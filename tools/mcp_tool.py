@@ -127,12 +127,113 @@ _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 # material cannot reach tool observers, logs, persistence, or conversation
 # history even when a model ignores the tool description.
 _CONSENT_EXPORT_TOOL_ID = "getencryptedscopedexport"
+_CONSENT_REQUEST_TOOL_ID = "requestconsent"
 _CONSENT_SERVER_IDS = frozenset({"hushhconsent", "husshconsent"})
+_CONSENT_CONNECTOR_KEY_FIELDS = frozenset(
+    {"connector_public_key", "connector_key_id", "connector_wrapping_alg"}
+)
 
 
 def _is_hussh_consent_server(server_name: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", server_name.lower())
     return normalized in _CONSENT_SERVER_IDS
+
+
+def _reject_model_supplied_consent_connector_key(
+    server_name: str,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> Optional[str]:
+    """Reject connector key bundles before they cross the MCP boundary.
+
+    A registered connector resolves its public key server-side and therefore
+    omits these fields. Allowing an LLM to generate an ephemeral private key
+    and submit its public half creates an undecryptable grant while placing
+    connector custody inside model-visible execution.
+    """
+    normalized_tool = re.sub(r"[^a-z0-9]", "", tool_name.lower())
+    if (
+        normalized_tool != _CONSENT_REQUEST_TOOL_ID
+        or not _is_hussh_consent_server(server_name)
+        or not _CONSENT_CONNECTOR_KEY_FIELDS.intersection(args)
+    ):
+        return None
+
+    return json.dumps(
+        {
+            "error": {
+                "status": "connector_setup_required",
+                "recoverable": False,
+                "agent_action": (
+                    "Stop this consent request. Do not generate or submit connector "
+                    "keys, do not call prepare_campaign_context as a fallback, and "
+                    "do not inspect adjacent tools."
+                ),
+                "user_message": (
+                    "Your trusted Hushh connector is not ready on this device. "
+                    "Complete connector setup, then retry."
+                ),
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
+def _safe_hussh_consent_connector_error(
+    server_name: str,
+    error_text: str,
+) -> Optional[str]:
+    """Map backend connector-registration details to a terminal safe result."""
+    if (
+        not _is_hussh_consent_server(server_name)
+        or "CONNECTOR_KEY_REQUIRED" not in error_text
+    ):
+        return None
+    return json.dumps(
+        {
+            "error": {
+                "status": "connector_setup_required",
+                "recoverable": False,
+                "agent_action": (
+                    "Stop. Do not retry through another consent tool and do not "
+                    "generate connector key material."
+                ),
+                "user_message": (
+                    "Your trusted Hushh connector is not ready on this device. "
+                    "Complete connector setup, then retry."
+                ),
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
+def _prepare_trusted_consent_call_args(
+    server: Any,
+    server_name: str,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Attach the local public connector binding to hosted consent requests."""
+    normalized_tool = re.sub(r"[^a-z0-9]", "", tool_name.lower())
+    config = getattr(server, "_config", {}) or {}
+    if (
+        normalized_tool != _CONSENT_REQUEST_TOOL_ID
+        or not _is_hussh_consent_server(server_name)
+        or not config.get("url")
+        or not str(args.get("scope") or "").startswith("attr.")
+    ):
+        return args
+
+    from hermes_cli.hussh_consent_connector import _load_or_create_keypair
+
+    _, public_key, key_id = _load_or_create_keypair()
+    return {
+        **args,
+        "connector_public_key": public_key,
+        "connector_key_id": key_id,
+        "connector_wrapping_alg": "X25519-AES256-GCM",
+    }
 
 
 def _withhold_encrypted_consent_export(
@@ -161,6 +262,38 @@ def _withhold_encrypted_consent_export(
         payload = json.loads(text_result)
     except (TypeError, json.JSONDecodeError):
         payload = {}
+
+    if isinstance(payload, dict) and payload.get("delivery") == "encrypted_inline":
+        try:
+            from hermes_cli.hussh_consent_connector import _decrypt_export
+
+            payload = {
+                **payload,
+                "delivery": "decrypted_local",
+                "information": _decrypt_export(
+                    payload,
+                    str(payload.get("expected_scope") or args.get("expected_scope") or ""),
+                ),
+            }
+        except Exception as exc:
+            logger.warning(
+                "Trusted Hussh connector could not decrypt approved export error_type=%s",
+                type(exc).__name__,
+            )
+            return json.dumps(
+                {
+                    "status": "connector_decryption_failed",
+                    "delivery": "trusted_connector_only",
+                    "message": (
+                        "The approved export could not be opened by this device's "
+                        "trusted Hushh connector."
+                    ),
+                    "next_action": (
+                        "Request a fresh grant with this device connector, then retry."
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
     if isinstance(payload, dict) and payload.get("delivery") == "decrypted_local":
         information = payload.get("information")
@@ -4620,6 +4753,14 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """
 
     def _handler(args: dict, **kwargs) -> str:
+        connector_key_rejection = _reject_model_supplied_consent_connector_key(
+            server_name,
+            tool_name,
+            args,
+        )
+        if connector_key_rejection is not None:
+            return connector_key_rejection
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).
@@ -4687,6 +4828,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
 
+        call_args = _prepare_trusted_consent_call_args(
+            server,
+            server_name,
+            tool_name,
+            args,
+        )
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -4696,7 +4844,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    result = await server.session.call_tool(
+                        tool_name,
+                        arguments=call_args,
+                    )
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably
@@ -4718,6 +4869,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     res_text = getattr(getattr(block, "resource", None), "text", None)
                     if res_text:
                         error_text += str(res_text)
+                safe_consent_error = _safe_hussh_consent_connector_error(
+                    server_name,
+                    error_text,
+                )
+                if safe_consent_error is not None:
+                    return safe_consent_error
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"

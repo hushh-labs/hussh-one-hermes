@@ -1,6 +1,6 @@
 ---
 name: hussh-consent-mcp-workflow
-description: "Use Hussh Consent MCP with least privilege and connector-only encrypted export handling."
+description: "Use Hussh Consent MCP for portfolio, financial, profile, and other consent-backed user-data requests with least privilege and connector-only encrypted export handling."
 category: mcp
 ---
 
@@ -48,6 +48,23 @@ Use this workflow whenever an agent requests consent-backed user data through
    emitted. Never copy the lease into memory or another file. If the receipt
    says `decrypted_export_empty`, report that the approved scope contained no
    information and stop.
+
+## Tool-selection contract
+
+- For a direct user-data request such as "get my financial portfolio", use
+  only `search_user_scopes` → `request_consent` → `check_consent_status` →
+  `get_encrypted_scoped_export`.
+- `prepare_campaign_context` is a campaign/offer compatibility helper. Never
+  call it as a fallback, diagnostic probe, or substitute for `request_consent`
+  during direct portfolio, profile, or attribute retrieval.
+- A connector or registration error is terminal for the current request. Do
+  not inspect adjacent MCP tools, retry through the campaign helper, generate
+  key material, or speculate about request parameters.
+- In the normal user-facing response, do not emit raw connector error JSON,
+  key field names, algorithms, backend internals, or debugging instructions.
+  Say only: "Your trusted Hushh connector is not ready on this device. Complete
+  connector setup, then retry." Provide technical diagnostics only when the
+  user explicitly asks to diagnose connector provisioning.
 
 ## Failure handling
 
