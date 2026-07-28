@@ -37,6 +37,14 @@ def test_parse_natural_switch_keeps_explicit_gemini_35_available():
     assert intent.model == "gemini-3.5-flash"
 
 
+def test_parse_natural_switch_accepts_observed_gemini_typo():
+    intent = parse_natural_model_switch("switch to gmeini 3.1 pro")
+
+    assert intent is not None
+    assert intent.model == "gemini-3.1-pro-preview"
+    assert intent.provider == "gemini"
+
+
 def test_parse_natural_switch_bare_flash_uses_hussh_default():
     intent = parse_natural_model_switch("switch to flash")
 

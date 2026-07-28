@@ -1989,6 +1989,8 @@ def _ensure_session_db_row(session: dict) -> None:
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    if override.get("selection_mode") == "select":
+        model_config["selection_mode"] = "select"
     # The composer override may carry the RESOLVED provider "custom" for a named
     # ``providers:`` / ``custom_providers:`` entry. Persisting bare "custom" here
     # (the very first DB write for a fresh desktop session, before the agent is
@@ -2602,6 +2604,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     api_mode = str(model_config.get("api_mode") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
+    selection_mode = str(model_config.get("selection_mode") or "").strip()
 
     # Heal a bare ``"custom"`` provider stored by an older build (or any leak
     # site that bypassed _runtime_model_config's normalization). Bare custom is
@@ -2637,6 +2640,9 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "base_url": base_url or None,
             "api_mode": api_mode or None,
         }
+        if selection_mode == "select":
+            overrides["model_override"]["selection_mode"] = "select"
+            overrides["selection_mode"] = "select"
     if provider:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
@@ -2733,6 +2739,23 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             if isinstance(parsed, dict):
                 existing_config = parsed
         model_config = _runtime_model_config(agent, existing_config)
+        try:
+            from hermes_cli.hussh_one_identity import (
+                SELECT_MODE,
+                normalize_selection_mode,
+                selection_mode_from_override,
+            )
+
+            selection_mode = normalize_selection_mode(
+                session.get("selection_mode")
+                or selection_mode_from_override(session.get("model_override"))
+            )
+            if selection_mode == SELECT_MODE:
+                model_config["selection_mode"] = SELECT_MODE
+            else:
+                model_config.pop("selection_mode", None)
+        except Exception:
+            logger.debug("failed to persist selection provenance", exc_info=True)
         create_service_tier_override = session.get("create_service_tier_override")
         if create_service_tier_override is not None:
             # _runtime_model_config sees agent.service_tier=None for explicit
@@ -3382,6 +3405,23 @@ def _apply_model_switch(
                 f"Model switch to {result.new_model} failed ({exc}); "
                 f"staying on {getattr(agent, 'model', current_model)}."
             ) from exc
+
+    # Commit explicit selection provenance before persistence and session.info.
+    # Previously this happened after both operations and omitted
+    # ``selection_mode`` entirely, so a successful switch still rendered [A]
+    # and resumed as automatic routing.
+    if pin_session_override and isinstance(session, dict) and not one_turn:
+        session["selection_mode"] = "select"
+        session["model_override"] = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "base_url": result.base_url,
+            "api_key": result.api_key,
+            "api_mode": result.api_mode,
+            "selection_mode": "select",
+        }
+
+    if agent:
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
@@ -3407,14 +3447,6 @@ def _apply_model_switch(
     # contamination bug). agent.switch_model() above already mutated the right
     # agent in place; the override dict makes that choice survive a rebuild
     # without touching shared process state.
-    if pin_session_override and isinstance(session, dict) and not one_turn:
-        session["model_override"] = {
-            "model": result.new_model,
-            "provider": result.target_provider,
-            "base_url": result.base_url,
-            "api_key": result.api_key,
-            "api_mode": result.api_mode,
-        }
     if persist_global:
         _persist_model_switch(result)
     return {
@@ -4885,6 +4917,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         # touched — see the cross-session-contamination note in
         # _apply_model_switch.)
         session.pop("model_override", None)
+        session.pop("selection_mode", None)
         session.pop("create_reasoning_override", None)
         session.pop("create_service_tier_override", None)
         session.pop("one_turn_model_restore", None)
@@ -5876,7 +5909,11 @@ def _(rid, params: dict) -> dict:
     # (resolved at build).
     create_model = str(params.get("model") or "").strip()
     session_model_override = (
-        {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
+        {
+            "model": create_model,
+            "provider": str(params.get("provider") or "").strip() or None,
+            "selection_mode": "select",
+        }
         if create_model
         else None
     )
@@ -5925,6 +5962,7 @@ def _(rid, params: dict) -> dict:
             "inflight_turn": None,
             "last_active": now,
             "model_override": session_model_override,
+            "selection_mode": "select" if session_model_override else None,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,

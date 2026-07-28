@@ -15,7 +15,9 @@ quality regression and the crash trigger. See
 
 ## How it works (modules)
 - **Persisted in `state.db`** — the chosen model lives in `sessions.model`
-  (written on every `/model` switch and first turn).
+  (written on every `/model` switch and first turn). Explicit selection
+  provenance lives beside the non-secret runtime metadata as
+  `model_config.selection_mode=select`.
 - **Restored on resume** — `_make_agent` receives `session_id`, so the restore
   guard fires and reads `sessions.model`. Three call sites cover every surface:
   - `tui_gateway/server.py` — TUI / dashboard session open.
@@ -26,6 +28,10 @@ quality regression and the crash trigger. See
   `hermes_cli.hussh_one_router._vertex_claude_runtime()`
   (`provider=google-vertex-claude`, `api_key=gcp-sdk`,
   `api_mode=anthropic_messages`), never Anthropic-direct OAuth.
+- **Identity restored with runtime** — a resumed explicit selection reports
+  `[S]`; a legacy or automatic session without persisted provenance reports
+  `[A]`. Credentials are re-resolved from config/ADC and are never restored
+  from the session database.
 
 ## Config knobs
 - `model.default` / `model.provider` — global default used **only** for genuinely
@@ -36,6 +42,7 @@ quality regression and the crash trigger. See
 ## Triggering / Behavior
 - New session → uses `model.default` (correct; nothing to restore).
 - Resumed session with a stored model → restores that model + runtime.
+- Resumed session with `selection_mode=select` → restores the `[S]` identity.
 - Resumed session, operator passed `--model` → honours the explicit flag.
 - Restore failure → falls back to the stored model **name** and never raises out
   of the resume path.
@@ -45,6 +52,9 @@ quality regression and the crash trigger. See
   never used for API calls (avoids both the 400 and any cross-account billing).
 - Any inherited Gemini credential pool is cleared on a Vertex restore so the
   agent rebuilds cleanly.
+- The session row contains no API key or ADC token. Only the model, provider
+  identity, endpoint mode, reasoning/service tier, and selection provenance are
+  durable.
 
 ## Tests
 - `tests/cli/test_resume_model_restore.py` (23 tests): Claude→Vertex restore,

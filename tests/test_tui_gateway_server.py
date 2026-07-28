@@ -1687,6 +1687,21 @@ def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
     assert overrides["service_tier_override"] == ""
 
 
+def test_stored_session_runtime_overrides_restores_selection_provenance():
+    overrides = server._stored_session_runtime_overrides(
+        {
+            "model": "gemini-3.1-pro-preview",
+            "model_config": {
+                "provider": "gemini",
+                "selection_mode": "select",
+            },
+        }
+    )
+
+    assert overrides["selection_mode"] == "select"
+    assert overrides["model_override"]["selection_mode"] == "select"
+
+
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 
@@ -1708,7 +1723,17 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
         _session_db=FakeDB(),
     )
 
-    server._persist_live_session_runtime({"agent": agent, "session_key": "stored-session"})
+    server._persist_live_session_runtime(
+        {
+            "agent": agent,
+            "session_key": "stored-session",
+            "model_override": {
+                "model": "gpt-5.4",
+                "provider": "openai-codex",
+                "selection_mode": "select",
+            },
+        }
+    )
 
     assert "model" not in updates
     assert updates["meta"] == (
@@ -1720,6 +1745,7 @@ def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
             "base_url": "https://custom.example/v1",
             "api_mode": "chat_completions",
             "reasoning_config": {"enabled": True, "effort": "high"},
+            "selection_mode": "select",
             "service_tier": "priority",
         },
         "gpt-5.4",
@@ -4386,7 +4412,7 @@ def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
@@ -4447,7 +4473,7 @@ def test_config_set_model_records_per_session_override_not_env(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
     )
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     try:
@@ -4502,7 +4528,7 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
-    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
 
     def fake_switch_model(**kwargs):
@@ -4538,6 +4564,8 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         # ...override recorded on the session...
         assert session["model_override"]["model"] == "anthropic/claude-sonnet-4.6"
         assert session["model_override"]["provider"] == "anthropic"
+        assert session["model_override"]["selection_mode"] == "select"
+        assert session["selection_mode"] == "select"
         # ...and the shared process env was NOT touched.
         assert os.environ["HERMES_TUI_PROVIDER"] == "openai-codex"
         assert "HERMES_MODEL" not in os.environ

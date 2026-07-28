@@ -111,6 +111,11 @@ def _canonical_model(text: str) -> str:
         .replace("six", "6")
         .replace("five", "5")
     )
+    # A direct switch command is a control-plane utterance, not ordinary chat.
+    # Accept the common adjacent-letter typo observed in the TUI while keeping
+    # correction deliberately narrow; broad fuzzy matching here would make
+    # accidental or injected text more likely to change runtime state.
+    normalized = re.sub(r"\bgmeini\b", "gemini", normalized)
 
     if re.search(r"\bfable(?:[-\s]*5)?\b", normalized):
         return "claude-fable-5"

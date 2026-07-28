@@ -7,6 +7,14 @@ flash") from WhatsApp or the TUI, as a session-only override — without slash-c
 ## How it works
 - Deterministic intent detection (not LLM-guessed) in the model-switch path.
 - Session-scoped `/model` override; global default unchanged unless `--global` is used.
+- TUI/dashboard plain-text requests and `/model` converge on the same
+  `_apply_model_switch()` transaction. A successful explicit switch updates the
+  live agent, records `selection_mode=select`, persists the runtime, and only
+  then emits `session.info`. The footer therefore cannot report `[A]` after an
+  explicit switch has committed.
+- `sessions.model_config.selection_mode` stores selection provenance without
+  storing credentials. Resume rehydrates it into the per-session override;
+  `/new` clears it with the rest of the session-scoped runtime.
 
 ## Config knobs
 - `model.default` / `model.provider` — the global default (Gemini 3.6 Flash for Hussh One).
@@ -21,6 +29,33 @@ flash") from WhatsApp or the TUI, as a session-only override — without slash-c
 ## Prompt-injection safeguard
 Detection rejects slash commands, quoted text, URLs, code blocks, lists, long pastes, help
 questions, negations, and injection-shaped phrases ("ignore previous", "system prompt", …).
+Matching is intentionally not general fuzzy search. The observed adjacent-letter
+typo `gmeini` is normalized narrowly so `switch to gmeini 3.1 pro` remains a
+control-plane command without making arbitrary misspelled prose capable of
+changing models.
+
+## `[A]` and `[S]` contract
+
+- `[A]` means automatic/config-derived routing. Router escalation to another
+  model remains automatic and does not turn the session into `[S]`.
+- `[S]` means the owner explicitly chose a model for this session through the
+  picker, `/model`, or an accepted natural-language switch.
+- The selection marker is committed before the UI event and database write.
+  Model name and provenance therefore change atomically from the user's point
+  of view.
+- A one-turn (`--once`) model does not permanently change provenance.
+- No switch mutates process-global model/provider environment variables; one
+  session cannot silently switch another session in the shared dashboard
+  backend.
+
+## Interrupt-and-redirect behavior
+
+When a switch is submitted while a model turn is still running, the TUI first
+interrupts that turn and queues the switch. Seeing `interrupted` describes the
+superseded turn; it is not the model-switch result. Once the old stream has
+unwound, the queued request is intercepted before any new LLM call and the TUI
+emits the model/provider confirmation. This preserves one writer for the live
+agent while still supporting redirect-style input.
 
 ## Vertex safeguard
 Vertex Claude switches run a live access check before mutating the session; stale Vertex
@@ -73,6 +108,20 @@ The model picker popover (opened by clicking/selecting the status-bar model) ope
 ## Tests
 - `tests/hermes_cli/test_natural_model_switch.py`
 - `tests/gateway/test_natural_model_switch.py`
+- `tests/test_tui_gateway_server.py` — interception, persistence, resume, and
+  session isolation.
+- `tests/tui_gateway/test_hussh_one_runtime_identity.py` — canonical `[A]/[S]`
+  rendering.
+
+Focused verification:
+
+```bash
+.venv/bin/python -m pytest \
+  tests/hermes_cli/test_natural_model_switch.py \
+  tests/tui_gateway/test_hussh_one_runtime_identity.py \
+  tests/test_tui_gateway_server.py \
+  -q -k 'natural_model_switch or selection_provenance or persist_live_session_runtime'
+```
 
 ## Status
 ✅ Shipped.
