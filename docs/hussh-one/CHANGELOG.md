@@ -18,7 +18,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
-| 2026-07-28 | pending | **Gemini-safe consent consumption.** Added canonical tool-name protection, connector-only decryption, bounded `0600` one-time plaintext leases, explicit-consumption policy, and live TUI terminal-state verification. Hosted ciphertext and key material remain outside model context. |
+| 2026-07-28 | `bff45fe60` | **Gemini-safe consent consumption.** Added canonical tool-name protection, connector-only decryption, bounded `0600` one-time plaintext leases, explicit-consumption policy, and live TUI terminal-state verification. Hosted ciphertext and key material remain outside model context. |
 
 📄 Feature page: [consent-mcp.md](./features/consent-mcp.md)
 
