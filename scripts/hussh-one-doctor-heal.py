@@ -101,7 +101,10 @@ def health_index(repo_root: Path, interpreter: str) -> dict[str, Any] | None:
 def _launchd_state(label: str) -> str:
     if sys.platform != "darwin":
         return "unsupported"
-    code, stdout, _stderr = run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], timeout=20)  # windows-footgun: ok
+    code, stdout, _stderr = run(  # windows-footgun: ok
+        ["launchctl", "print", f"gui/{os.getuid()}/{label}"],  # windows-footgun: ok
+        timeout=20,
+    )
     if code != 0:
         return "not-loaded"
     for line in stdout.splitlines():
@@ -123,7 +126,10 @@ def heal_services() -> list[tuple[str, str]]:
         if before == "not-loaded":
             unresolved.append((f"services/{label}", "launchd job is not loaded"))
             continue
-    run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], timeout=30)  # windows-footgun: ok
+        run(  # windows-footgun: ok
+            ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],  # windows-footgun: ok
+            timeout=30,
+        )
         time.sleep(2)
         after = _launchd_state(label)
         if after != "running":
