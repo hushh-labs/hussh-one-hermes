@@ -156,6 +156,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `c634b53ad` | Restored valid launchd dashboard-watchdog and doctor-helper control flow after the macOS-only boundary annotations were applied, allowing the managed dashboard to start and heal normally. |
 | 2026-07-23 | `3a9dc6b94` | **Deterministic macOS restart handoff.** The launchd supervisor now restarts its already-owned gateway directly instead of exiting early on Hermes' intentional nonzero handoff, waits/retries the narrow dashboard bootout→bootstrap race, and reports a real failure rather than silently leaving `:9119` down. |
 | 2026-07-22 | `458646ea6` | Documented the dashboard watchdog's active-TUI memory policy and recovery expectations in the deployment runbook. |
 | 2026-07-22 | `81967b1e4` | **Dashboard live-chat stability.** The launchd-owned dashboard watchdog now treats its memory ceiling as a sustained idle-only safety limit and preserves an active embedded TUI, preventing watchdog SIGTERM/SIGKILL cycles from surfacing as browser WebSocket `1006` disconnects. Added focused watchdog/PTY regression coverage and live authenticated PTY verification. |
@@ -191,6 +192,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 ## 🚀 Onboarding, Bootstrap, Doctor & Deployment
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `7c844e5c3` | **Native trusted-device Personal Data writes.** Added profile-scoped OAuth/PKCE enrollment, local Keychain-backed vault-key handling, and an approval-gated `save_to_pkm` connector while leaving consented reads on the hosted five-tool MCP contract. |
 | 2026-07-28 | `ab88dc97b` | **Canonical-main completion invariant.** Short-lived branches remain mandatory for work, but an update is not complete until its PR is merged, the local checkout is clean and fast-forwarded to `origin/main`, and restart plus final doctor verification run from `main`. |
 | 2026-07-27 | `8ff62b859` | **Single-trunk onboarding contract made agent-visible.** Root agent instructions and the operations runbook now require `origin/main` as the sole Hussh product trunk and `upstream/main` as the stock comparison source; both installers again clone the real `hushh-labs/hussh-one-hermes` repository, with missing Apache SPDX headers repaired. |
 | 2026-07-17 | `040df65d3` | **Managed Open WebUI endpoint discovery.** Supervisor and doctor now read the persisted companion endpoint (or a legacy launcher) before health-checking, so a valid non-default loopback port is monitored and restarted instead of an unrelated process on `:8080`. |
