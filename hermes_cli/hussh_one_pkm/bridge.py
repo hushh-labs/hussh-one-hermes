@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -20,6 +20,7 @@ from hermes_constants import get_hermes_home
 from .client import HusshIdentityClient
 from .crypto import (
     VaultCryptoError,
+    create_vault_with_passphrase,
     read_envelope,
     unwrap_local_vault_key,
     unwrap_passphrase_vault_key,
@@ -71,6 +72,7 @@ class HusshVaultBridge:
             "connected": state is not None,
             "environment": state.environment if state else "uat",
             "device_id": state.device_id if state else None,
+            "account_email": state.account_email if state else None,
             "profile_id": self.identity.profile_id,
         }
 
@@ -85,6 +87,19 @@ class HusshVaultBridge:
             "profile_id": self.identity.profile_id,
         }
 
+    def vault_preflight(self) -> dict[str, Any]:
+        """Return whether the authenticated Hussh account already has a vault."""
+        state = self.identity.read_state()
+        if state is None:
+            raise VaultCryptoError("Connect this Hermes profile to Hussh One first.")
+        response = self.http.post(
+            f"{state.api_base}/db/vault/check",
+            headers=self.identity.auth_headers(),
+            json={"userId": state.user_id},
+        )
+        response.raise_for_status()
+        return {"vault_exists": bool(response.json().get("hasVault"))}
+
     def enroll_vault(self, passphrase: str) -> dict[str, Any]:
         """Fetch and unwrap the existing passphrase wrapper locally.
 
@@ -94,6 +109,10 @@ class HusshVaultBridge:
         state = self.identity.read_state()
         if state is None:
             raise VaultCryptoError("Connect this Hermes profile to Hussh One first.")
+        if not self.vault_preflight()["vault_exists"]:
+            raise VaultCryptoError(
+                "This Hussh One account does not have a vault yet. Create it locally first."
+            )
         response = self.http.post(
             f"{state.api_base}/db/vault/get",
             headers=self.identity.auth_headers(),
@@ -118,6 +137,95 @@ class HusshVaultBridge:
         if expected_hash and vault_key_hash(vault_key) != expected_hash:
             raise VaultCryptoError("The vault key failed its integrity check.")
 
+        return self._finish_vault_enrollment(
+            state=state,
+            vault_key=vault_key,
+            expected_hash=expected_hash,
+        )
+
+    def create_vault(
+        self,
+        passphrase: str,
+        *,
+        disclose_recovery: Callable[[str], bool],
+    ) -> dict[str, Any]:
+        """Create the existing One passphrase/recovery wrapper format locally.
+
+        ``disclose_recovery`` runs locally in the protected native surface
+        before anything reaches the server. Creation never replaces an active
+        remote vault: the server remains the final concurrency guard.
+        """
+        state = self.identity.read_state()
+        if state is None:
+            raise VaultCryptoError("Connect this Hermes profile to Hussh One first.")
+        if self.vault_preflight()["vault_exists"]:
+            raise VaultCryptoError(
+                "A Hussh One vault already exists for this account. Secure this device instead."
+            )
+        created = create_vault_with_passphrase(passphrase)
+        if not disclose_recovery(created.recovery_key):
+            raise VaultCryptoError(
+                "Vault creation was canceled before the recovery key was acknowledged."
+            )
+        response = self.http.post(
+            f"{state.api_base}/db/vault/setup",
+            headers={
+                **self.identity.auth_headers(),
+                "Content-Type": "application/json",
+                "x-hushh-client-version": "2.0.0",
+            },
+            json={
+                "userId": state.user_id,
+                "vaultKeyHash": created.vault_key_hash,
+                "primaryMethod": "passphrase",
+                "primaryWrapperId": "default",
+                "recoveryEncryptedVaultKey": created.recovery_encrypted_vault_key,
+                "recoverySalt": created.recovery_salt,
+                "recoveryIv": created.recovery_iv,
+                "wrappers": [
+                    {
+                        "method": "passphrase",
+                        "wrapperId": "default",
+                        "encryptedVaultKey": created.encrypted_vault_key,
+                        "salt": created.salt,
+                        "iv": created.iv,
+                    }
+                ],
+            },
+        )
+        if response.status_code in {400, 409}:
+            detail = response.json() if response.content else {}
+            message = str(detail.get("detail") or detail.get("error") or "")
+            if "already exists" in message.lower():
+                raise VaultCryptoError(
+                    "A vault was created elsewhere. No existing vault was changed; secure this device instead."
+                )
+        response.raise_for_status()
+        persisted = self.http.post(
+            f"{state.api_base}/db/vault/get",
+            headers=self.identity.auth_headers(),
+            json={"userId": state.user_id},
+        )
+        persisted.raise_for_status()
+        vault_state = persisted.json()
+        expected_hash = str(vault_state.get("vaultKeyHash") or "")
+        if expected_hash != created.vault_key_hash:
+            raise VaultCryptoError("The newly created vault failed its integrity check.")
+        return self._finish_vault_enrollment(
+            state=state,
+            vault_key=created.vault_key,
+            expected_hash=expected_hash,
+        )
+
+    def _finish_vault_enrollment(
+        self,
+        *,
+        state: Any,
+        vault_key: bytes,
+        expected_hash: str,
+    ) -> dict[str, Any]:
+        if expected_hash and vault_key_hash(vault_key) != expected_hash:
+            raise VaultCryptoError("The vault key failed its integrity check.")
         self._write_lock_state(locked=False, reason="vault_enrollment_validation")
         with self._lock:
             self._clear_vault_key_locked()

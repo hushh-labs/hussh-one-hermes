@@ -26,7 +26,8 @@ vi.mock('@/hermes', () => ({
 
 const disconnected = {
   authorization: { status: 'idle' as const },
-  identity: { connected: false, device_id: null, environment: 'uat', profile_id: 'default' },
+  identity: { account_email: null, connected: false, device_id: null, environment: 'uat', profile_id: 'default' },
+  onboarding: { remote_vault: 'not_connected' as const },
   vault: { connected: false, device_id: null, enrolled: false, profile_id: 'default', profile_locked: true, unlocked: false }
 }
 
@@ -61,7 +62,7 @@ describe('HusshOneSetup', () => {
   it('uses the native prompt bridge so the renderer never contains a vault passphrase field', async () => {
     getHusshOneStatus.mockResolvedValue({
       ...disconnected,
-      identity: { ...disconnected.identity, connected: true },
+      identity: { ...disconnected.identity, account_email: 'owner@example.com', connected: true },
       vault: { ...disconnected.vault, connected: true }
     })
     renderSetup()
@@ -73,11 +74,25 @@ describe('HusshOneSetup', () => {
     await waitFor(() => expect(enrollHusshOneVault).toHaveBeenCalledWith('default'))
   })
 
+  it('shows the verified account and first-vault action after browser approval', async () => {
+    getHusshOneStatus.mockResolvedValue({
+      ...disconnected,
+      identity: { ...disconnected.identity, account_email: 'owner@example.com', connected: true },
+      onboarding: { remote_vault: 'not_created' },
+      vault: { ...disconnected.vault, connected: true }
+    })
+    renderSetup()
+
+    expect(await screen.findByText('Create your vault')).toBeTruthy()
+    expect(screen.getByText(/Connected as owner@example.com/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Create vault and secure this device' })).toBeTruthy()
+  })
+
   it('does not call a dashboard-unlocked vault ready for chat PKM writes', () => {
     expect(
       husshOneStatusLabel({
-        ...disconnected,
-        identity: { ...disconnected.identity, connected: true },
+      ...disconnected,
+      identity: { ...disconnected.identity, account_email: 'owner@example.com', connected: true },
         vault: { ...disconnected.vault, connected: true, enrolled: true, unlocked: true }
       })
     ).toBe('Vault unlocked locally')

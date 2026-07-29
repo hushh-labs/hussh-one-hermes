@@ -12180,8 +12180,7 @@ class HusshOneConnectRequest(BaseModel):
     profile: Optional[str] = None
 
 
-class HusshOneVaultEnrollRequest(BaseModel):
-    passphrase: SecretStr
+class HusshOneNativeVaultEnrollRequest(BaseModel):
     profile: Optional[str] = None
 
 
@@ -12359,12 +12358,23 @@ async def hussh_one_status(request: Request, profile: Optional[str] = None):
     _require_local_hussh_one_request(request)
     with _config_profile_scope(profile):
         bridge = _hussh_one_bridge()
+        identity = await run_in_threadpool(bridge.identity_status)
+        onboarding: dict[str, Any] = {"remote_vault": "not_connected"}
+        if identity.get("connected"):
+            try:
+                preflight = await run_in_threadpool(bridge.vault_preflight)
+                onboarding["remote_vault"] = (
+                    "available" if preflight.get("vault_exists") else "not_created"
+                )
+            except Exception:
+                onboarding["remote_vault"] = "unavailable"
         return {
-            "identity": await run_in_threadpool(bridge.identity_status),
+            "identity": identity,
             "vault": await run_in_threadpool(bridge.vault_status),
             "authorization": await run_in_threadpool(
                 bridge.identity.authorization_status
             ),
+            "onboarding": onboarding,
         }
 
 
@@ -12382,22 +12392,38 @@ async def hussh_one_connect(body: HusshOneConnectRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/hussh-one/vault/enroll")
-async def hussh_one_vault_enroll(
-    body: HusshOneVaultEnrollRequest,
+@app.post("/api/hussh-one/vault/enroll-native")
+async def hussh_one_vault_enroll_native(
+    body: HusshOneNativeVaultEnrollRequest,
     request: Request,
 ):
-    """Unwrap locally; the SecretStr value is never logged or persisted."""
+    """Run the entire vault ceremony inside local native protected prompts."""
     from hermes_cli.mcp_config import migrate_hussh_one_native_connector
+    from hermes_cli.hussh_one_pkm.native_prompt import (
+        disclose_recovery_key,
+        prompt_for_new_vault_passphrase,
+        prompt_for_vault_passphrase,
+    )
 
     _require_local_hussh_one_request(request)
     try:
         with _config_profile_scope(body.profile):
             bridge = _hussh_one_bridge()
-            result = await run_in_threadpool(
-                bridge.enroll_vault,
-                body.passphrase.get_secret_value(),
-            )
+            preflight = await run_in_threadpool(bridge.vault_preflight)
+            if preflight["vault_exists"]:
+                passphrase = await run_in_threadpool(prompt_for_vault_passphrase)
+                if passphrase is None:
+                    return {"status": "canceled", "native_connector_ready": False}
+                result = await run_in_threadpool(bridge.enroll_vault, passphrase)
+            else:
+                passphrase = await run_in_threadpool(prompt_for_new_vault_passphrase)
+                if passphrase is None:
+                    return {"status": "canceled", "native_connector_ready": False}
+                result = await run_in_threadpool(
+                    bridge.create_vault,
+                    passphrase,
+                    disclose_recovery=disclose_recovery_key,
+                )
             migrate_hussh_one_native_connector()
             return {**result, "native_connector_ready": True}
     except Exception as exc:
@@ -12426,11 +12452,18 @@ async def hussh_one_vault_lock(request: Request, profile: Optional[str] = None):
 @app.delete("/api/hussh-one/connection")
 async def hussh_one_disconnect(request: Request, profile: Optional[str] = None):
     from hermes_cli.mcp_config import migrate_hussh_one_native_connector
+    from hermes_cli.hussh_one_pkm.native_prompt import confirm_disconnect
 
     _require_local_hussh_one_request(request)
     try:
         with _config_profile_scope(profile):
             bridge = _hussh_one_bridge()
+            identity = await run_in_threadpool(bridge.identity_status)
+            if identity.get("connected") and not await run_in_threadpool(
+                confirm_disconnect,
+                str(identity.get("account_email") or "Hussh One account"),
+            ):
+                return {"connected": True, "revoked": False, "status": "canceled"}
             result = await run_in_threadpool(bridge.revoke_and_disconnect)
             migrate_hussh_one_native_connector()
             return result

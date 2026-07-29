@@ -28,7 +28,9 @@ export function husshOneStatusLabel(status: Awaited<ReturnType<typeof getHusshOn
   }
 
   if (!status.vault.enrolled) {
-    return 'Vault setup needed'
+    return status.onboarding?.remote_vault === 'not_created'
+      ? 'Create your vault'
+      : 'Vault setup needed'
   }
 
   return status.vault.unlocked ? 'Vault unlocked locally' : 'Vault locked'
@@ -72,6 +74,7 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
   const disconnect = useMutation({ mutationFn: disconnectHusshOne, onSettled: refresh })
 
   const current = status.data
+  const remoteVault = current?.onboarding?.remote_vault ?? 'unavailable'
   const pendingAuthorization = current?.authorization.status === 'waiting'
   const error =
     connect.error ||
@@ -106,7 +109,7 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
             <p className="text-sm font-medium">{husshOneStatusLabel(current)}</p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               {current?.identity.connected
-                ? `Connected to ${current.identity.environment.toUpperCase()} for this Hermes profile.`
+                ? `Connected as ${current.identity.account_email || 'an account that must reconnect to verify its email'} in ${current.identity.environment.toUpperCase()}.`
                 : 'Not connected to Hussh One on this Hermes profile.'}
             </p>
             {current?.vault.unlocked && (
@@ -133,10 +136,16 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
         {current?.identity.connected && !current.vault.enrolled && (
           <div className="mt-4 grid gap-2">
             <p className="text-xs leading-5 text-muted-foreground">
-              Identity linked. A native macOS protected prompt will collect the vault passphrase once. It is never sent to the renderer or agent.
+              {remoteVault === 'not_created'
+                ? 'This account does not have a vault yet. A protected native ceremony will create one, show the recovery key once, and secure this device without sending secrets to the renderer or agent.'
+                : 'A protected native macOS prompt will collect the existing vault passphrase once. It is never sent to the renderer or agent.'}
             </p>
             <Button disabled={enroll.isPending} onClick={() => enroll.mutate()} size="sm" type="button">
-              {enroll.isPending ? 'Securing vault…' : 'Secure this device'}
+              {enroll.isPending
+                ? 'Securing vault…'
+                : remoteVault === 'not_created'
+                  ? 'Create vault and secure this device'
+                  : 'Secure this device'}
             </Button>
           </div>
         )}
@@ -154,11 +163,7 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
             )}
             <Button
               disabled={disconnect.isPending}
-              onClick={() => {
-                if (window.confirm('Disconnect this Hermes profile from Hussh One? Local vault access will be removed.')) {
-                  disconnect.mutate()
-                }
-              }}
+              onClick={() => disconnect.mutate()}
               size="sm"
               type="button"
               variant="ghost"

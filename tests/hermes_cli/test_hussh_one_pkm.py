@@ -16,6 +16,7 @@ from hermes_cli.hussh_one_pkm.crypto import (
     read_envelope,
     unwrap_local_vault_key,
     unwrap_passphrase_vault_key,
+    unwrap_recovery_vault_key,
     vault_key_hash,
     wrap_local_vault_key,
     write_envelope,
@@ -59,6 +60,17 @@ def _mutation_vector() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _creation_vector() -> dict:
+    path = (
+        Path(__file__).parents[2]
+        / "hermes_cli"
+        / "hussh_one_pkm"
+        / "golden_vectors"
+        / "vault_creation_v1.json"
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_web_vault_passphrase_vector_parity() -> None:
     vector = _vector()
     vault_key = unwrap_passphrase_vault_key(
@@ -77,6 +89,27 @@ def test_web_vault_passphrase_vector_parity() -> None:
             salt=vector["salt_b64"],
             iv=vector["iv_b64"],
         )
+
+
+def test_first_vault_creation_vector_parity_includes_recovery_wrapper() -> None:
+    vector = _creation_vector()
+    passphrase_wrapper = vector["passphrase_wrapper"]
+    recovery_wrapper = vector["recovery_wrapper"]
+    by_passphrase = unwrap_passphrase_vault_key(
+        passphrase=vector["passphrase"],
+        encrypted_vault_key=passphrase_wrapper["encrypted_vault_key_b64"],
+        salt=passphrase_wrapper["salt_b64"],
+        iv=passphrase_wrapper["iv_b64"],
+    )
+    by_recovery = unwrap_recovery_vault_key(
+        recovery_key=vector["recovery_key"],
+        encrypted_vault_key=recovery_wrapper["encrypted_vault_key_b64"],
+        salt=recovery_wrapper["salt_b64"],
+        iv=recovery_wrapper["iv_b64"],
+    )
+    assert by_passphrase == by_recovery
+    assert by_passphrase.hex() == vector["vault_key_hex"]
+    assert vault_key_hash(by_passphrase) == vector["vault_key_hash"]
 
 
 def test_local_envelope_is_profile_and_device_bound(tmp_path: Path) -> None:
@@ -219,6 +252,8 @@ def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> N
             raise AssertionError(f"Unexpected GET {url}")
 
         def post(self, url: str, **kwargs) -> Response:
+            if url.endswith("/db/vault/check"):
+                return Response(200, {"hasVault": True})
             if url.endswith("/db/vault/get"):
                 return Response(
                     200,
@@ -292,6 +327,115 @@ def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> N
     assert decrypted == {"readiness": {"verified": True}}
 
 
+def test_first_vault_creation_reuses_one_wrapper_contract_and_requires_recovery_ack(
+    tmp_path: Path,
+) -> None:
+    class FakeKeychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+
+        def get(self, account: str) -> bytes | None:
+            return self.values.get(account)
+
+        def set(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete(self, account: str) -> None:
+            self.values.pop(account, None)
+
+    class Response:
+        content = b""
+
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self.payload = payload
+
+        def json(self) -> dict:
+            return self.payload
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.vault_setup: dict | None = None
+
+        def post(self, url: str, **kwargs) -> Response:
+            if url.endswith("/db/vault/check"):
+                return Response(200, {"hasVault": self.vault_setup is not None})
+            if url.endswith("/db/vault/setup"):
+                self.vault_setup = kwargs["json"]
+                return Response(200, {"success": True})
+            if url.endswith("/db/vault/get"):
+                assert self.vault_setup is not None
+                return Response(
+                    200,
+                    {
+                        "vaultKeyHash": self.vault_setup["vaultKeyHash"],
+                        "wrappers": self.vault_setup["wrappers"],
+                    },
+                )
+            if url.endswith("/api/pkm/store-domain/validate"):
+                return Response(200, {"success": True})
+            raise AssertionError(f"Unexpected POST {url}")
+
+    bridge = HusshVaultBridge(
+        profile_home=tmp_path / "profile",
+        keychain=FakeKeychain(),  # type: ignore[arg-type]
+        http=FakeHttp(),  # type: ignore[arg-type]
+    )
+    bridge.identity.identity_path.parent.mkdir(parents=True)
+    bridge.identity.identity_path.write_text(
+        json.dumps(
+            {
+                "user_id": "user-a",
+                "device_id": "tdv_device-a",
+                "profile_id": bridge.identity.profile_id,
+                "account_email": "owner@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge.identity.auth_headers = lambda: {"Authorization": "Bearer identity"}  # type: ignore[method-assign]
+    bridge.acquire_vault_owner_token = lambda: "owner-token"  # type: ignore[method-assign]
+    disclosed: list[str] = []
+
+    assert bridge.identity_status()["account_email"] == "owner@example.com"
+
+    result = bridge.create_vault(
+        "correct horse battery staple",
+        disclose_recovery=lambda value: disclosed.append(value) or True,
+    )
+
+    assert result["enrolled"] is True
+    assert disclosed and disclosed[0].startswith("HRK-")
+    assert bridge.envelope_path.exists()
+    assert bridge.vault_preflight() == {"vault_exists": True}
+
+
+def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Path) -> None:
+    bridge = HusshVaultBridge(profile_home=tmp_path / "profile")
+    bridge.identity.identity_path.parent.mkdir(parents=True)
+    bridge.identity.identity_path.write_text(
+        json.dumps(
+            {
+                "user_id": "user-a",
+                "device_id": "tdv_device-a",
+                "profile_id": bridge.identity.profile_id,
+                "account_email": "owner@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge.vault_preflight = lambda: {"vault_exists": False}  # type: ignore[method-assign]
+
+    with pytest.raises(VaultCryptoError, match="recovery key was acknowledged"):
+        bridge.create_vault("correct horse battery staple", disclose_recovery=lambda _key: False)
+
+    assert not bridge.envelope_path.exists()
+
+
 def test_vault_setup_control_plane_rejects_remote_dashboard() -> None:
     app = FastAPI()
     app.state.auth_required = True
@@ -299,7 +443,7 @@ def test_vault_setup_control_plane_rejects_remote_dashboard() -> None:
         "type": "http",
         "method": "POST",
         "scheme": "https",
-        "path": "/api/hussh-one/vault/enroll",
+        "path": "/api/hussh-one/vault/enroll-native",
         "query_string": b"",
         "headers": [(b"host", b"remote.example")],
         "server": ("remote.example", 443),

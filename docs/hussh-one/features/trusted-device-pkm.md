@@ -3,9 +3,10 @@
 ## What it does
 
 Optionally links one Hermes profile to a Hussh One account in UAT. The user
-approves the Mac as a trusted device in the browser, enters the existing vault
-passphrase once through a protected macOS prompt, and receives a narrow native
-Desktop write capability for explicitly approved PKM writes.
+approves the Mac as a trusted device in the browser, then either enters the
+existing vault passphrase or creates a first vault through protected macOS
+prompts. Hermes shows the verified account email locally and receives a narrow
+native Desktop write capability for explicitly approved PKM writes.
 
 ## How it works
 
@@ -90,18 +91,24 @@ use the normal model-confirmation onboarding. On an already configured machine
 or after an upgrade, open **Settings → Hussh One**, select **Hussh One** in the
 sidebar, or use `/hussh-one` from a local Hermes chat.
 
-1. Select **Connect in browser**.
+1. Select **Connect in browser** and confirm the full verified email shown on
+   the Hussh One approval page.
 2. Approve the new Mac as a trusted device in the Hussh One UAT surface.
-3. Return to Desktop after identity reports connected.
-4. Select **Secure this device** and enter the vault passphrase in the native
-   macOS protected prompt.
+3. Return to Desktop after identity reports connected as that same email.
+4. Select **Secure this device**. For an existing vault, enter its passphrase
+   in the native macOS protected prompt. For a new account, create and confirm
+   a passphrase, then save or copy the one-time recovery key in the native
+   recovery window before the vault is persisted.
 5. Confirm **Vault unlocked locally**. Start a new Desktop chat before asking
    the private agent to save an approved PKM update.
 
 The local TUI/dashboard can perform the same guarded setup without moving a
-secret through chat: `/hussh-one connect` starts browser approval, then
-`/hussh-one enroll` opens the native macOS protected prompt. `/hussh-one status`
-is read-only. None of these commands send the passphrase to the model.
+secret through chat: `/hussh-one connect` opens browser approval, then
+`/hussh-one enroll` either secures the existing vault or creates the first one
+through native protected prompts. `/hussh-one status` shows the linked verified
+email and vault state; `/hussh-one lock` clears local vault memory; and
+`/hussh-one disconnect` confirms locally, revokes the device, and removes local
+custody. None of these commands send a passphrase or recovery key to the model.
 
 Enrollment enables the bundled native connector using the same Python runtime
 as Hermes. It does not require cloning another repository, installing a global

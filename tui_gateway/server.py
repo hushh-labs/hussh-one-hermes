@@ -14740,21 +14740,22 @@ def _hussh_one_bridge():
 def _hussh_one_setup_output(arg: str) -> str:
     """Run the chat-safe portion of Hussh One trusted-device onboarding.
 
-    Browser approval can start from any local Hermes chat. Vault enrollment is
-    intentionally not implemented here: the passphrase must remain inside the
-    native Desktop protected prompt, never in the dashboard chat or model
-    context.
+    Browser approval and vault custody remain local to Hermes. Passphrases and
+    recovery keys are accepted or displayed only by protected native prompts,
+    never in the dashboard chat or model context.
     """
     action = (arg or "").strip().lower()
-    if action not in {"", "connect", "enroll", "status", "help"}:
-        return "usage: /hussh-one [connect|enroll|status|help]"
+    if action not in {"", "connect", "enroll", "status", "lock", "disconnect", "help"}:
+        return "usage: /hussh-one [connect|enroll|status|lock|disconnect|help]"
     if action == "help":
         return (
             "Hussh One trusted-device setup:\n"
-            "  /hussh-one connect — start browser approval\n"
-            "  /hussh-one enroll — secure this device with a native prompt\n"
+            "  /hussh-one connect — open browser approval\n"
+            "  /hussh-one enroll — secure this device or create your first vault\n"
             "  /hussh-one status — inspect this profile\n\n"
-            "The passphrase is accepted only by the native protected prompt, never chat."
+            "  /hussh-one lock — clear local vault memory\n"
+            "  /hussh-one disconnect — revoke this device and remove local custody\n\n"
+            "Passphrases and recovery keys stay in native protected prompts, never chat."
         )
 
     try:
@@ -14762,14 +14763,40 @@ def _hussh_one_setup_output(arg: str) -> str:
         identity = bridge.identity_status()
         vault = bridge.vault_status()
         if action == "status":
+            remote_vault = "not checked"
+            if identity.get("connected"):
+                try:
+                    remote_vault = (
+                        "available"
+                        if bridge.vault_preflight().get("vault_exists")
+                        else "not created"
+                    )
+                except Exception:
+                    remote_vault = "unavailable"
+            account = str(identity.get("account_email") or "").strip()
             return (
                 "Hussh One status for this Hermes profile:\n"
-                f"  identity: {'connected' if identity.get('connected') else 'not connected'}\n"
+                f"  identity: {account if account else ('connected; reconnect to verify account email' if identity.get('connected') else 'not connected')}\n"
+                f"  remote vault: {remote_vault}\n"
                 f"  vault envelope: {'enrolled' if vault.get('enrolled') else 'not enrolled'}\n"
                 f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n\n"
-                "Use /hussh-one connect to start browser approval, then /hussh-one enroll "
-                "to securely configure this local device."
+                "Use /hussh-one enroll to securely configure this local device. "
+                "Use /hussh-one disconnect before connecting a different account."
             )
+        if action == "lock":
+            if not identity.get("connected"):
+                return "This Hermes profile is not connected to Hussh One."
+            bridge.lock(reason="user_lock")
+            return "Hussh One vault memory is locked for this Hermes profile."
+        if action == "disconnect":
+            if not identity.get("connected"):
+                return "This Hermes profile is not connected to Hussh One."
+            from hermes_cli.hussh_one_pkm.native_prompt import confirm_disconnect
+
+            if not confirm_disconnect(str(identity.get("account_email") or "Hussh One account")):
+                return "Hussh One disconnect was canceled."
+            bridge.revoke_and_disconnect()
+            return "Hussh One was disconnected. The trusted device was revoked and local vault custody was removed."
         if action == "enroll":
             if not identity.get("connected"):
                 return "Connect this Hermes profile first with /hussh-one connect."
@@ -14778,14 +14805,30 @@ def _hussh_one_setup_output(arg: str) -> str:
                     "This Hermes profile already has a local vault envelope. "
                     "Use /hussh-one status to inspect its lock state."
                 )
-            from hermes_cli.hussh_one_pkm.native_prompt import prompt_for_vault_passphrase
+            from hermes_cli.hussh_one_pkm.native_prompt import (
+                disclose_recovery_key,
+                prompt_for_new_vault_passphrase,
+                prompt_for_vault_passphrase,
+            )
 
-            passphrase = prompt_for_vault_passphrase()
+            vault_exists = bridge.vault_preflight().get("vault_exists")
+            passphrase = (
+                prompt_for_vault_passphrase()
+                if vault_exists
+                else prompt_for_new_vault_passphrase()
+            )
             if passphrase is None:
-                return "Hussh One vault enrollment was canceled."
+                return "Hussh One vault setup was canceled. The trusted device remains connected."
             if not passphrase:
                 return "Hussh One vault enrollment requires a non-empty passphrase."
-            result = bridge.enroll_vault(passphrase)
+            result = (
+                bridge.enroll_vault(passphrase)
+                if vault_exists
+                else bridge.create_vault(
+                    passphrase,
+                    disclose_recovery=disclose_recovery_key,
+                )
+            )
             if not result.get("contract_compatible"):
                 return "Vault enrollment stopped because the PKM contract is not compatible."
             return (
@@ -14798,24 +14841,30 @@ def _hussh_one_setup_output(arg: str) -> str:
                     "This Hermes profile is already linked to Hussh One. "
                     "Use /hussh-one status to inspect its lock state."
                 )
+            account = str(identity.get("account_email") or "").strip()
             return (
-                "This Hermes profile is linked to Hussh One. Run /hussh-one enroll to "
-                "secure this device using the native protected prompt."
+                f"This Hermes profile is linked to Hussh One as {account or 'an account that must be reconnected to verify its email'}. "
+                "Run /hussh-one enroll to secure this device, or /hussh-one disconnect before changing accounts."
             )
 
-        authorization = bridge.identity.start_authorization(
+        authorization = bridge.identity.open_authorization(
             device_name="Hussh One Hermes dashboard"
         )
         url = str(authorization.get("authorization_url") or "")
         if not url:
             return "Hussh One browser approval could not be started. Try /hussh-one connect again."
         return (
-            "Open this one-time Hussh One trusted-device approval URL in your browser:\n"
-            f"{url}\n\n"
-            "After approval, run /hussh-one status. Then complete vault enrollment in "
+            "A browser window was opened for Hussh One trusted-device approval. "
+            "Confirm the full account email on that page before approving.\n\n"
+            f"If the browser did not open, use this one-time URL:\n{url}\n\n"
+            "After approval, run /hussh-one status. Then complete vault setup in "
             "this chat with /hussh-one enroll; it uses the native protected prompt."
         )
     except Exception as exc:
+        from hermes_cli.hussh_one_pkm.crypto import VaultCryptoError
+
+        if isinstance(exc, VaultCryptoError):
+            return str(exc)
         return (
             "Hussh One setup could not complete; no vault material was retained. "
             "For UAT, verify the trusted-device owner-capability release is available, "

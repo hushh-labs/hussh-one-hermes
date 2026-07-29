@@ -935,6 +935,7 @@ export interface HusshOneStatus {
     connected: boolean
     environment: string
     device_id: string | null
+    account_email: string | null
     profile_id: string
   }
   vault: {
@@ -948,6 +949,9 @@ export interface HusshOneStatus {
   authorization: {
     status: 'idle' | 'waiting' | 'connected' | 'error'
     error?: string | null
+  }
+  onboarding: {
+    remote_vault: 'not_connected' | 'available' | 'not_created' | 'unavailable'
   }
 }
 
@@ -972,6 +976,7 @@ export function connectHusshOne(deviceName = 'Hermes on Mac'): Promise<{
 }
 
 export function enrollHusshOneVault(profile?: null | string): Promise<{
+  status?: 'canceled'
   enrolled: boolean
   unlocked: boolean
   contract_compatible: boolean

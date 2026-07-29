@@ -53,6 +53,7 @@ class IdentityState:
     user_id: str
     device_id: str
     profile_id: str
+    account_email: str
     api_base: str = UAT_API_BASE
     web_base: str = UAT_WEB_BASE
     environment: str = "uat"
@@ -62,6 +63,7 @@ class IdentityState:
             "user_id": self.user_id,
             "device_id": self.device_id,
             "profile_id": self.profile_id,
+            "account_email": self.account_email,
             "api_base": self.api_base,
             "web_base": self.web_base,
             "environment": self.environment,
@@ -99,6 +101,7 @@ class HusshIdentityClient:
                 user_id=str(payload["user_id"]),
                 device_id=str(payload["device_id"]),
                 profile_id=str(payload["profile_id"]),
+                account_email=str(payload.get("account_email") or "").strip(),
                 api_base=str(payload.get("api_base") or UAT_API_BASE),
                 web_base=str(payload.get("web_base") or UAT_WEB_BASE),
                 environment=str(payload.get("environment") or "uat"),
@@ -251,7 +254,12 @@ class HusshIdentityClient:
                 user_id=str(payload["user_id"]),
                 device_id=str(payload["device_id"]),
                 profile_id=self.profile_id,
+                account_email=str(payload.get("account_email") or "").strip(),
             )
+            if not state.account_email:
+                raise HusshIdentityError(
+                    "The trusted-device exchange did not provide a verified account email."
+                )
             _atomic_json(self.identity_path, state.to_json())
             with self._pending_lock:
                 assert self._pending is not None
