@@ -1155,7 +1155,7 @@ def test_hussh_one_slash_status_never_starts_authorization(monkeypatch):
 
 def test_hussh_one_slash_connect_returns_one_time_approval_url(monkeypatch):
     class _Identity:
-        def start_authorization(self, **_kwargs):
+        def open_authorization(self, **_kwargs):
             return {"authorization_url": "https://example.test/one-time-approval"}
 
     class _Bridge:
@@ -1178,6 +1178,25 @@ def test_hussh_one_slash_connect_returns_one_time_approval_url(monkeypatch):
     assert "native protected prompt" in output
 
 
+def test_hussh_one_slash_connect_lists_disconnect_for_connected_unenrolled_profile(monkeypatch):
+    class _Bridge:
+        @staticmethod
+        def identity_status():
+            return {"account_email": "owner@example.com", "connected": True}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": False, "unlocked": False}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "connect")
+
+    assert output is not None
+    assert "Hussh One is connected as owner@example.com" in output
+    assert "/hussh-one disconnect" in output
+
+
 def test_hussh_one_slash_enroll_uses_native_prompt_without_chat_passphrase(monkeypatch):
     class _Bridge:
         @staticmethod
@@ -1187,6 +1206,10 @@ def test_hussh_one_slash_enroll_uses_native_prompt_without_chat_passphrase(monke
         @staticmethod
         def vault_status():
             return {"enrolled": False, "unlocked": False}
+
+        @staticmethod
+        def vault_preflight():
+            return {"vault_exists": True}
 
         @staticmethod
         def enroll_vault(passphrase):

@@ -74,6 +74,19 @@ describe('HusshOneSetup', () => {
     await waitFor(() => expect(enrollHusshOneVault).toHaveBeenCalledWith('default'))
   })
 
+  it('offers disconnect before vault enrollment so a retry cannot trap an account', async () => {
+    getHusshOneStatus.mockResolvedValue({
+      ...disconnected,
+      identity: { ...disconnected.identity, account_email: 'owner@example.com', connected: true },
+      vault: { ...disconnected.vault, connected: true }
+    })
+    renderSetup()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+
+    await waitFor(() => expect(disconnectHusshOne).toHaveBeenCalledOnce())
+  })
+
   it('shows the verified account and first-vault action after browser approval', async () => {
     getHusshOneStatus.mockResolvedValue({
       ...disconnected,

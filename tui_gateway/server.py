@@ -14838,13 +14838,17 @@ def _hussh_one_setup_output(arg: str) -> str:
         if identity.get("connected"):
             if vault.get("enrolled"):
                 return (
-                    "This Hermes profile is already linked to Hussh One. "
-                    "Use /hussh-one status to inspect its lock state."
+                    "Hussh One is connected for this Hermes profile.\n"
+                    "  /hussh-one status — inspect the account and vault\n"
+                    "  /hussh-one lock — clear local vault memory\n"
+                    "  /hussh-one disconnect — revoke this device and remove local custody"
                 )
             account = str(identity.get("account_email") or "").strip()
             return (
-                f"This Hermes profile is linked to Hussh One as {account or 'an account that must be reconnected to verify its email'}. "
-                "Run /hussh-one enroll to secure this device, or /hussh-one disconnect before changing accounts."
+                f"Hussh One is connected as {account or 'an account that must be reconnected to verify its email'}.\n"
+                "  /hussh-one enroll — secure this device or create the first vault\n"
+                "  /hussh-one status — inspect the account and vault\n"
+                "  /hussh-one disconnect — revoke this device and remove local custody"
             )
 
         authorization = bridge.identity.open_authorization(

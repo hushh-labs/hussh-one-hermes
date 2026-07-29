@@ -150,17 +150,17 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
           </div>
         )}
 
-        {current?.vault.enrolled && (
+        {current?.identity.connected && (
           <div className="mt-4 flex flex-wrap gap-2">
-            {!current.vault.unlocked ? (
+            {current.vault.enrolled && !current.vault.unlocked ? (
               <Button disabled={unlock.isPending} onClick={() => unlock.mutate()} size="sm" type="button" variant="outline">
                 {unlock.isPending ? 'Unlocking…' : 'Unlock'}
               </Button>
-            ) : (
+            ) : current.vault.enrolled ? (
               <Button disabled={lock.isPending} onClick={() => lock.mutate()} size="sm" type="button" variant="outline">
                 Lock vault
               </Button>
-            )}
+            ) : null}
             <Button
               disabled={disconnect.isPending}
               onClick={() => disconnect.mutate()}
