@@ -14720,6 +14720,7 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
         "compress",
         "effort",
         "history",
+        "hussh-one",
         "models",
         "prompt",
         "rename",
@@ -14727,6 +14728,74 @@ _LIVE_SESSION_DIRECT_COMMANDS = frozenset(
         "usage",
     }
 )
+
+
+def _hussh_one_bridge():
+    """Resolve the active profile's local trusted-device bridge lazily."""
+    from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
+
+    return get_profile_bridge()
+
+
+def _hussh_one_setup_output(arg: str) -> str:
+    """Run the chat-safe portion of Hussh One trusted-device onboarding.
+
+    Browser approval can start from any local Hermes chat. Vault enrollment is
+    intentionally not implemented here: the passphrase must remain inside the
+    native Desktop protected prompt, never in the dashboard chat or model
+    context.
+    """
+    action = (arg or "").strip().lower()
+    if action not in {"", "connect", "status", "help"}:
+        return "usage: /hussh-one [connect|status|help]"
+    if action == "help":
+        return (
+            "Hussh One trusted-device setup:\n"
+            "  /hussh-one connect — start browser approval\n"
+            "  /hussh-one status — inspect this profile\n\n"
+            "After browser approval, open Hussh One Desktop → Settings → Hussh One "
+            "to secure the vault with the native protected prompt."
+        )
+
+    try:
+        bridge = _hussh_one_bridge()
+        identity = bridge.identity_status()
+        vault = bridge.vault_status()
+        if action == "status":
+            return (
+                "Hussh One status for this Hermes profile:\n"
+                f"  identity: {'connected' if identity.get('connected') else 'not connected'}\n"
+                f"  vault envelope: {'enrolled' if vault.get('enrolled') else 'not enrolled'}\n"
+                f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n\n"
+                "Use /hussh-one connect to start browser approval. Vault enrollment "
+                "requires Hussh One Desktop's native protected prompt."
+            )
+        if identity.get("connected"):
+            if vault.get("enrolled"):
+                return (
+                    "This Hermes profile is already linked to Hussh One. "
+                    "Open Hussh One Desktop → Settings → Hussh One to inspect or unlock the vault."
+                )
+            return (
+                "This Hermes profile is linked to Hussh One. Open Hussh One Desktop → "
+                "Settings → Hussh One and choose Secure this device; the vault passphrase "
+                "is accepted only by the native protected prompt."
+            )
+
+        authorization = bridge.identity.start_authorization(
+            device_name="Hussh One Hermes dashboard"
+        )
+        url = str(authorization.get("authorization_url") or "")
+        if not url:
+            return "Hussh One browser approval could not be started. Try /hussh-one connect again."
+        return (
+            "Open this one-time Hussh One trusted-device approval URL in your browser:\n"
+            f"{url}\n\n"
+            "After approval, run /hussh-one status. Then complete vault enrollment in "
+            "Hussh One Desktop → Settings → Hussh One using the native protected prompt."
+        )
+    except Exception as exc:
+        return f"Hussh One setup is unavailable: {type(exc).__name__}. Try /hussh-one status again."
 
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
@@ -14907,6 +14976,8 @@ def _format_live_model_output(session: dict) -> str:
 def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg: str) -> Optional[str]:
     name = (name or "").lstrip("/").lower()
     arg = arg or ""
+    if name == "hussh-one":
+        return _hussh_one_setup_output(arg)
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
     if name not in _LIVE_SESSION_DIRECT_COMMANDS:

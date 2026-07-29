@@ -1126,6 +1126,58 @@ def test_load_enabled_toolsets_does_not_add_hussh_one_for_tui(monkeypatch):
     assert server._load_enabled_toolsets() == ["web"]
 
 
+def test_hussh_one_slash_status_never_starts_authorization(monkeypatch):
+    class _Identity:
+        def authorization_status(self):
+            return {"status": "idle"}
+
+        def start_authorization(self, **_kwargs):
+            raise AssertionError("status must not start authorization")
+
+    class _Bridge:
+        identity = _Identity()
+
+        @staticmethod
+        def identity_status():
+            return {"connected": False}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": False, "unlocked": False}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "status")
+
+    assert output is not None
+    assert "identity: not connected" in output
+
+
+def test_hussh_one_slash_connect_returns_one_time_approval_url(monkeypatch):
+    class _Identity:
+        def start_authorization(self, **_kwargs):
+            return {"authorization_url": "https://example.test/one-time-approval"}
+
+    class _Bridge:
+        identity = _Identity()
+
+        @staticmethod
+        def identity_status():
+            return {"connected": False}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": False, "unlocked": False}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "connect")
+
+    assert output is not None
+    assert "https://example.test/one-time-approval" in output
+    assert "native protected prompt" in output
+
+
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(

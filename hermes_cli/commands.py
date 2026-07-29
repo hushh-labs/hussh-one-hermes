@@ -120,6 +120,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
+    CommandDef(
+        "hussh-one",
+        "Connect or inspect this Hussh One trusted device",
+        "Hussh One",
+        args_hint="[connect|status|help]",
+        subcommands=("connect", "status", "help"),
+    ),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
