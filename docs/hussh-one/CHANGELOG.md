@@ -29,6 +29,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `d24b4d261` | **Complete local-TUI vault enrollment.** Added `/hussh-one enroll`, which opens a macOS masked prompt inside the local dashboard process, validates the PKM contract, and writes the Keychain-bound envelope without placing the passphrase in chat or model context. |
 | 2026-07-28 | `923bec546` | **Trusted-device setup from the dashboard.** Added `/hussh-one` slash completion and local status/browser-approval flow to the managed dashboard; vault enrollment remains in the Desktop native protected prompt, never chat. |
 | 2026-07-28 | `29f384403` | **Persistent trusted-device enrollment.** Added profile-scoped Hussh One settings, sidebar status, and Desktop chat entry point; moved `save_to_pkm` out of the shared toolset so only a local Desktop session with an enrolled envelope can receive it. |
 | 2026-07-27 | `e2b4231b1` | **UAT-only trusted-device PKM bridge.** Added optional PKCE onboarding, Keychain-bound identity and vault-envelope custody, local PKM v6 validation/write support, six-tool additive MCP surface with existing Hermes elicitation, system-lock clearing, and profile-scoped rollback. Developer tokens remain application identity and cannot become `VAULT_OWNER`. |
