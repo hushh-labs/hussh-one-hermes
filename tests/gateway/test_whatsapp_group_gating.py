@@ -91,7 +91,7 @@ def test_group_messages_can_require_direct_trigger_via_config():
 
 
 def test_group_messages_with_require_mention_on_replies():
-    adapter = _make_adapter(require_mention=True)
+    adapter = _make_adapter(require_mention=True, group_policy="open")
     adapter.config.extra["require_mention_on_replies"] = True
 
     # Reply WITHOUT a tag/mention -> should be False

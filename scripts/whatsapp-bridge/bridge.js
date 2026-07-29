@@ -330,8 +330,17 @@ async function startSocket() {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       connectionState = 'disconnected';
 
-      if (reason === DisconnectReason.loggedOut) {
-        console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+      // Status codes 401, 403, 405 indicate unrecoverable session/auth failures
+      // (e.g. device logged out, unlinked, prekey invalidation, method not allowed).
+      const isTerminalDisconnect = (
+        reason === DisconnectReason.loggedOut ||
+        reason === 401 ||
+        reason === 403 ||
+        reason === 405
+      );
+
+      if (isTerminalDisconnect) {
+        console.log(`❌ Terminal disconnect (reason: ${reason}). Exiting bridge so gateway can handle re-authentication or restart.`);
         process.exit(1);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect fast.
@@ -340,12 +349,13 @@ async function startSocket() {
           reconnectAttempts = 0;
           setTimeout(startSocket, 1000);
         } else {
-          // Exponential backoff (capped) so a flapping connection (e.g. repeated
-          // 408 AwaitingInitialSync timeouts) does not hammer WhatsApp every 3s,
-          // which itself can trigger rate-limiting and prolong the outage.
-          reconnectAttempts = Math.min(reconnectAttempts + 1, 6);
+          reconnectAttempts += 1;
+          if (reconnectAttempts > 6) {
+            console.log(`❌ Max reconnect attempts reached (reason: ${reason}). Exiting bridge so gateway can handle restart.`);
+            process.exit(1);
+          }
           const delay = Math.min(3000 * 2 ** (reconnectAttempts - 1), 60000);
-          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`);
+          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/6)...`);
           setTimeout(startSocket, delay);
         }
       }

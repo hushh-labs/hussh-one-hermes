@@ -36,7 +36,7 @@ async def test_send_poll_posts_to_bridge_poll_endpoint():
     assert result.success
     assert result.message_id == "poll-msg"
     call = adapter._http_session.post.call_args
-    assert call.args[0] == "http://127.0.0.1:3000/send-poll"
+    assert call.args[0] == f"http://127.0.0.1:{adapter._bridge_port}/send-poll"
     assert call.kwargs["json"] == {
         "chatId": "15551234567@s.whatsapp.net",
         "question": "Proceed?",
@@ -63,7 +63,7 @@ async def test_send_location_posts_to_bridge_location_endpoint():
     assert result.success
     assert result.message_id == "loc-msg"
     call = adapter._http_session.post.call_args
-    assert call.args[0] == "http://127.0.0.1:3000/send-location"
+    assert call.args[0] == f"http://127.0.0.1:{adapter._bridge_port}/send-location"
     assert call.kwargs["json"] == {
         "chatId": "15551234567@s.whatsapp.net",
         "latitude": 41.015,
@@ -82,7 +82,7 @@ async def test_send_tracks_text_chunk_message_ids_in_snake_case_raw_response():
     second.json = AsyncMock(return_value={"success": True, "messageId": "msg-2"})
     adapter._http_session.post = MagicMock(side_effect=[_AsyncCM(first), _AsyncCM(second)])
 
-    result = await adapter.send("15551234567", "x" * (adapter.MAX_MESSAGE_LENGTH + 100))
+    result = await adapter.send("15551234567", "hello " * 700)
 
     assert result.success
     assert result.message_id == "msg-2"

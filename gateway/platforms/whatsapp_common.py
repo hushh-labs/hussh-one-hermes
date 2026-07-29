@@ -381,7 +381,9 @@ class WhatsAppBehaviorMixin:
         if body.startswith("/"):
             return True
         if self._message_is_reply_to_bot(data):
-            return True
+            extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+            if not extra.get("require_mention_on_replies", False):
+                return True
         if self._message_mentions_bot(data):
             return True
         return self._message_matches_mention_patterns(data)

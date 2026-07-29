@@ -37,7 +37,7 @@ def _make_adapter():
     adapter.platform = Platform.WHATSAPP
     adapter.config = MagicMock()
     adapter.config.extra = {}
-    adapter._bridge_port = 3000
+    adapter._bridge_port = 8473
     adapter._bridge_script = "/tmp/test-bridge.js"
     adapter._session_path = MagicMock()
     adapter._bridge_log_fh = None
