@@ -1,5 +1,29 @@
 # Feature — Trusted-Device PKM Bridge
 
+## Visual Map
+
+```mermaid
+flowchart TD
+  command["/hussh-one connect"]
+  browser["One browser approval<br/>Google or Apple + phone admission"]
+  device["Registered Hermes device<br/>verified account email"]
+  preflight{"Remote vault?"}
+  passkey{"Compatible One passkey?"}
+  touch["Touch ID / WebAuthn PRF<br/>PKCE-bound ciphertext handoff"]
+  password["Native masked passphrase<br/>local wrapper unwrap"]
+  create["Native first-vault ceremony<br/>passphrase + recovery wrappers"]
+  validate["vaultKeyHash + no-write PKM validation"]
+  envelope["Keychain-bound local envelope"]
+  ready["Native save_to_pkm ready<br/>local approval required"]
+
+  command --> browser --> device --> preflight
+  preflight -->|exists| passkey
+  passkey -->|yes| touch --> validate
+  passkey -->|missing, canceled, or invalid| password --> validate
+  preflight -->|none| create --> validate
+  validate --> envelope --> ready
+```
+
 ## What it does
 
 Optionally links one Hermes profile to a Hussh One account in UAT. The user
@@ -103,6 +127,42 @@ Disconnect revokes the server-side device, disables the native connector,
 deletes local identity, envelope, and ciphertext-replica state, and removes
 related Keychain items.
 
+The product currently selects the immutable UAT bundle:
+
+- One web: `https://uat.one.hushh.ai`
+- Account/PKM API: `https://api.uat.hushh.ai`
+- Firebase public client identifier: the checked-in UAT value
+- Trusted-device admission: backend feature flag plus explicit allowlist
+
+Vault material is never used to select an environment. A later production
+switch must use an immutable production bundle, require disconnect and local
+custody cleanup first, and reject arbitrary custom origins.
+
+## Browser-to-Hermes handoff
+
+Hermes generates an ephemeral X25519 key pair in process memory together with
+the PKCE verifier and state. Only the public key enters the approval request.
+
+After account approval, the browser may:
+
+1. fetch the authenticated encrypted vault state;
+2. select the exact compatible passkey wrapper for the current RP;
+3. use WebAuthn PRF to unwrap and hash-validate the vault key;
+4. seal the vault key using X25519 plus AES-256-GCM;
+5. attach ciphertext to the pending authorization.
+
+The existing PKCE exchange atomically consumes the one-time code and returns
+the ciphertext only to the process holding the verifier. The authenticated
+encryption context binds state, authorization, device, owner, expiry,
+vault-key hash, wrapper, RP ID, environment, and recipient public key. Hermes
+decrypts in memory, re-reads the remote vault state, validates the hash,
+creates the normal local envelope, and erases the ephemeral private key.
+
+If any part of this optional fast path fails, the authorization remains useful
+and Hermes immediately opens the protected passphrase prompt. The passkey path
+does not create a second vault format or remove the mandatory passphrase and
+recovery wrappers.
+
 ## Fresh-machine onboarding
 
 Prerequisites:
@@ -146,6 +206,22 @@ through native protected prompts. `/hussh-one status` shows the linked verified
 email and vault state; `/hussh-one lock` clears local vault memory; and
 `/hussh-one disconnect` confirms locally, revokes the device, and removes local
 custody. None of these commands send a passphrase or recovery key to the model.
+
+### What each command means
+
+| Command | Meaning |
+| --- | --- |
+| `/hussh-one connect` | Choose and approve a One account in the browser; never accepts an email typed in chat |
+| `/hussh-one enroll` | Resume local custody setup; passkey first when available, protected passphrase otherwise |
+| `/hussh-one status` | Show the verified email, environment, device, enrollment, lock, and sync state |
+| `/hussh-one unlock` | Open the existing Keychain-bound envelope |
+| `/hussh-one lock` | Clear the vault key and action capabilities from memory |
+| `/hussh-one disconnect` | Confirm locally, revoke the device, and delete profile and Keychain custody |
+
+`connect` proves identity and registers the installation. `enroll` proves
+cryptographic access to the existing remote encrypted vault or creates the
+account's first vault. A canceled vault prompt therefore leaves the account
+connected but the device unenrolled.
 
 Enrollment enables the bundled native connector using the same Python runtime
 as Hermes. It does not require cloning another repository, installing a global
@@ -192,6 +268,22 @@ device identity and vault envelope remain bound to that machine.
   Keychain items.
 - Full rollback: disconnect first, then use the normal Hussh One repository
   rollback procedure. Never restore trusted-device secrets from Git.
+
+## Troubleshooting
+
+| Status or symptom | Meaning | Recovery |
+| --- | --- | --- |
+| `waiting_for_browser_approval` | Loopback callback and PKCE grant are pending | Finish browser approval or restart connect after expiry |
+| Connected email shown, no envelope | Identity succeeded; local custody did not | Run `/hussh-one enroll` |
+| Touch ID does not appear | No compatible wrapper/RP or browser PRF support | Continue with the native masked passphrase prompt |
+| Touch ID succeeds, then passphrase appears | Handoff, hash, or readiness validation failed safely | Enter the existing passphrase; no vault was replaced |
+| `vault_setup_canceled` | Native protected UI was canceled | Connection remains; run enroll again |
+| `vault_setup_needs_retry` | Wrapper, Keychain, network, or PKM validation failed | Check UAT availability and retry without deleting the remote vault |
+| `contract_incompatible` | Client and PKM validation contract disagree | Update Hermes and the UAT backend before writing |
+| Device revoked | Refresh and owner-capability issuance fail closed | Disconnect local custody, then reconnect if the Mac remains trusted |
+
+Do not troubleshoot by placing a passphrase in chat, `.env`, `config.yaml`,
+shell arguments, logs, or MCP configuration.
 
 ## Tests
 
