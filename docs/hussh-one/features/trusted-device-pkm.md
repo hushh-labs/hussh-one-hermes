@@ -50,10 +50,13 @@ explicitly approved PKM writes.
 - `pkm.py` preserves the current PKM v6 ciphertext, manifest,
   `PkmMutationPlanV2`, validation-only, sharing-impact, and optimistic
   concurrency contracts.
-- The hosted Hussh Consent MCP remains the read path. `save_to_pkm` is a
-  native Desktop-only tool, guarded by the existing Hermes approval surface;
-  it does not change the hosted MCP handshake or grant an external agent a
-  write path.
+- `read_my_pkm` and `save_to_pkm` are the owner's native vault lane on local
+  Desktop and loopback TUI/dashboard sessions. Reads decrypt only in process;
+  create, update, merge, and delete operations remain guarded by the existing
+  Hermes approval surface.
+- The hosted Hussh Consent MCP remains a separate external-sharing lane for
+  other agents and recipients. Native owner CRUD does not request consent and
+  does not change the hosted MCP handshake.
 - Desktop onboarding remains optional and profile-scoped. It is available both
   during first-run setup and after upgrade through **Settings → Hussh One**, the
   **Hussh One** sidebar item, or the explicit local `/hussh-one` chat command.
@@ -121,8 +124,9 @@ Redis/Memorystore fan-out later without changing the device protocol.
 ## Configuration
 
 No vault material is stored in configuration. The first successful enrollment
-enables the bundled `save_to_pkm` native connector for the active profile; it
-does not add a privileged MCP server or alter the hosted MCP handshake.
+enables the bundled `read_my_pkm` and `save_to_pkm` native connectors for the
+active profile; it does not add a privileged MCP server or alter the hosted MCP
+handshake.
 Disconnect revokes the server-side device, disables the native connector,
 deletes local identity, envelope, and ciphertext-replica state, and removes
 related Keychain items.

@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native, service-gated Hussh One Personal Data write capability."""
+"""Native, service-gated Hussh One private-information capabilities."""
 
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home
 
 from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
+from hermes_cli.hussh_one_pkm.pkm import PkmClient
 from hermes_cli.hussh_one_pkm.service import HusshPkmWriteService
 from tools.approval import request_fresh_action_consent
 from tools.registry import registry, tool_error, tool_result
@@ -44,6 +45,67 @@ def save_to_pkm(args, **_kwargs) -> str:
         return tool_error(str(exc))
 
 
+def read_my_pkm(args, **_kwargs) -> str:
+    """Read only the active owner's locally unlocked Hussh One PKM."""
+    try:
+        client = PkmClient(get_profile_bridge())
+        action = str(args.get("action") or "read").strip().lower()
+        if action == "list_domains":
+            return tool_result(client.list_domains())
+        return tool_result(
+            client.read(
+                domain=args.get("domain", ""),
+                scope_path=args.get("scope_path", ""),
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+registry.register(
+    name="read_my_pkm",
+    toolset="hussh_one",
+    schema={
+        "name": "read_my_pkm",
+        "description": (
+            "Read the active owner's own locally unlocked Hussh One PKM directly "
+            "through this trusted workstation. Use this for 'my PKM', memory, "
+            "recall, and native vault reads; no consent request is needed. Use "
+            "the hosted Hussh Consent MCP only when another party or external "
+            "agent requests shared information. Start with list_domains when "
+            "the domain is unknown, and request the narrowest useful scope."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list_domains", "read"],
+                    "default": "read",
+                },
+                "domain": {
+                    "type": "string",
+                    "description": "Required for read; omit for list_domains.",
+                },
+                "scope_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional dotted path within the domain. Omit only when "
+                        "the owner explicitly needs the complete domain."
+                    ),
+                },
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+    },
+    handler=read_my_pkm,
+    check_fn=_connector_enrolled,
+    emoji="🤫",
+    max_result_size_chars=70_000,
+)
+
+
 registry.register(
     name="save_to_pkm",
     toolset="hussh_one",
@@ -51,9 +113,10 @@ registry.register(
         "name": "save_to_pkm",
         "description": (
             "Propose and, only after a fresh user approval, save one encrypted "
-            "update to the active Hermes profile's Hussh One Personal Data. "
-            "Use the hosted Hussh Consent MCP for all consented reads. This "
-            "tool never returns vault material or decrypted domain snapshots."
+            "create, update, merge, or delete operation in the active owner's "
+            "Hussh One PKM through this trusted workstation. This is the native "
+            "owner CRUD lane; do not substitute the hosted Consent MCP. The tool "
+            "never returns vault material or decrypted domain snapshots."
         ),
         "parameters": {
             "type": "object",

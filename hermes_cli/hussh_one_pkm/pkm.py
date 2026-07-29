@@ -23,6 +23,8 @@ _DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SCOPE_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){0,15}$")
 _PKM_CONTRACT_VERSION = "6.0.0"
 _READABLE_PROJECTION_VERSION = "6.0.0"
+_MAX_NATIVE_READ_LEAVES = 500
+_MAX_NATIVE_READ_JSON_BYTES = 65_536
 _BLOCKED_EXTERNAL_PATH_PARTS = {
     "changes",
     "created_at",
@@ -151,6 +153,15 @@ def _path_exists(value: dict[str, Any], path: str) -> bool:
             return False
         current = current[segment]
     return True
+
+
+def _read_path(value: dict[str, Any], path: str) -> Any:
+    current: Any = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise PkmBridgeError("The requested PKM scope does not exist.")
+        current = current[part]
+    return copy.deepcopy(current)
 
 
 def _count_materialized_leaves(value: Any, path: tuple[str, ...] = ()) -> int:
@@ -317,6 +328,77 @@ class PkmClient:
                     "events_applied": applied,
                     "cursor": self.bridge.replica.cursor(),
                 }
+
+    def list_domains(self) -> dict[str, Any]:
+        """List owner PKM domains without decrypting their contents."""
+        self.bridge.require_vault_key()
+        state = self._state()
+        owner_token = self.bridge.acquire_vault_owner_token()
+        response = self.bridge.http.get(
+            f"{state.api_base}/api/pkm/metadata/{state.user_id}",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        if response.status_code == 404:
+            return {"success": True, "domains": []}
+        response.raise_for_status()
+        domains = []
+        for item in response.json().get("domains") or []:
+            key = str(item.get("key") or "").strip().lower()
+            if key and _DOMAIN_RE.fullmatch(key):
+                domains.append({
+                    "domain": key,
+                    "available_scopes": sorted(
+                        {
+                            str(scope)
+                            for scope in (item.get("available_scopes") or [])
+                            if isinstance(scope, str) and scope
+                        }
+                    ),
+                    "attribute_count": max(0, int(item.get("attribute_count") or 0)),
+                    "last_updated": item.get("last_updated"),
+                })
+        return {"success": True, "domains": sorted(domains, key=lambda item: item["domain"])}
+
+    def read(self, *, domain: str, scope_path: str = "") -> dict[str, Any]:
+        """Decrypt one owner domain, optionally narrowed to a requested scope."""
+        normalized_domain = domain.strip().lower()
+        normalized_scope = scope_path.strip().lower()
+        if not _DOMAIN_RE.fullmatch(normalized_domain):
+            raise PkmBridgeError("A normalized PKM domain is required.")
+        if normalized_scope and not _SCOPE_RE.fullmatch(normalized_scope):
+            raise PkmBridgeError("The requested PKM scope path is invalid.")
+        key = self.bridge.require_vault_key()
+        owner_token = self.bridge.acquire_vault_owner_token()
+        snapshot = self._snapshot(domain=normalized_domain, owner_token=owner_token)
+        if snapshot is None:
+            raise PkmBridgeError("The requested PKM domain does not exist.")
+        domain_data = _decrypt_domain(snapshot["encrypted_blob"], key)
+        value = (
+            _read_path(domain_data, normalized_scope)
+            if normalized_scope
+            else copy.deepcopy(domain_data)
+        )
+        serialized_size = len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+        materialized_leaves = _count_materialized_leaves(value)
+        if (
+            serialized_size > _MAX_NATIVE_READ_JSON_BYTES
+            or materialized_leaves > _MAX_NATIVE_READ_LEAVES
+        ):
+            raise PkmBridgeError(
+                "The requested PKM read is too broad. Request a narrower scope path."
+            )
+        return {
+            "success": True,
+            "domain": normalized_domain,
+            "scope_path": normalized_scope or None,
+            "content_revision": int(snapshot.get("content_revision") or 0),
+            "materialized_leaf_count": materialized_leaves,
+            "value": value,
+        }
 
     def validate_readiness(self) -> dict[str, Any]:
         """Validate current PKM ciphertext/manifest compatibility without saving."""

@@ -1118,12 +1118,22 @@ def test_load_enabled_toolsets_adds_hussh_one_only_for_local_desktop(monkeypatch
     assert server._load_enabled_toolsets() == ["hussh_one", "project", "web"]
 
 
-def test_load_enabled_toolsets_does_not_add_hussh_one_for_tui(monkeypatch):
+def test_load_enabled_toolsets_does_not_add_hussh_one_for_standalone_tui(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_DASHBOARD", raising=False)
 
     assert server._load_enabled_toolsets() == ["web"]
+
+
+def test_load_enabled_toolsets_adds_hussh_one_for_loopback_dashboard(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    monkeypatch.setenv("HERMES_TUI_DASHBOARD", "1")
+
+    assert server._load_enabled_toolsets() == ["hussh_one", "web"]
 
 
 def test_hussh_one_slash_status_never_starts_authorization(monkeypatch):

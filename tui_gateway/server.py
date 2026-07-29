@@ -2997,16 +2997,18 @@ def _load_tool_progress_mode() -> str:
 
 def _load_enabled_toolsets() -> list[str] | None:
     def with_desktop_native_toolsets(enabled: list[str]) -> list[str]:
-        """Expose native custody tools only to the local Desktop chat surface.
+        """Expose native custody tools only to local workstation chat surfaces.
 
-        ``save_to_pkm`` remains independently gated on an enrolled local
-        envelope. Keeping its toolset out of the shared CLI/messaging core
-        prevents a connected external channel from ever receiving a personal
-        PKM write capability.
+        Native PKM tools remain independently gated on an enrolled local
+        envelope. Desktop and the loopback browser dashboard are trusted
+        workstation surfaces; standalone TUI and connected messaging channels
+        remain excluded.
         """
-        if _resolve_session_platform() != "desktop":
-            return enabled
-        return sorted({*enabled, "hussh_one", "project"})
+        if _resolve_session_platform() == "desktop":
+            return sorted({*enabled, "hussh_one", "project"})
+        if is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD")):
+            return sorted({*enabled, "hussh_one"})
+        return enabled
 
     explicit = [
         item.strip()

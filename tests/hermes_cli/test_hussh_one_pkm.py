@@ -39,6 +39,7 @@ from hermes_cli.hussh_one_pkm.pkm import (
     PkmClient,
     PkmProposal,
     _decrypt_domain,
+    _encrypt_domain,
     _patch_leaf_paths,
     _path_exists,
 )
@@ -577,6 +578,186 @@ def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> N
         bytes.fromhex(vector["vault_key_hex"]),
     )
     assert decrypted == {"readiness": {"verified": True}}
+
+
+def test_native_owner_read_lists_domains_and_decrypts_only_requested_scope() -> None:
+    vault_key = bytes(range(32))
+    encrypted_blob = _encrypt_domain(
+        {
+            "identity": {"name": "Owner", "timezone": "America/Los_Angeles"},
+            "preferences": {"theme": "dark"},
+        },
+        vault_key,
+    )
+
+    class Response:
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self.payload = payload
+
+        def json(self) -> dict:
+            return self.payload
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class Http:
+        def get(self, url: str, **_kwargs) -> Response:
+            if "/metadata/" in url:
+                return Response(
+                    200,
+                    {
+                        "domains": [
+                            {
+                                "key": "profile",
+                                "available_scopes": ["identity", "preferences"],
+                                "attribute_count": 3,
+                                "last_updated": "2026-07-29T00:00:00Z",
+                            }
+                        ]
+                    },
+                )
+            if "/domain-snapshot/" in url:
+                return Response(
+                    200,
+                    {
+                        "content_revision": 7,
+                        "manifest_revision": 2,
+                        "encrypted_blob": encrypted_blob,
+                    },
+                )
+            raise AssertionError(f"Unexpected GET {url}")
+
+    class Replica:
+        def store_snapshot(self, _domain: str, _snapshot: dict) -> None:
+            return None
+
+        def delete_domain(self, _domain: str) -> None:
+            return None
+
+    class Identity:
+        @staticmethod
+        def read_state():
+            return SimpleNamespace(
+                api_base="https://api.uat.hushh.ai",
+                user_id="owner-a",
+            )
+
+    bridge = SimpleNamespace(
+        identity=Identity(),
+        http=Http(),
+        replica=Replica(),
+        require_vault_key=lambda: vault_key,
+        acquire_vault_owner_token=lambda: "owner-token",
+    )
+    client = PkmClient(bridge)  # type: ignore[arg-type]
+
+    assert client.list_domains() == {
+        "success": True,
+        "domains": [
+            {
+                "domain": "profile",
+                "available_scopes": ["identity", "preferences"],
+                "attribute_count": 3,
+                "last_updated": "2026-07-29T00:00:00Z",
+            }
+        ],
+    }
+    assert client.read(domain="profile", scope_path="identity.name") == {
+        "success": True,
+        "domain": "profile",
+        "scope_path": "identity.name",
+        "content_revision": 7,
+        "materialized_leaf_count": 1,
+        "value": "Owner",
+    }
+
+
+def test_native_owner_read_rejects_missing_scope_without_falling_back_to_full_domain() -> None:
+    vault_key = bytes(range(32))
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "content_revision": 1,
+                "encrypted_blob": _encrypt_domain(
+                    {"identity": {"name": "Owner"}},
+                    vault_key,
+                ),
+            }
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    bridge = SimpleNamespace(
+        identity=SimpleNamespace(
+            read_state=lambda: SimpleNamespace(
+                api_base="https://api.uat.hushh.ai",
+                user_id="owner-a",
+            )
+        ),
+        http=SimpleNamespace(get=lambda *_args, **_kwargs: Response()),
+        replica=SimpleNamespace(
+            store_snapshot=lambda *_args: None,
+            delete_domain=lambda *_args: None,
+        ),
+        require_vault_key=lambda: vault_key,
+        acquire_vault_owner_token=lambda: "owner-token",
+    )
+
+    with pytest.raises(RuntimeError, match="scope does not exist"):
+        PkmClient(bridge).read(  # type: ignore[arg-type]
+            domain="profile",
+            scope_path="identity.phone",
+        )
+
+
+def test_native_owner_read_rejects_overbroad_decrypted_result() -> None:
+    vault_key = bytes(range(32))
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "content_revision": 1,
+                "encrypted_blob": _encrypt_domain(
+                    {"records": {f"item_{index}": index for index in range(501)}},
+                    vault_key,
+                ),
+            }
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    bridge = SimpleNamespace(
+        identity=SimpleNamespace(
+            read_state=lambda: SimpleNamespace(
+                api_base="https://api.uat.hushh.ai",
+                user_id="owner-a",
+            )
+        ),
+        http=SimpleNamespace(get=lambda *_args, **_kwargs: Response()),
+        replica=SimpleNamespace(
+            store_snapshot=lambda *_args: None,
+            delete_domain=lambda *_args: None,
+        ),
+        require_vault_key=lambda: vault_key,
+        acquire_vault_owner_token=lambda: "owner-token",
+    )
+
+    with pytest.raises(RuntimeError, match="too broad"):
+        PkmClient(bridge).read(  # type: ignore[arg-type]
+            domain="profile",
+            scope_path="records",
+        )
 
 
 def test_first_vault_creation_reuses_one_wrapper_contract_and_requires_recovery_ack(
