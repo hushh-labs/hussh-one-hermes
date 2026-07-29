@@ -1178,6 +1178,32 @@ def test_hussh_one_slash_connect_returns_one_time_approval_url(monkeypatch):
     assert "native protected prompt" in output
 
 
+def test_hussh_one_slash_enroll_uses_native_prompt_without_chat_passphrase(monkeypatch):
+    class _Bridge:
+        @staticmethod
+        def identity_status():
+            return {"connected": True}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": False, "unlocked": False}
+
+        @staticmethod
+        def enroll_vault(passphrase):
+            assert passphrase == "local-native-input"
+            return {"contract_compatible": True}
+
+    import hermes_cli.hussh_one_pkm.native_prompt as native_prompt
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+    monkeypatch.setattr(native_prompt, "prompt_for_vault_passphrase", lambda: "local-native-input")
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "enroll")
+
+    assert output is not None
+    assert "secured and unlocked locally" in output
+
+
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(

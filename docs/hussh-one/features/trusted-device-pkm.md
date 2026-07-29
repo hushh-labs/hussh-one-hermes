@@ -88,7 +88,7 @@ scripts/hussh-one-doctor.sh --require-services
 Then launch the bundled Desktop app with `hermes desktop`. On a fresh machine,
 use the normal model-confirmation onboarding. On an already configured machine
 or after an upgrade, open **Settings → Hussh One**, select **Hussh One** in the
-sidebar, or type the explicit local `/hussh-one` command in Desktop chat.
+sidebar, or use `/hussh-one` from a local Hermes chat.
 
 1. Select **Connect in browser**.
 2. Approve the new Mac as a trusted device in the Hussh One UAT surface.
@@ -97,6 +97,11 @@ sidebar, or type the explicit local `/hussh-one` command in Desktop chat.
    macOS protected prompt.
 5. Confirm **Vault unlocked locally**. Start a new Desktop chat before asking
    the private agent to save an approved PKM update.
+
+The local TUI/dashboard can perform the same guarded setup without moving a
+secret through chat: `/hussh-one connect` starts browser approval, then
+`/hussh-one enroll` opens the native macOS protected prompt. `/hussh-one status`
+is read-only. None of these commands send the passphrase to the model.
 
 Enrollment enables the bundled native connector using the same Python runtime
 as Hermes. It does not require cloning another repository, installing a global

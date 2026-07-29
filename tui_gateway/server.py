@@ -14746,15 +14746,15 @@ def _hussh_one_setup_output(arg: str) -> str:
     context.
     """
     action = (arg or "").strip().lower()
-    if action not in {"", "connect", "status", "help"}:
-        return "usage: /hussh-one [connect|status|help]"
+    if action not in {"", "connect", "enroll", "status", "help"}:
+        return "usage: /hussh-one [connect|enroll|status|help]"
     if action == "help":
         return (
             "Hussh One trusted-device setup:\n"
             "  /hussh-one connect — start browser approval\n"
+            "  /hussh-one enroll — secure this device with a native prompt\n"
             "  /hussh-one status — inspect this profile\n\n"
-            "After browser approval, open Hussh One Desktop → Settings → Hussh One "
-            "to secure the vault with the native protected prompt."
+            "The passphrase is accepted only by the native protected prompt, never chat."
         )
 
     try:
@@ -14767,19 +14767,40 @@ def _hussh_one_setup_output(arg: str) -> str:
                 f"  identity: {'connected' if identity.get('connected') else 'not connected'}\n"
                 f"  vault envelope: {'enrolled' if vault.get('enrolled') else 'not enrolled'}\n"
                 f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n\n"
-                "Use /hussh-one connect to start browser approval. Vault enrollment "
-                "requires Hussh One Desktop's native protected prompt."
+                "Use /hussh-one connect to start browser approval, then /hussh-one enroll "
+                "to securely configure this local device."
+            )
+        if action == "enroll":
+            if not identity.get("connected"):
+                return "Connect this Hermes profile first with /hussh-one connect."
+            if vault.get("enrolled"):
+                return (
+                    "This Hermes profile already has a local vault envelope. "
+                    "Use /hussh-one status to inspect its lock state."
+                )
+            from hermes_cli.hussh_one_pkm.native_prompt import prompt_for_vault_passphrase
+
+            passphrase = prompt_for_vault_passphrase()
+            if passphrase is None:
+                return "Hussh One vault enrollment was canceled."
+            if not passphrase:
+                return "Hussh One vault enrollment requires a non-empty passphrase."
+            result = bridge.enroll_vault(passphrase)
+            if not result.get("contract_compatible"):
+                return "Vault enrollment stopped because the PKM contract is not compatible."
+            return (
+                "Hussh One vault is secured and unlocked locally for this Hermes profile. "
+                "Start a new chat before asking the private agent for an approved PKM write."
             )
         if identity.get("connected"):
             if vault.get("enrolled"):
                 return (
                     "This Hermes profile is already linked to Hussh One. "
-                    "Open Hussh One Desktop → Settings → Hussh One to inspect or unlock the vault."
+                    "Use /hussh-one status to inspect its lock state."
                 )
             return (
-                "This Hermes profile is linked to Hussh One. Open Hussh One Desktop → "
-                "Settings → Hussh One and choose Secure this device; the vault passphrase "
-                "is accepted only by the native protected prompt."
+                "This Hermes profile is linked to Hussh One. Run /hussh-one enroll to "
+                "secure this device using the native protected prompt."
             )
 
         authorization = bridge.identity.start_authorization(
@@ -14792,7 +14813,7 @@ def _hussh_one_setup_output(arg: str) -> str:
             "Open this one-time Hussh One trusted-device approval URL in your browser:\n"
             f"{url}\n\n"
             "After approval, run /hussh-one status. Then complete vault enrollment in "
-            "Hussh One Desktop → Settings → Hussh One using the native protected prompt."
+            "this chat with /hussh-one enroll; it uses the native protected prompt."
         )
     except Exception as exc:
         return f"Hussh One setup is unavailable: {type(exc).__name__}. Try /hussh-one status again."
