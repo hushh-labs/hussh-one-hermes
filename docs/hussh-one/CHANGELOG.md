@@ -29,6 +29,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-29 | `46ec53fb6` | **Unlock lifecycle documentation.** The trusted-device guide now explains that `/hussh-one unlock` reopens the existing Keychain-bound envelope without repeating OAuth, passkey, or passphrase enrollment. |
 | 2026-07-29 | `020885aae` | **TUI vault unlock parity.** `/hussh-one unlock` now opens an enrolled profile's Keychain-bound local envelope without repeating browser approval or passphrase entry, while preserving the existing inactivity, workstation-lock, logout, revocation, and explicit-lock boundaries. |
 | 2026-07-29 | `25639fde3` | **Passkey-assisted trusted-device enrollment.** Browser approval can reuse an RP-compatible One passkey to unwrap and hash-validate the existing vault key, seal it to an ephemeral Hermes key, and deliver ciphertext exactly once through the existing PKCE exchange. Missing, canceled, stale, or incompatible passkeys fall back to the native masked passphrase ceremony; hosted MCP remains unchanged. |
 | 2026-07-29 | `123a0836f` | **Expanded trusted-device operator guide.** The Hussh One guide now documents the UAT environment bundle, dual native/MCP lanes, browser-to-Hermes passkey handoff, command semantics, local custody boundaries, PKM mutation behavior, failure recovery, and verification commands. |
