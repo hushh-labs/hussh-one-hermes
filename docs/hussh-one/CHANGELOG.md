@@ -29,6 +29,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-07-28 | `d0c213c76` | **First-vault recovery remains resumable.** If remote vault creation succeeds but local readiness validation cannot finish, Hermes clears local custody and directs the person to enroll again with the newly created passphrase instead of incorrectly claiming no vault exists. |
 | 2026-07-28 | `a0e86b385` | **Resumable trusted-device vault setup.** Hermes now displays the server-verified Hussh One account locally, opens browser approval from `/hussh-one connect`, provides native lock/disconnect recovery, and creates a first vault through the existing passphrase/recovery-wrapper contract when no vault exists. Recovery disclosure stays in a native save/copy gate; no passphrase or recovery key reaches the renderer, chat, or model. |
 | 2026-07-28 | `d24b4d261` | **Complete local-TUI vault enrollment.** Added `/hussh-one enroll`, which opens a macOS masked prompt inside the local dashboard process, validates the PKM contract, and writes the Keychain-bound envelope without placing the passphrase in chat or model context. |
 | 2026-07-28 | `923bec546` | **Trusted-device setup from the dashboard.** Added `/hussh-one` slash completion and local status/browser-approval flow to the managed dashboard; vault enrollment remains in the Desktop native protected prompt, never chat. |
