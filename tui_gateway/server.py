@@ -14745,14 +14745,15 @@ def _hussh_one_setup_output(arg: str) -> str:
     never in the dashboard chat or model context.
     """
     action = (arg or "").strip().lower()
-    if action not in {"", "connect", "enroll", "status", "lock", "disconnect", "help"}:
-        return "usage: /hussh-one [connect|enroll|status|lock|disconnect|help]"
+    if action not in {"", "connect", "enroll", "status", "unlock", "lock", "disconnect", "help"}:
+        return "usage: /hussh-one [connect|enroll|status|unlock|lock|disconnect|help]"
     if action == "help":
         return (
             "Hussh One trusted-device setup:\n"
             "  /hussh-one connect — open browser approval\n"
             "  /hussh-one enroll — secure this device or create your first vault\n"
             "  /hussh-one status — inspect this profile\n\n"
+            "  /hussh-one unlock — open this profile's Keychain-bound vault envelope\n"
             "  /hussh-one lock — clear local vault memory\n"
             "  /hussh-one disconnect — revoke this device and remove local custody\n\n"
             "Passphrases and recovery keys stay in native protected prompts, never chat."
@@ -14799,6 +14800,18 @@ def _hussh_one_setup_output(arg: str) -> str:
                 return "This Hermes profile is not connected to Hussh One."
             bridge.lock(reason="user_lock")
             return "Hussh One vault memory is locked for this Hermes profile."
+        if action == "unlock":
+            if not identity.get("connected"):
+                return "Connect this Hermes profile first with /hussh-one connect."
+            if not vault.get("enrolled"):
+                return "Secure this device first with /hussh-one enroll."
+            if vault.get("unlocked"):
+                return "Hussh One vault is already unlocked locally for this Hermes profile."
+            bridge.unlock(reason="user_unlock")
+            return (
+                "Hussh One vault is unlocked locally for this Hermes profile. "
+                "Start a new chat before asking the private agent for an approved PKM write."
+            )
         if action == "disconnect":
             if not identity.get("connected"):
                 return "This Hermes profile is not connected to Hussh One."
@@ -14853,6 +14866,7 @@ def _hussh_one_setup_output(arg: str) -> str:
                 return (
                     "Hussh One is connected for this Hermes profile.\n"
                     "  /hussh-one status — inspect the account and vault\n"
+                    "  /hussh-one unlock — open the local vault envelope\n"
                     "  /hussh-one lock — clear local vault memory\n"
                     "  /hussh-one disconnect — revoke this device and remove local custody"
                 )

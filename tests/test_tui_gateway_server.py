@@ -1196,6 +1196,49 @@ def test_hussh_one_slash_connect_lists_disconnect_for_connected_unenrolled_profi
     assert "/hussh-one disconnect" in output
 
 
+def test_hussh_one_slash_unlock_opens_existing_profile_envelope(monkeypatch):
+    calls = []
+
+    class _Bridge:
+        @staticmethod
+        def identity_status():
+            return {"account_email": "owner@example.com", "connected": True}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": True, "unlocked": False}
+
+        @staticmethod
+        def unlock(*, reason):
+            calls.append(reason)
+            return {"unlocked": True}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "unlock")
+
+    assert output is not None
+    assert "vault is unlocked locally" in output
+    assert calls == ["user_unlock"]
+
+
+def test_hussh_one_slash_unlock_requires_enrollment(monkeypatch):
+    class _Bridge:
+        @staticmethod
+        def identity_status():
+            return {"account_email": "owner@example.com", "connected": True}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": False, "unlocked": False}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "unlock")
+
+    assert output == "Secure this device first with /hussh-one enroll."
+
+
 def test_hussh_one_slash_status_explains_durable_custody_and_encrypted_sync(monkeypatch):
     class _Bridge:
         @staticmethod

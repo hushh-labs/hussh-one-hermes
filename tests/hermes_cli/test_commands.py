@@ -725,6 +725,7 @@ class TestSubcommands:
             "connect",
             "enroll",
             "status",
+            "unlock",
             "lock",
             "disconnect",
             "help",
@@ -756,7 +757,7 @@ class TestSubcommandCompletion:
 
     def test_hussh_one_subcommand_completion_includes_disconnect(self):
         texts = {c.text for c in _completions(SlashCommandCompleter(), "/hussh-one ")}
-        assert {"connect", "enroll", "status", "lock", "disconnect", "help"} <= texts
+        assert {"connect", "enroll", "status", "unlock", "lock", "disconnect", "help"} <= texts
 
     def test_fast_command_filtered_out_when_unavailable(self):
         completions = _completions(
