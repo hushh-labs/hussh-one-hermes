@@ -211,11 +211,17 @@ class HusshVaultBridge:
         expected_hash = str(vault_state.get("vaultKeyHash") or "")
         if expected_hash != created.vault_key_hash:
             raise VaultCryptoError("The newly created vault failed its integrity check.")
-        return self._finish_vault_enrollment(
-            state=state,
-            vault_key=created.vault_key,
-            expected_hash=expected_hash,
-        )
+        try:
+            return self._finish_vault_enrollment(
+                state=state,
+                vault_key=created.vault_key,
+                expected_hash=expected_hash,
+            )
+        except Exception as exc:
+            raise VaultCryptoError(
+                "The vault was created, but this device could not be secured. "
+                "Run Hussh One enrollment again using the passphrase you just created."
+            ) from exc
 
     def _finish_vault_enrollment(
         self,

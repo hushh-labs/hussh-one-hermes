@@ -436,6 +436,71 @@ def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Pat
     assert not bridge.envelope_path.exists()
 
 
+def test_first_vault_creation_reports_recoverable_failure_after_remote_persist(
+    tmp_path: Path,
+) -> None:
+    class Response:
+        content = b""
+
+        def __init__(self, payload: dict) -> None:
+            self.status_code = 200
+            self.payload = payload
+
+        def json(self) -> dict:
+            return self.payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeHttp:
+        def post(self, url: str, **kwargs) -> Response:
+            if url.endswith("/db/vault/check"):
+                return Response({"hasVault": False})
+            if url.endswith("/db/vault/setup"):
+                return Response({"success": True})
+            if url.endswith("/db/vault/get"):
+                return Response({"vaultKeyHash": kwargs.get("expected_hash", "")})
+            raise AssertionError(f"Unexpected POST {url}")
+
+    bridge = HusshVaultBridge(profile_home=tmp_path / "profile")
+    bridge.identity.identity_path.parent.mkdir(parents=True)
+    bridge.identity.identity_path.write_text(
+        json.dumps(
+            {
+                "user_id": "user-a",
+                "device_id": "tdv_device-a",
+                "profile_id": bridge.identity.profile_id,
+                "account_email": "owner@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge.http = FakeHttp()  # type: ignore[assignment]
+    bridge.identity.http = bridge.http  # type: ignore[assignment]
+    bridge.identity.auth_headers = lambda: {"Authorization": "Bearer identity"}  # type: ignore[method-assign]
+
+    original_post = bridge.http.post
+
+    def post(url: str, **kwargs):
+        response = original_post(url, **kwargs)
+        if url.endswith("/db/vault/get"):
+            # The bridge checks this value before calling the finalizer; mirror
+            # the currently generated setup request without exposing key data.
+            response.payload["vaultKeyHash"] = setup_payload["vaultKeyHash"]
+        if url.endswith("/db/vault/setup"):
+            setup_payload.update(kwargs["json"])
+        return response
+
+    setup_payload: dict = {}
+    bridge.http.post = post  # type: ignore[method-assign]
+    bridge._finish_vault_enrollment = lambda **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("validation unavailable")
+    )
+
+    with pytest.raises(VaultCryptoError, match="vault was created"):
+        bridge.create_vault("correct horse battery staple", disclose_recovery=lambda _key: True)
+
+
 def test_vault_setup_control_plane_rejects_remote_dashboard() -> None:
     app = FastAPI()
     app.state.auth_required = True
