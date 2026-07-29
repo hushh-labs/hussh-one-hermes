@@ -69,7 +69,7 @@ class TestCommandRegistry:
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
     def test_every_entry_has_valid_category(self):
-        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit", "Hussh One"}
         for cmd in COMMAND_REGISTRY:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
 
@@ -720,6 +720,16 @@ class TestSubcommands:
         assert "list" in SUBCOMMANDS["/cron"]
         assert "add" in SUBCOMMANDS["/cron"]
 
+    def test_hussh_one_exposes_the_full_trusted_device_lifecycle(self):
+        assert SUBCOMMANDS["/hussh-one"] == [
+            "connect",
+            "enroll",
+            "status",
+            "lock",
+            "disconnect",
+            "help",
+        ]
+
     def test_commands_without_subcommands_not_in_dict(self):
         """Plain commands should not appear in SUBCOMMANDS."""
         assert "/help" not in SUBCOMMANDS
@@ -743,6 +753,10 @@ class TestSubcommandCompletion:
         texts = {c.text for c in completions}
         assert "fast" in texts
         assert "normal" in texts
+
+    def test_hussh_one_subcommand_completion_includes_disconnect(self):
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/hussh-one ")}
+        assert {"connect", "enroll", "status", "lock", "disconnect", "help"} <= texts
 
     def test_fast_command_filtered_out_when_unavailable(self):
         completions = _completions(
