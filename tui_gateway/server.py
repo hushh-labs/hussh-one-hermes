@@ -14816,7 +14816,11 @@ def _hussh_one_setup_output(arg: str) -> str:
             "this chat with /hussh-one enroll; it uses the native protected prompt."
         )
     except Exception as exc:
-        return f"Hussh One setup is unavailable: {type(exc).__name__}. Try /hussh-one status again."
+        return (
+            "Hussh One setup could not complete; no vault material was retained. "
+            "For UAT, verify the trusted-device owner-capability release is available, "
+            "then retry /hussh-one enroll."
+        )
 
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
