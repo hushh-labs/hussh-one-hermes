@@ -256,6 +256,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
   }, [navigate])
 
+  useEffect(() => {
+    const onOpenHusshOne = () => navigate(`${SETTINGS_ROUTE}?tab=hussh-one`)
+    window.addEventListener('hermes:open-hussh-one', onOpenHusshOne)
+
+    return () => window.removeEventListener('hermes:open-hussh-one', onOpenHusshOne)
+  }, [navigate])
+
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
   const hydrateFromStoredSession = useCallback(

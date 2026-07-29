@@ -8,6 +8,7 @@ export type SettingsView =
   | 'about'
   | 'billing'
   | 'gateway'
+  | 'hussh-one'
   | 'keybinds'
   | 'keys'
   | 'notifications'

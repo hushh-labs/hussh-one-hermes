@@ -34,6 +34,7 @@ export type DesktopActionId =
   | 'handoff'
   | 'hatch'
   | 'help'
+  | 'hussh-one'
   | 'journey'
   | 'new'
   | 'pet'
@@ -117,6 +118,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/skin', description: 'Switch desktop theme or cycle to the next one', surface: action('skin'), args: true },
   { name: '/title', description: 'Rename the current session', surface: action('title') },
   { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
+  {
+    name: '/hussh-one',
+    description: 'Open secure Hussh One trusted-device setup',
+    aliases: ['/connect-hussh-one'],
+    surface: action('hussh-one')
+  },
   {
     name: '/browser',
     description: 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',

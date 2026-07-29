@@ -102,6 +102,7 @@ import {
   type AppView,
   ARTIFACTS_ROUTE,
   MESSAGING_ROUTE,
+  SETTINGS_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
   SKILLS_ROUTE
@@ -167,6 +168,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="files" {...props} />,
     route: ARTIFACTS_ROUTE,
     keybindActionId: 'nav.artifacts'
+  },
+  {
+    id: 'hussh-one',
+    label: 'Hussh One',
+    icon: props => <Codicon name="shield" {...props} />,
+    route: `${SETTINGS_ROUTE}?tab=hussh-one`
   }
 ]
 
@@ -255,7 +262,7 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
@@ -1105,6 +1112,7 @@ export function ChatSidebar({
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
+                  (item.id === 'hussh-one' && pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('tab') === 'hussh-one') ||
                   // Contributed rows light up at their own route.
                   (Boolean(item.route) && pathname === item.route)
 

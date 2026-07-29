@@ -971,19 +971,13 @@ export function connectHusshOne(deviceName = 'Hermes on Mac'): Promise<{
   })
 }
 
-export function enrollHusshOneVault(passphrase: string): Promise<{
+export function enrollHusshOneVault(profile?: null | string): Promise<{
   enrolled: boolean
   unlocked: boolean
   contract_compatible: boolean
-  mcp_configured: boolean
+  native_connector_ready: boolean
 }> {
-  return window.hermesDesktop.api({
-    ...profileScoped(),
-    path: '/api/hussh-one/vault/enroll',
-    method: 'POST',
-    body: { passphrase },
-    timeoutMs: 60_000
-  })
+  return window.hermesDesktop.enrollHusshOneVault(profile ?? _apiProfile)
 }
 
 export function unlockHusshOneVault(): Promise<{ unlocked: boolean }> {

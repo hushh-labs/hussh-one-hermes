@@ -393,6 +393,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
+        // This is a renderer-only action: it opens the native protected setup
+        // surface and never passes vault material through chat or the gateway.
+        'hussh-one': async () => {
+          window.dispatchEvent(new Event('hermes:open-hussh-one'))
+        },
         // /journey (aliases /learning, /memory-graph) opens the memory graph
         // overlay — the desktop's visual counterpart of the TUI journey
         // timeline — instead of printing a text rendering into the transcript.

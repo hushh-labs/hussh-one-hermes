@@ -9144,6 +9144,55 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   })
 })
 
+const HUSSH_ONE_PROMPT_CANCELLED = '__HUSSH_ONE_PROMPT_CANCELLED__'
+
+function promptHusshOneVaultPassphrase(): Promise<string | null> {
+  if (process.platform !== 'darwin') {
+    return Promise.reject(new Error('Hussh One vault enrollment is currently available on macOS only.'))
+  }
+
+  const script = [
+    'try',
+    'set response to display dialog "Enter your Hussh One vault passphrase to secure this device." default answer "" with hidden answer buttons {"Cancel", "Secure this device"} default button "Secure this device" cancel button "Cancel" with title "Hussh One"',
+    'return text returned of response',
+    'on error number -128',
+    `return "${HUSSH_ONE_PROMPT_CANCELLED}"`,
+    'end try'
+  ].join('\n')
+
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/osascript', ['-e', script], { encoding: 'utf8', timeout: 120_000 }, (error, stdout) => {
+      if (error) {
+        reject(new Error('Could not open the native Hussh One vault prompt.'))
+        return
+      }
+
+      const value = String(stdout || '').replace(/\r?\n$/, '')
+      resolve(value === HUSSH_ONE_PROMPT_CANCELLED ? null : value)
+    })
+  })
+}
+
+ipcMain.handle('hermes:hussh-one:enroll-vault', async (_event, profile: unknown) => {
+  const profileName = typeof profile === 'string' && profile.trim() ? profile.trim() : undefined
+
+  if (globalRemoteActive() || profileHasRemoteOverride(profileName)) {
+    throw new Error('Hussh One vault enrollment is available only on this local workstation.')
+  }
+
+  const passphrase = await promptHusshOneVaultPassphrase()
+  if (passphrase === null) {
+    throw new Error('Hussh One vault enrollment was canceled.')
+  }
+
+  const connection = await ensureBackend(profileName)
+  return fetchJson(`${connection.baseUrl}/api/hussh-one/vault/enroll`, connection.token, {
+    body: { ...(profileName ? { profile: profileName } : {}), passphrase },
+    method: 'POST',
+    timeoutMs: 60_000
+  })
+})
+
 // One deduper per cross-window cue — the choke point every window shares. Main
 // handles IPC serially, so the first window to claim a key wins with no race.
 const isDuplicateNotification = createEventDeduper()

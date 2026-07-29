@@ -2996,6 +2996,18 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    def with_desktop_native_toolsets(enabled: list[str]) -> list[str]:
+        """Expose native custody tools only to the local Desktop chat surface.
+
+        ``save_to_pkm`` remains independently gated on an enrolled local
+        envelope. Keeping its toolset out of the shared CLI/messaging core
+        prevents a connected external channel from ever receiving a personal
+        PKM write capability.
+        """
+        if _resolve_session_platform() != "desktop":
+            return enabled
+        return sorted({*enabled, "hussh_one", "project"})
+
     explicit = [
         item.strip()
         for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
@@ -3016,11 +3028,9 @@ def _load_enabled_toolsets() -> list[str] | None:
 
             selection = coding_selection(platform=_resolve_session_platform())
             if selection is not None:
-                # Fold in `project` here too: this is a GUI-only resolver, and
-                # the focus-mode coding posture returns before the fallback path
-                # that normally adds it — without this the desktop loses the
-                # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                # The focused coding path returns before the fallback below, so
+                # reapply Desktop-native tools here.
+                return with_desktop_native_toolsets(sorted(selection))
         except Exception:
             pass
 
@@ -3058,7 +3068,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             return None
 
         if not unresolved:
-            return built_in
+            return with_desktop_native_toolsets(built_in)
 
         mcp_names: set[str] = set()
         mcp_disabled: set[str] = set()
@@ -3108,7 +3118,7 @@ def _load_enabled_toolsets() -> list[str] | None:
             )
 
         if valid:
-            return valid
+            return with_desktop_native_toolsets(valid)
 
         fallback_notice = (
             "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
@@ -3131,13 +3141,10 @@ def _load_enabled_toolsets() -> list[str] | None:
             print(fallback_notice, file=sys.stderr, flush=True)
         if not enabled:
             return None
-        # The desktop Project tools are off _HERMES_CORE_TOOLS (every other
-        # platform would carry their schema for nothing), so the platform
-        # recovery above — which keys off hermes-cli's tool universe — can't
-        # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
-        # folding in the `project` toolset here is the gate that exposes them on
-        # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        # The Desktop Project tools and Hussh One connector are deliberately
+        # outside _HERMES_CORE_TOOLS. This local renderer is the only surface
+        # that can follow a project move or hold the user-approved vault key.
+        return with_desktop_native_toolsets(sorted(enabled))
     except Exception:
         if fallback_notice is not None:
             print(

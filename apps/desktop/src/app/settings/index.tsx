@@ -15,6 +15,7 @@ import {
   Info,
   Keyboard,
   KeyRound,
+  Lock,
   Package,
   RefreshCw,
   Settings2,
@@ -36,6 +37,7 @@ import { BillingSettings } from './billing'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
+import { HusshOneSettings } from './hussh-one-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { NotificationsSettings } from './notifications-settings'
@@ -48,6 +50,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  'hussh-one',
   'keybinds',
   'keys',
   'notifications',
@@ -199,6 +202,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       onSelect: () => setActiveView('gateway')
     },
     {
+      active: activeView === 'hussh-one',
+      icon: Lock,
+      id: 'hussh-one',
+      label: 'Hussh One',
+      onSelect: () => setActiveView('hussh-one')
+    },
+    {
       active: activeView === 'keybinds',
       icon: Keyboard,
       id: 'keybinds',
@@ -295,6 +305,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <AboutSettings />
           ) : activeView === 'gateway' ? (
             <GatewaySettings />
+          ) : activeView === 'hussh-one' ? (
+            <HusshOneSettings />
           ) : activeView === 'keybinds' ? (
             <KeybindSettings />
           ) : activeView.startsWith('config:') ? (

@@ -1110,6 +1110,22 @@ def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
 
 
+def test_load_enabled_toolsets_adds_hussh_one_only_for_local_desktop(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+
+    assert server._load_enabled_toolsets() == ["hussh_one", "project", "web"]
+
+
+def test_load_enabled_toolsets_does_not_add_hussh_one_for_tui(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+
+    assert server._load_enabled_toolsets() == ["web"]
+
+
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(
@@ -1147,6 +1163,8 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
@@ -1176,6 +1194,8 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
 
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",

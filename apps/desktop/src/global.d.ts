@@ -101,6 +101,14 @@ declare global {
       setKeepAwake?: (on: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      // The native process owns the masked vault prompt. The renderer never
+      // receives the passphrase or serializes it through the generic API bridge.
+      enrollHusshOneVault: (profile?: null | string) => Promise<{
+        enrolled: boolean
+        unlocked: boolean
+        contract_compatible: boolean
+        native_connector_ready: boolean
+      }>
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>

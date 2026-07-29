@@ -85,6 +85,13 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
   })
 
+  it('opens secure Hussh One setup from an explicit desktop chat command', () => {
+    expect(resolveDesktopCommand('/hussh-one')?.surface).toEqual({ kind: 'action', action: 'hussh-one' })
+    expect(resolveDesktopCommand('/connect-hussh-one')?.surface).toEqual({ kind: 'action', action: 'hussh-one' })
+    expect(isDesktopSlashSuggestion('/hussh-one')).toBe(true)
+    expect(isDesktopSlashSuggestion('/connect-hussh-one')).toBe(false)
+  })
+
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
