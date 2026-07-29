@@ -203,7 +203,8 @@ The local TUI/dashboard can perform the same guarded setup without moving a
 secret through chat: `/hussh-one connect` opens browser approval, then
 `/hussh-one enroll` either secures the existing vault or creates the first one
 through native protected prompts. `/hussh-one status` shows the linked verified
-email and vault state; `/hussh-one lock` clears local vault memory; and
+email and vault state; `/hussh-one unlock` opens the existing Keychain-bound
+envelope without asking for the passphrase again; `/hussh-one lock` clears local vault memory; and
 `/hussh-one disconnect` confirms locally, revokes the device, and removes local
 custody. None of these commands send a passphrase or recovery key to the model.
 
