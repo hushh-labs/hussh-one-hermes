@@ -14774,13 +14774,15 @@ def _hussh_one_setup_output(arg: str) -> str:
                 except Exception:
                     remote_vault = "unavailable"
             account = str(identity.get("account_email") or "").strip()
+            onboarding = str(identity.get("onboarding_status") or "idle").replace("_", " ")
             return (
                 "Hussh One status for this Hermes profile:\n"
-                f"  identity: {account if account else ('connected; reconnect to verify account email' if identity.get('connected') else 'not connected')}\n"
+                f"  identity: {account if account else ('reconnect required to verify account email' if identity.get('connected') else 'not connected')}\n"
                 f"  remote vault: {remote_vault}\n"
                 f"  vault envelope: {'enrolled' if vault.get('enrolled') else 'not enrolled'}\n"
                 f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n\n"
-                "Use /hussh-one enroll to securely configure this local device. "
+                f"  setup: {onboarding}\n\n"
+                "Use /hussh-one connect to repair or start browser approval, or /hussh-one enroll to securely configure this local device. "
                 "Use /hussh-one disconnect before connecting a different account."
             )
         if action == "lock":
@@ -14800,6 +14802,8 @@ def _hussh_one_setup_output(arg: str) -> str:
         if action == "enroll":
             if not identity.get("connected"):
                 return "Connect this Hermes profile first with /hussh-one connect."
+            if not str(identity.get("account_email") or "").strip():
+                return "Reconnect this Hermes profile with /hussh-one connect before vault setup."
             if vault.get("enrolled"):
                 return (
                     "This Hermes profile already has a local vault envelope. "
@@ -14835,7 +14839,7 @@ def _hussh_one_setup_output(arg: str) -> str:
                 "Hussh One vault is secured and unlocked locally for this Hermes profile. "
                 "Start a new chat before asking the private agent for an approved PKM write."
             )
-        if identity.get("connected"):
+        if identity.get("connected") and str(identity.get("account_email") or "").strip():
             if vault.get("enrolled"):
                 return (
                     "Hussh One is connected for this Hermes profile.\n"
@@ -14843,26 +14847,28 @@ def _hussh_one_setup_output(arg: str) -> str:
                     "  /hussh-one lock — clear local vault memory\n"
                     "  /hussh-one disconnect — revoke this device and remove local custody"
                 )
-            account = str(identity.get("account_email") or "").strip()
             return (
-                f"Hussh One is connected as {account or 'an account that must be reconnected to verify its email'}.\n"
+                f"Hussh One is connected as {str(identity.get('account_email') or '').strip()}.\n"
                 "  /hussh-one enroll — secure this device or create the first vault\n"
                 "  /hussh-one status — inspect the account and vault\n"
                 "  /hussh-one disconnect — revoke this device and remove local custody"
             )
+        if identity.get("connected") and action != "connect":
+            return (
+                "Hussh One must be reconnected to verify this Hermes profile's account.\n"
+                "  /hussh-one connect — open One sign-in and repair this trusted device\n"
+                "  /hussh-one status — inspect the account and vault\n"
+                "  /hussh-one disconnect — revoke this device and remove local custody"
+            )
 
-        authorization = bridge.identity.open_authorization(
+        bridge.begin_onboarding(
             device_name="Hussh One Hermes dashboard"
         )
-        url = str(authorization.get("authorization_url") or "")
-        if not url:
-            return "Hussh One browser approval could not be started. Try /hussh-one connect again."
         return (
             "A browser window was opened for Hussh One trusted-device approval. "
-            "Confirm the full account email on that page before approving.\n\n"
-            f"If the browser did not open, use this one-time URL:\n{url}\n\n"
-            "After approval, run /hussh-one status. Then complete vault setup in "
-            "this chat with /hussh-one enroll; it uses the native protected prompt."
+            "Sign in with Google or Apple, complete the existing phone requirement, and confirm the full account email on that page.\n\n"
+            "After approval, Hermes automatically opens the native protected vault setup. "
+            "Use /hussh-one status at any time; no passphrase, recovery key, or approval URL is shown in chat."
         )
     except Exception as exc:
         from hermes_cli.hussh_one_pkm.crypto import VaultCryptoError

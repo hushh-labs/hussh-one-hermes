@@ -1153,14 +1153,8 @@ def test_hussh_one_slash_status_never_starts_authorization(monkeypatch):
     assert "identity: not connected" in output
 
 
-def test_hussh_one_slash_connect_returns_one_time_approval_url(monkeypatch):
-    class _Identity:
-        def open_authorization(self, **_kwargs):
-            return {"authorization_url": "https://example.test/one-time-approval"}
-
+def test_hussh_one_slash_connect_opens_browser_without_echoing_approval_url(monkeypatch):
     class _Bridge:
-        identity = _Identity()
-
         @staticmethod
         def identity_status():
             return {"connected": False}
@@ -1169,13 +1163,18 @@ def test_hussh_one_slash_connect_returns_one_time_approval_url(monkeypatch):
         def vault_status():
             return {"enrolled": False, "unlocked": False}
 
+        @staticmethod
+        def begin_onboarding(**_kwargs):
+            return {"status": "waiting"}
+
     monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
 
     output = server._live_slash_command_output("sid", {}, "hussh-one", "connect")
 
     assert output is not None
-    assert "https://example.test/one-time-approval" in output
-    assert "native protected prompt" in output
+    assert "browser window was opened" in output
+    assert "automatically opens the native protected vault setup" in output
+    assert "https://" not in output
 
 
 def test_hussh_one_slash_connect_lists_disconnect_for_connected_unenrolled_profile(monkeypatch):
@@ -1197,11 +1196,33 @@ def test_hussh_one_slash_connect_lists_disconnect_for_connected_unenrolled_profi
     assert "/hussh-one disconnect" in output
 
 
+def test_hussh_one_slash_connect_repairs_legacy_connection_without_verified_email(monkeypatch):
+    class _Bridge:
+        @staticmethod
+        def identity_status():
+            return {"connected": True, "account_email": ""}
+
+        @staticmethod
+        def vault_status():
+            return {"enrolled": False, "unlocked": False}
+
+        @staticmethod
+        def begin_onboarding(**_kwargs):
+            return {"status": "waiting"}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "connect")
+
+    assert output is not None
+    assert "browser window was opened" in output
+
+
 def test_hussh_one_slash_enroll_uses_native_prompt_without_chat_passphrase(monkeypatch):
     class _Bridge:
         @staticmethod
         def identity_status():
-            return {"connected": True}
+            return {"connected": True, "account_email": "owner@example.com"}
 
         @staticmethod
         def vault_status():

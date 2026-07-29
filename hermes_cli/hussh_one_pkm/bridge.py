@@ -56,6 +56,7 @@ class HusshVaultBridge:
         self._vault_key: bytearray | None = None
         self._last_activity = 0.0
         self._lock = threading.RLock()
+        self._onboarding_status = "idle"
         self._monitor = threading.Thread(
             target=self._monitor_shared_lock_state,
             name=f"hussh-vault-lock-{self.identity.profile_id}",
@@ -68,13 +69,76 @@ class HusshVaultBridge:
 
     def identity_status(self) -> dict[str, Any]:
         state = self.identity.read_state()
+        connection_state = "not_connected"
+        if state is not None:
+            connection_state = "connected" if state.account_email else "reconnect_required"
         return {
             "connected": state is not None,
+            "connection_state": connection_state,
             "environment": state.environment if state else "uat",
             "device_id": state.device_id if state else None,
             "account_email": state.account_email if state else None,
             "profile_id": self.identity.profile_id,
+            "onboarding_status": self._onboarding_status,
         }
+
+    def begin_onboarding(self, *, device_name: str) -> dict[str, Any]:
+        """Open One's browser approval and continue vault setup locally.
+
+        A legacy state without a verified email is deliberately repaired by a
+        fresh browser approval. It is not trusted for vault access while the
+        repair is pending, and the server atomically replaces its device row.
+        """
+        state = self.identity.read_state()
+        if state is not None and state.account_email:
+            raise VaultCryptoError(
+                "This Hermes profile is already connected. Disconnect it before choosing another account."
+            )
+        self._onboarding_status = "waiting_for_browser_approval"
+        return self.identity.open_authorization(
+            device_name=device_name,
+            replaces_device_id=state.device_id if state is not None else None,
+            on_connected=self._continue_native_enrollment,
+        )
+
+    def _continue_native_enrollment(self) -> None:
+        """Run the password/recovery ceremony outside chat after browser approval."""
+        if self.envelope_path.exists():
+            self._onboarding_status = "ready"
+            return
+        try:
+            from .native_prompt import (
+                disclose_recovery_key,
+                prompt_for_new_vault_passphrase,
+                prompt_for_vault_passphrase,
+            )
+
+            self._onboarding_status = "awaiting_native_vault_prompt"
+            vault_exists = self.vault_preflight().get("vault_exists")
+            passphrase = (
+                prompt_for_vault_passphrase()
+                if vault_exists
+                else prompt_for_new_vault_passphrase()
+            )
+            if passphrase is None:
+                self._onboarding_status = "vault_setup_canceled"
+                return
+            if not passphrase:
+                self._onboarding_status = "vault_setup_requires_passphrase"
+                return
+            result = (
+                self.enroll_vault(passphrase)
+                if vault_exists
+                else self.create_vault(passphrase, disclose_recovery=disclose_recovery_key)
+            )
+            self._onboarding_status = (
+                "ready" if result.get("contract_compatible") else "contract_incompatible"
+            )
+        except Exception:
+            # Native prompts and vault operations must not leak details into
+            # the terminal transcript. /hussh-one status exposes only this
+            # bounded recovery state.
+            self._onboarding_status = "vault_setup_needs_retry"
 
     def vault_status(self) -> dict[str, Any]:
         state = self.identity.read_state()
@@ -92,6 +156,8 @@ class HusshVaultBridge:
         state = self.identity.read_state()
         if state is None:
             raise VaultCryptoError("Connect this Hermes profile to Hussh One first.")
+        if not state.account_email:
+            raise VaultCryptoError("Reconnect Hussh One to verify this account before vault setup.")
         response = self.http.post(
             f"{state.api_base}/db/vault/check",
             headers=self.identity.auth_headers(),

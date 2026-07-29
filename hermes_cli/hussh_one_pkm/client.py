@@ -17,7 +17,7 @@ import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -148,7 +148,13 @@ class HusshIdentityClient:
         )
         return base64.b64encode(public_der).decode("ascii")
 
-    def start_authorization(self, *, device_name: str) -> dict[str, Any]:
+    def start_authorization(
+        self,
+        *,
+        device_name: str,
+        replaces_device_id: str | None = None,
+        on_connected: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         verifier = secrets.token_urlsafe(64)[:86]
         challenge = (
             base64
@@ -179,9 +185,10 @@ class HusshIdentityClient:
                 "state": state,
                 "status": "waiting",
                 "error": None,
+                "on_connected": on_connected,
             }
 
-        params = urllib.parse.urlencode({
+        request_params = {
             "redirect_uri": redirect_uri,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -189,7 +196,10 @@ class HusshIdentityClient:
             "device_name": device_name.strip() or "Hermes on Mac",
             "platform": "macos",
             "state": state,
-        })
+        }
+        if replaces_device_id:
+            request_params["replaces_device_id"] = replaces_device_id
+        params = urllib.parse.urlencode(request_params)
         authorization_url = (
             f"{UAT_WEB_BASE}/one/profile/security/devices/authorize?{params}"
         )
@@ -204,8 +214,18 @@ class HusshIdentityClient:
             "expires_in": 300,
         }
 
-    def open_authorization(self, *, device_name: str) -> dict[str, Any]:
-        result = self.start_authorization(device_name=device_name)
+    def open_authorization(
+        self,
+        *,
+        device_name: str,
+        replaces_device_id: str | None = None,
+        on_connected: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        result = self.start_authorization(
+            device_name=device_name,
+            replaces_device_id=replaces_device_id,
+            on_connected=on_connected,
+        )
         webbrowser.open(result["authorization_url"])
         return result
 
@@ -244,12 +264,6 @@ class HusshIdentityClient:
             )
             firebase.raise_for_status()
             session = firebase.json()
-            refresh_token = str(session["refreshToken"]).encode("utf-8")
-            self.keychain.set(self._account("firebase-refresh-token"), refresh_token)
-            self._id_token = str(session["idToken"])
-            self._id_token_expires_at = (
-                time.time() + int(session.get("expiresIn") or 3600) - 60
-            )
             state = IdentityState(
                 user_id=str(payload["user_id"]),
                 device_id=str(payload["device_id"]),
@@ -260,10 +274,20 @@ class HusshIdentityClient:
                 raise HusshIdentityError(
                     "The trusted-device exchange did not provide a verified account email."
                 )
+            refresh_token = str(session["refreshToken"]).encode("utf-8")
+            self.keychain.set(self._account("firebase-refresh-token"), refresh_token)
+            self._id_token = str(session["idToken"])
+            self._id_token_expires_at = (
+                time.time() + int(session.get("expiresIn") or 3600) - 60
+            )
             _atomic_json(self.identity_path, state.to_json())
+            callback: Callable[[], None] | None = None
             with self._pending_lock:
                 assert self._pending is not None
                 self._pending["status"] = "connected"
+                callback = self._pending.get("on_connected")
+            if callback is not None:
+                callback()
         except Exception as exc:
             with self._pending_lock:
                 if self._pending is not None:
@@ -273,6 +297,11 @@ class HusshIdentityClient:
             server.server_close()
 
     def id_token(self) -> str:
+        state = self.read_state()
+        if state is not None and not state.account_email:
+            raise HusshIdentityError(
+                "Reconnect Hussh One to verify this account before vault access."
+            )
         if self._id_token and time.time() < self._id_token_expires_at:
             return self._id_token
         refresh_token = self.keychain.get(self._account("firebase-refresh-token"))
@@ -302,7 +331,6 @@ class HusshIdentityClient:
             self.keychain.set(
                 self._account("firebase-refresh-token"), rotated.encode("utf-8")
             )
-        state = self.read_state()
         if state is None:
             self.lock_identity()
             raise HusshIdentityError("The local Hussh identity state is unavailable.")
