@@ -3,15 +3,26 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import FastAPI, HTTPException, Request
 
 from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
+from hermes_cli.hussh_one_pkm.client import (
+    HusshIdentityClient,
+    VAULT_HANDOFF_ALGORITHM,
+    _decrypt_vault_handoff,
+    _vault_handoff_aad,
+)
 from hermes_cli.hussh_one_pkm.crypto import (
     VaultCryptoError,
     read_envelope,
@@ -69,6 +80,17 @@ def _creation_vector() -> dict:
         / "hussh_one_pkm"
         / "golden_vectors"
         / "vault_creation_v1.json"
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _handoff_vector() -> dict:
+    path = (
+        Path(__file__).parents[2]
+        / "hermes_cli"
+        / "hussh_one_pkm"
+        / "golden_vectors"
+        / "trusted_device_vault_handoff_v1.json"
     )
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -141,6 +163,236 @@ def test_local_envelope_is_profile_and_device_bound(tmp_path: Path) -> None:
     unsupported = stored.__class__(**{**stored.to_json(), "schema_version": 2})
     with pytest.raises(VaultCryptoError, match="version is unsupported"):
         unwrap_local_vault_key(envelope=unsupported, device_wrapping_key=wrapping_key)
+
+
+def test_passkey_vault_handoff_is_x25519_sealed_and_identity_bound() -> None:
+    recipient = x25519.X25519PrivateKey.generate()
+    sender = x25519.X25519PrivateKey.generate()
+    shared_secret = sender.exchange(recipient.public_key())
+    wrapping_key = hashlib.sha256(shared_secret).digest()
+    vault_key = bytes(range(32))
+    iv = bytes(range(12))
+    recipient_public_key = base64.b64encode(
+        recipient.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    aad = _vault_handoff_aad(
+        state="state-1",
+        authorization_id="authorization-1",
+        device_id="device-1",
+        user_id="user-1",
+        expires_at=123456,
+        vault_key_hash="hash",
+        wrapper_id="wrapper-1",
+        rp_id="uat.one.hushh.ai",
+        environment="uat",
+        recipient_public_key=recipient_public_key,
+    )
+    encrypted = AESGCM(wrapping_key).encrypt(iv, vault_key, aad)
+    result = {
+        "vault_handoff_alg": VAULT_HANDOFF_ALGORITHM,
+        "vault_handoff_sender_public_key": base64.b64encode(
+            sender.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+        ).decode("ascii"),
+        "vault_handoff_iv": base64.b64encode(iv).decode("ascii"),
+        "vault_handoff_wrapped_key": base64.b64encode(encrypted[:-16]).decode("ascii"),
+        "vault_handoff_tag": base64.b64encode(encrypted[-16:]).decode("ascii"),
+        "vault_handoff_vault_key_hash": "hash",
+        "vault_handoff_wrapper_id": "wrapper-1",
+        "vault_handoff_rp_id": "uat.one.hushh.ai",
+    }
+
+    assert (
+        _decrypt_vault_handoff(
+            result=result,
+            recipient_private_key=recipient,
+            state="state-1",
+            authorization_id="authorization-1",
+            device_id="device-1",
+            user_id="user-1",
+            expires_at=123456,
+            environment="uat",
+            recipient_public_key=recipient_public_key,
+        )
+        == vault_key
+    )
+    with pytest.raises(Exception):
+        _decrypt_vault_handoff(
+            result=result,
+            recipient_private_key=recipient,
+            state="state-1",
+            authorization_id="authorization-1",
+            device_id="another-device",
+            user_id="user-1",
+            expires_at=123456,
+            environment="uat",
+            recipient_public_key=recipient_public_key,
+        )
+
+
+def test_browser_hermes_vault_handoff_golden_vector_parity() -> None:
+    vector = _handoff_vector()
+    recipient_private_key = x25519.X25519PrivateKey.from_private_bytes(
+        base64.b64decode(vector["recipient_private_key_b64"])
+    )
+    result = {
+        "vault_handoff_alg": vector["algorithm"],
+        "vault_handoff_sender_public_key": vector["sender_public_key_b64"],
+        "vault_handoff_iv": vector["iv_b64"],
+        "vault_handoff_wrapped_key": vector["wrapped_key_b64"],
+        "vault_handoff_tag": vector["tag_b64"],
+        "vault_handoff_vault_key_hash": vector["vault_key_hash"],
+        "vault_handoff_wrapper_id": vector["wrapper_id"],
+        "vault_handoff_rp_id": vector["rp_id"],
+    }
+    assert (
+        _vault_handoff_aad(
+            state=vector["state"],
+            authorization_id=vector["authorization_id"],
+            device_id=vector["device_id"],
+            user_id=vector["user_id"],
+            expires_at=vector["expires_at"],
+            vault_key_hash=vector["vault_key_hash"],
+            wrapper_id=vector["wrapper_id"],
+            rp_id=vector["rp_id"],
+            environment=vector["environment"],
+            recipient_public_key=vector["recipient_public_key_b64"],
+        ).decode("utf-8")
+        == vector["aad"]
+    )
+    assert (
+        _decrypt_vault_handoff(
+            result=result,
+            recipient_private_key=recipient_private_key,
+            state=vector["state"],
+            authorization_id=vector["authorization_id"],
+            device_id=vector["device_id"],
+            user_id=vector["user_id"],
+            expires_at=vector["expires_at"],
+            environment=vector["environment"],
+            recipient_public_key=vector["recipient_public_key_b64"],
+        ).hex()
+        == vector["vault_key_hex"]
+    )
+
+
+def test_failed_passkey_enrollment_falls_back_to_masked_passphrase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli.hussh_one_pkm import native_prompt
+
+    bridge = object.__new__(HusshVaultBridge)
+    bridge.envelope_path = tmp_path / "missing-envelope.json"
+    bridge._onboarding_status = "idle"
+    bridge.vault_preflight = lambda: {"vault_exists": True}  # type: ignore[method-assign]
+
+    def reject_passkey(_vault_key: bytes) -> dict:
+        raise VaultCryptoError("stale passkey wrapper")
+
+    bridge.enroll_vault_key = reject_passkey  # type: ignore[method-assign]
+    bridge.enroll_vault = lambda passphrase: {  # type: ignore[method-assign]
+        "contract_compatible": passphrase == "native-secret"
+    }
+    prompts: list[str] = []
+
+    def prompt_for_passphrase() -> str:
+        prompts.append("shown")
+        return "native-secret"
+
+    monkeypatch.setattr(
+        native_prompt,
+        "prompt_for_vault_passphrase",
+        prompt_for_passphrase,
+    )
+
+    bridge._continue_native_enrollment(bytes(range(32)))
+
+    assert prompts == ["shown"]
+    assert bridge._onboarding_status == "ready"
+
+
+def test_authorization_discards_ephemeral_handoff_key_after_exchange(
+    tmp_path: Path,
+) -> None:
+    class FakeKeychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+
+        def get(self, account: str) -> bytes | None:
+            return self.values.get(account)
+
+        def set(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete(self, account: str) -> None:
+            self.values.pop(account, None)
+
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict:
+            return self._payload
+
+    class FakeHttp:
+        def post(self, url: str, **_kwargs: object) -> FakeResponse:
+            if url.endswith("/trusted-device-authorizations/exchange"):
+                return FakeResponse(
+                    {
+                        "firebase_custom_token": "custom-token",
+                        "user_id": "user-1",
+                        "device_id": "device-1",
+                        "account_email": "owner@example.com",
+                    }
+                )
+            return FakeResponse(
+                {
+                    "refreshToken": "refresh-token",
+                    "idToken": "id-token",
+                    "expiresIn": "3600",
+                }
+            )
+
+    class FakeServer:
+        timeout = 0
+        result = {"code": "authorization-code", "state": "state-1"}
+        closed = False
+
+        def handle_request(self) -> None:
+            return
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    client = HusshIdentityClient(
+        profile_home=tmp_path,
+        keychain=FakeKeychain(),  # type: ignore[arg-type]
+        http=FakeHttp(),  # type: ignore[arg-type]
+    )
+    callback_values: list[bytes | None] = []
+    client._pending = {
+        "status": "waiting",
+        "error": None,
+        "on_connected": callback_values.append,
+        "vault_handoff_private_key": x25519.X25519PrivateKey.generate(),
+    }
+    server = FakeServer()
+
+    client._serve_authorization(server, "v" * 43)  # type: ignore[arg-type]
+
+    assert callback_values == [None]
+    assert client._pending["status"] == "connected"
+    assert "vault_handoff_private_key" not in client._pending
+    assert server.closed is True
 
 
 def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(

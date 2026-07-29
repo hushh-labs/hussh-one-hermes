@@ -22,6 +22,8 @@ from typing import Any, Callable
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .keychain import MacOSKeychain
 
@@ -30,6 +32,8 @@ UAT_WEB_BASE = "https://uat.one.hushh.ai"
 # Firebase web API keys are public project identifiers, not credentials. The
 # refresh credential created with this key remains Keychain-only.
 UAT_FIREBASE_WEB_API_KEY = "AIzaSyAJ0RDWrBYF6yIDvwdyoAVO4K5QkL218Yc"
+VAULT_HANDOFF_ALGORITHM = "X25519-AES256-GCM"
+VAULT_HANDOFF_VERSION = "hussh-one-trusted-device-vault-handoff-v1"
 
 
 class HusshIdentityError(RuntimeError):
@@ -153,7 +157,7 @@ class HusshIdentityClient:
         *,
         device_name: str,
         replaces_device_id: str | None = None,
-        on_connected: Callable[[], None] | None = None,
+        on_connected: Callable[[bytes | None], None] | None = None,
     ) -> dict[str, Any]:
         verifier = secrets.token_urlsafe(64)[:86]
         challenge = (
@@ -166,6 +170,13 @@ class HusshIdentityClient:
         # Prove secure device-key storage before opening a callback listener or
         # publishing any pending authorization state.
         device_public_key = self.public_key_b64()
+        vault_handoff_private_key = x25519.X25519PrivateKey.generate()
+        vault_handoff_public_key = base64.b64encode(
+            vault_handoff_private_key.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+        ).decode("ascii")
         server = ThreadingHTTPServer(("127.0.0.1", 0), _LoopbackHandler)
         redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
         server.expected_state = state  # type: ignore[attr-defined]
@@ -186,6 +197,7 @@ class HusshIdentityClient:
                 "status": "waiting",
                 "error": None,
                 "on_connected": on_connected,
+                "vault_handoff_private_key": vault_handoff_private_key,
             }
 
         request_params = {
@@ -196,6 +208,7 @@ class HusshIdentityClient:
             "device_name": device_name.strip() or "Hermes on Mac",
             "platform": "macos",
             "state": state,
+            "vault_handoff_public_key": vault_handoff_public_key,
         }
         if replaces_device_id:
             request_params["replaces_device_id"] = replaces_device_id
@@ -219,7 +232,7 @@ class HusshIdentityClient:
         *,
         device_name: str,
         replaces_device_id: str | None = None,
-        on_connected: Callable[[], None] | None = None,
+        on_connected: Callable[[bytes | None], None] | None = None,
     ) -> dict[str, Any]:
         result = self.start_authorization(
             device_name=device_name,
@@ -281,19 +294,56 @@ class HusshIdentityClient:
                 time.time() + int(session.get("expiresIn") or 3600) - 60
             )
             _atomic_json(self.identity_path, state.to_json())
-            callback: Callable[[], None] | None = None
+            vault_key: bytes | None = None
+            try:
+                with self._pending_lock:
+                    pending_private_key = (
+                        self._pending.get("vault_handoff_private_key")
+                        if self._pending is not None
+                        else None
+                    )
+                if isinstance(pending_private_key, x25519.X25519PrivateKey):
+                    recipient_public_key = base64.b64encode(
+                        pending_private_key.public_key().public_bytes(
+                            serialization.Encoding.Raw,
+                            serialization.PublicFormat.Raw,
+                        )
+                    ).decode("ascii")
+                    vault_key = _decrypt_vault_handoff(
+                        result=payload.get("vault_handoff"),
+                        recipient_private_key=pending_private_key,
+                        state=str(result.get("state") or ""),
+                        device_id=state.device_id,
+                        user_id=state.user_id,
+                        authorization_id=str(payload.get("authorization_id") or ""),
+                        expires_at=int(payload.get("authorization_expires_at") or 0),
+                        environment=state.environment,
+                        recipient_public_key=recipient_public_key,
+                    )
+            except Exception:
+                # The passkey handoff is an optimization, never an identity
+                # dependency. A canceled, unavailable, or malformed handoff
+                # falls back to the native masked passphrase ceremony.
+                vault_key = None
+            callback: Callable[[bytes | None], None] | None = None
             with self._pending_lock:
                 assert self._pending is not None
                 self._pending["status"] = "connected"
                 callback = self._pending.get("on_connected")
             if callback is not None:
-                callback()
+                callback(vault_key)
         except Exception as exc:
             with self._pending_lock:
                 if self._pending is not None:
                     self._pending["status"] = "error"
                     self._pending["error"] = str(exc)
         finally:
+            # The handoff key is an enrollment-only capability. Retain the
+            # bounded status for /hussh-one status, but remove private key
+            # material as soon as this authorization attempt terminates.
+            with self._pending_lock:
+                if self._pending is not None:
+                    self._pending.pop("vault_handoff_private_key", None)
             server.server_close()
 
     def id_token(self) -> str:
@@ -384,6 +434,7 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
             self.server.result = {  # type: ignore[attr-defined]
                 "code": (query.get("code") or [""])[0],
                 "error": (query.get("error") or [""])[0],
+                "state": state,
             }
             self.send_response(200)
             body = b"Device connected. You can return to Hermes."
@@ -392,6 +443,95 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, _format: str, *_args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         # Callback URLs carry one-time authorization codes. Never log them.
+        del format, args
         return
+
+
+def _vault_handoff_aad(
+    *,
+    state: str,
+    authorization_id: str,
+    device_id: str,
+    user_id: str,
+    expires_at: int,
+    vault_key_hash: str,
+    wrapper_id: str,
+    rp_id: str,
+    environment: str,
+    recipient_public_key: str,
+) -> bytes:
+    return "|".join(
+        (
+            VAULT_HANDOFF_VERSION,
+            state,
+            authorization_id,
+            device_id,
+            user_id,
+            str(expires_at),
+            vault_key_hash,
+            wrapper_id,
+            rp_id,
+            environment,
+            recipient_public_key,
+        )
+    ).encode("utf-8")
+
+
+def _decrypt_vault_handoff(
+    *,
+    result: Any,
+    recipient_private_key: x25519.X25519PrivateKey,
+    state: str,
+    device_id: str,
+    user_id: str,
+    authorization_id: str,
+    expires_at: int,
+    environment: str,
+    recipient_public_key: str,
+) -> bytes | None:
+    if not isinstance(result, dict):
+        return None
+    algorithm = str(result.get("vault_handoff_alg") or "")
+    if not algorithm:
+        return None
+    if algorithm != VAULT_HANDOFF_ALGORITHM:
+        raise HusshIdentityError("The passkey vault handoff algorithm is unsupported.")
+    sender_public_raw = base64.b64decode(
+        str(result.get("vault_handoff_sender_public_key") or ""),
+        validate=True,
+    )
+    if len(sender_public_raw) != 32:
+        raise HusshIdentityError("The passkey vault handoff sender key is invalid.")
+    shared_secret = recipient_private_key.exchange(
+        x25519.X25519PublicKey.from_public_bytes(sender_public_raw)
+    )
+    wrapping_key = hashlib.sha256(shared_secret).digest()
+    iv = base64.b64decode(str(result.get("vault_handoff_iv") or ""), validate=True)
+    ciphertext = base64.b64decode(
+        str(result.get("vault_handoff_wrapped_key") or ""),
+        validate=True,
+    )
+    tag = base64.b64decode(str(result.get("vault_handoff_tag") or ""), validate=True)
+    if len(iv) != 12 or len(tag) != 16 or len(ciphertext) != 32:
+        raise HusshIdentityError("The passkey vault handoff payload is invalid.")
+    vault_key = AESGCM(wrapping_key).decrypt(
+        iv,
+        ciphertext + tag,
+        _vault_handoff_aad(
+            state=state,
+            authorization_id=authorization_id,
+            device_id=device_id,
+            user_id=user_id,
+            expires_at=expires_at,
+            vault_key_hash=str(result.get("vault_handoff_vault_key_hash") or ""),
+            wrapper_id=str(result.get("vault_handoff_wrapper_id") or ""),
+            rp_id=str(result.get("vault_handoff_rp_id") or ""),
+            environment=environment,
+            recipient_public_key=recipient_public_key,
+        ),
+    )
+    if len(vault_key) != 32:
+        raise HusshIdentityError("The passkey vault handoff key is invalid.")
+    return vault_key

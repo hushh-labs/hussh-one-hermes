@@ -113,7 +113,7 @@ class HusshVaultBridge:
             on_connected=self._continue_native_enrollment,
         )
 
-    def _continue_native_enrollment(self) -> None:
+    def _continue_native_enrollment(self, passkey_vault_key: bytes | None = None) -> None:
         """Run the password/recovery ceremony outside chat after browser approval."""
         if self.envelope_path.exists():
             self._onboarding_status = "ready"
@@ -127,6 +127,22 @@ class HusshVaultBridge:
 
             self._onboarding_status = "awaiting_native_vault_prompt"
             vault_exists = self.vault_preflight().get("vault_exists")
+            if vault_exists and passkey_vault_key is not None:
+                try:
+                    result = self.enroll_vault_key(passkey_vault_key)
+                except Exception:
+                    # A passkey is only a quick-unlock optimization. If the
+                    # wrapper, handoff, integrity check, or readiness probe is
+                    # no longer valid, immediately continue with the existing
+                    # native masked passphrase flow.
+                    pass
+                else:
+                    self._onboarding_status = (
+                        "ready"
+                        if result.get("contract_compatible")
+                        else "contract_incompatible"
+                    )
+                    return
             passphrase = (
                 prompt_for_vault_passphrase()
                 if vault_exists
@@ -151,6 +167,28 @@ class HusshVaultBridge:
             # the terminal transcript. /hussh-one status exposes only this
             # bounded recovery state.
             self._onboarding_status = "vault_setup_needs_retry"
+
+    def enroll_vault_key(self, vault_key: bytes) -> dict[str, Any]:
+        """Secure an already-unwrapped vault key received from a local passkey ceremony."""
+        state = self.identity.read_state()
+        if state is None:
+            raise VaultCryptoError("Connect this Hermes profile to Hussh One first.")
+        if len(vault_key) != 32:
+            raise VaultCryptoError("The passkey vault key has an invalid format.")
+        response = self.http.post(
+            f"{state.api_base}/db/vault/get",
+            headers=self.identity.auth_headers(),
+            json={"userId": state.user_id},
+        )
+        response.raise_for_status()
+        expected_hash = str(response.json().get("vaultKeyHash") or "")
+        if not expected_hash or vault_key_hash(vault_key) != expected_hash:
+            raise VaultCryptoError("The passkey vault key failed its integrity check.")
+        return self._finish_vault_enrollment(
+            state=state,
+            vault_key=vault_key,
+            expected_hash=expected_hash,
+        )
 
     def vault_status(self) -> dict[str, Any]:
         state = self.identity.read_state()

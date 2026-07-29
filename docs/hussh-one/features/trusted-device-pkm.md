@@ -4,9 +4,10 @@
 
 Optionally links one Hermes profile to a Hussh One account in UAT. The user
 approves the Mac as a trusted device in the browser, then either enters the
-existing vault passphrase or creates a first vault through protected macOS
-prompts. Hermes shows the verified account email locally and receives a narrow
-native Desktop write capability for explicitly approved PKM writes.
+existing vault passphrase, reuses an RP-compatible One passkey, or creates a
+first vault through protected macOS prompts. Hermes shows the verified account
+email locally and receives a narrow native Desktop write capability for
+explicitly approved PKM writes.
 
 ## How it works
 
@@ -15,6 +16,13 @@ native Desktop write capability for explicitly approved PKM writes.
   credential.
 - `bridge.py` unwraps the existing passphrase wrapper locally and stores only a
   device-bound encrypted vault-key envelope in the active profile.
+- When the approval browser has a compatible One passkey, it unwraps and
+  hash-validates the same vault key locally, seals it to an ephemeral Hermes
+  X25519 key, and attaches ciphertext only to the pending authorization. The
+  existing PKCE exchange consumes and returns that ciphertext exactly once.
+  Hermes revalidates the key hash before creating its normal local envelope.
+  A missing, canceled, stale, or incompatible passkey immediately falls back
+  to the protected passphrase prompt.
 - `pkm.py` preserves the current PKM v6 ciphertext, manifest,
   `PkmMutationPlanV2`, validation-only, sharing-impact, and optimistic
   concurrency contracts.
@@ -57,6 +65,10 @@ the short-lived owner capability in memory, so its 15-minute lease is not a
   cursor in the active profile with owner-only permissions.
 - Vault passphrase: transient native-prompt input only; never configuration,
   renderer state, MCP, environment, log, trace, screenshot, or model context.
+- Passkey PRF result and ephemeral X25519 private key: process memory only for
+  the active enrollment attempt. The backend sees only short-lived ciphertext
+  bound to the authorization, account, device, environment, wrapper, RP ID,
+  expiry, and vault-key hash.
 
 The vault clears on explicit lock, macOS workstation lock, device
 authorization failure, and revocation. There is no arbitrary 15-minute vault
@@ -118,10 +130,12 @@ sidebar, or use `/hussh-one` from a local Hermes chat.
    the Hussh One approval page.
 2. Approve the new Mac as a trusted device in the Hussh One UAT surface.
 3. Return to Desktop after identity reports connected as that same email.
-4. Select **Secure this device**. For an existing vault, enter its passphrase
-   in the native macOS protected prompt. For a new account, create and confirm
-   a passphrase, then save or copy the one-time recovery key in the native
-   recovery window before the vault is persisted.
+4. Select **Secure this device**. For an existing vault, the approval browser
+   first offers its compatible One passkey. If none exists or that ceremony is
+   canceled, enter the vault passphrase in the native macOS protected prompt.
+   For a new account, create and confirm a passphrase, then save or copy the
+   one-time recovery key in the native recovery window before the vault is
+   persisted.
 5. Confirm **Vault unlocked locally**. Start a new Desktop chat before asking
    the private agent to save an approved PKM update.
 
@@ -182,6 +196,8 @@ device identity and vault envelope remain bound to that machine.
 ## Tests
 
 - Mirrored TypeScript/Python vault golden vector.
+- Exact passkey-wrapper selection, PKCE-bound ciphertext handoff, authenticated
+  context binding, ephemeral-key cleanup, and protected-passphrase fallback.
 - Passphrase failure and envelope identity binding.
 - PKCE, code replay, nonce replay, signature, and revocation service tests.
 - Proposal safe-result and single-use behavior.
