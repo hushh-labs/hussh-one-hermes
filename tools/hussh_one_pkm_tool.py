@@ -37,6 +37,7 @@ def save_to_pkm(args, **_kwargs) -> str:
                 scope_path=args.get("scope_path", ""),
                 merge_patch=args.get("merge_patch"),
                 summary=args.get("summary", ""),
+                operation=args.get("operation", "upsert"),
             )
         )
     except Exception as exc:
@@ -61,6 +62,23 @@ registry.register(
                 "scope_path": {"type": "string"},
                 "merge_patch": {"type": "object"},
                 "summary": {"type": "string", "maxLength": 500},
+                "operation": {
+                    "type": "string",
+                    "enum": [
+                        "upsert",
+                        "create",
+                        "update",
+                        "merge",
+                        "delete_path",
+                        "delete_scope",
+                        "delete_domain",
+                    ],
+                    "default": "upsert",
+                    "description": (
+                        "Use upsert unless the owner explicitly requested a "
+                        "specific create, merge, or delete operation."
+                    ),
+                },
             },
             "required": ["domain", "scope_path", "merge_patch", "summary"],
             "additionalProperties": False,

@@ -14775,12 +14775,21 @@ def _hussh_one_setup_output(arg: str) -> str:
                     remote_vault = "unavailable"
             account = str(identity.get("account_email") or "").strip()
             onboarding = str(identity.get("onboarding_status") or "idle").replace("_", " ")
+            custody = str(vault.get("custody_mode") or "not enrolled").replace("_", " ")
+            capability = str(vault.get("owner_capability_mode") or "unavailable").replace(
+                "_", " "
+            )
+            sync_status = str(vault.get("device_sync_status") or "idle").replace("_", " ")
+            sync_cursor = max(0, int(vault.get("encrypted_replica_cursor") or 0))
             return (
                 "Hussh One status for this Hermes profile:\n"
                 f"  identity: {account if account else ('reconnect required to verify account email' if identity.get('connected') else 'not connected')}\n"
                 f"  remote vault: {remote_vault}\n"
                 f"  vault envelope: {'enrolled' if vault.get('enrolled') else 'not enrolled'}\n"
-                f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n\n"
+                f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n"
+                f"  local custody: {custody}\n"
+                f"  owner capability: {capability}\n"
+                f"  encrypted sync: {sync_status} (cursor {sync_cursor})\n\n"
                 f"  setup: {onboarding}\n\n"
                 "Use /hussh-one connect to repair or start browser approval, or /hussh-one enroll to securely configure this local device. "
                 "Use /hussh-one disconnect before connecting a different account."

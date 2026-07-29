@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +32,7 @@ from hermes_cli.hussh_one_pkm.pkm import (
     _path_exists,
 )
 from hermes_cli.hussh_one_pkm.service import HusshPkmWriteService, PkmWriteDeclined
+from hermes_cli.hussh_one_pkm.replica import EncryptedPkmReplica
 from hermes_cli.mcp_config import (
     HUSSH_ONE_MCP_TOOLS,
     _is_first_party_hussh_one_mcp,
@@ -141,7 +143,7 @@ def test_local_envelope_is_profile_and_device_bound(tmp_path: Path) -> None:
         unwrap_local_vault_key(envelope=unsupported, device_wrapping_key=wrapping_key)
 
 
-def test_profile_lock_state_requires_explicit_unlock_in_each_process(
+def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
     tmp_path: Path,
 ) -> None:
     class FakeKeychain:
@@ -193,9 +195,6 @@ def test_profile_lock_state_requires_explicit_unlock_in_each_process(
         profile_home=profile,
         keychain=keychain,  # type: ignore[arg-type]
     )
-    with pytest.raises(VaultCryptoError, match="Unlock"):
-        mcp_bridge.require_vault_key()
-    assert mcp_bridge.unlock()["unlocked"] is True
     assert mcp_bridge.require_vault_key() == vault_key
 
     dashboard_bridge.lock(reason="workstation_lock")
@@ -290,6 +289,7 @@ def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> N
         "user_id": "user-a",
         "device_id": "tdv_device-a",
         "profile_id": bridge.identity.profile_id,
+        "account_email": "owner@example.com",
         "api_base": "https://api.uat.hushh.ai",
         "web_base": "https://uat.one.hushh.ai",
         "environment": "uat",
@@ -630,6 +630,41 @@ def test_typescript_mutation_plan_vector_parity() -> None:
     assert plan["confirmation_receipt"]["displayed_scope"] == vector["scope_path"]
 
 
+def test_typescript_delete_mutation_plan_shape_parity() -> None:
+    vector = _mutation_vector()
+    proposal = PkmProposal(
+        proposal_id="pkm_proposal_delete_fixture",
+        domain=vector["domain"],
+        scope_path=vector["scope_path"],
+        operation="delete_scope",
+        summary="Delete the synthetic profile marker.",
+        merge_patch={"profile": None},  # type: ignore[dict-item]
+        sharing_impact=vector["sharing_impact"],
+        source_revision=vector["source_revision"],
+    )
+    client = object.__new__(PkmClient)
+    plan = client._mutation_plan(
+        proposal=proposal,
+        state=SimpleNamespace(user_id=vector["user_id"]),
+        current={
+            "content_revision": vector["source_revision"],
+            "scopes": [
+                {
+                    "scope_handle": vector["scope_handle"],
+                    "summary_projection": {
+                        "top_level_scope_path": vector["scope_path"],
+                    },
+                }
+            ],
+        },
+        impact=vector["sharing_impact"],
+    )
+
+    assert plan["operation"] == "delete"
+    assert plan["source_scope_handle"] == vector["scope_handle"]
+    assert "target_scope_handle" not in plan
+
+
 def test_additive_mcp_surface_keeps_the_six_tool_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -649,3 +684,196 @@ def test_additive_mcp_surface_keeps_the_six_tool_contract(
         "hussh_pkm_commit_write",
         "hussh_vault_lock",
     }
+
+
+def test_encrypted_replica_persists_only_ciphertext_and_monotonic_cursor(
+    tmp_path: Path,
+) -> None:
+    replica = EncryptedPkmReplica(tmp_path / "profile")
+    replica.store_snapshot(
+        "financial",
+        {
+            "content_revision": 4,
+            "manifest_revision": 2,
+            "etag": "opaque",
+            "encrypted_blob": {
+                "ciphertext": "cipher",
+                "iv": "iv",
+                "tag": "tag",
+                "algorithm": "aes-256-gcm",
+            },
+        },
+    )
+    replica.advance(9)
+    replica.advance(4)
+
+    snapshot_path = replica.domains / "financial.json"
+    stored = snapshot_path.read_text(encoding="utf-8")
+    assert '"ciphertext":"cipher"' in stored
+    assert "portfolio" not in stored
+    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    assert replica.cursor() == 9
+
+    replica.delete_domain("financial")
+    assert not snapshot_path.exists()
+
+
+def test_device_sync_applies_cloud_snapshot_then_tombstone(tmp_path: Path) -> None:
+    class Response:
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self.payload = payload
+
+        def json(self) -> dict:
+            return self.payload
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def get(self, url: str, **kwargs) -> Response:
+            if "/device-sync/" in url:
+                cursor = kwargs["params"]["after_cursor"]
+                if cursor == 0:
+                    return Response(
+                        200,
+                        {
+                            "events": [
+                                {
+                                    "cursor": 3,
+                                    "domain": "financial",
+                                    "operation": "upsert",
+                                }
+                            ],
+                            "next_cursor": 3,
+                            "has_more": False,
+                        },
+                    )
+                return Response(
+                    200,
+                    {
+                        "events": [
+                            {
+                                "cursor": 4,
+                                "domain": "financial",
+                                "operation": "delete",
+                            }
+                        ],
+                        "next_cursor": 4,
+                        "has_more": False,
+                    },
+                )
+            if "/domain-snapshot/" in url:
+                return Response(
+                    200,
+                    {
+                        "content_revision": 2,
+                        "manifest_revision": 1,
+                        "etag": "opaque",
+                        "encrypted_blob": {
+                            "ciphertext": "cipher",
+                            "iv": "iv",
+                            "tag": "tag",
+                            "algorithm": "aes-256-gcm",
+                        },
+                    },
+                )
+            raise AssertionError(f"Unexpected GET {url}")
+
+    replica = EncryptedPkmReplica(tmp_path / "profile")
+    bridge = SimpleNamespace(
+        identity=SimpleNamespace(
+            read_state=lambda: SimpleNamespace(
+                api_base="https://api.uat.hushh.ai",
+                user_id="owner-1",
+            )
+        ),
+        acquire_vault_owner_token=lambda: "owner-token",
+        http=FakeHttp(),
+        replica=replica,
+    )
+    client = PkmClient(bridge)  # type: ignore[arg-type]
+
+    first = client.sync_encrypted_replica()
+    assert first == {"success": True, "events_applied": 1, "cursor": 3}
+    assert (replica.domains / "financial.json").exists()
+
+    second = client.sync_encrypted_replica()
+    assert second == {"success": True, "events_applied": 1, "cursor": 4}
+    assert not (replica.domains / "financial.json").exists()
+
+
+def test_owner_capability_is_reused_in_memory_and_cleared_on_lock(
+    tmp_path: Path,
+) -> None:
+    class Response:
+        def __init__(self, payload: dict) -> None:
+            self.status_code = 200
+            self.payload = payload
+
+        def json(self) -> dict:
+            return self.payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.challenge_count = 0
+            self.issue_count = 0
+
+        def post(self, url: str, **_kwargs) -> Response:
+            if url.endswith("/challenge"):
+                self.challenge_count += 1
+                return Response(
+                    {
+                        "challenge_id": "challenge-1",
+                        "nonce": "nonce-1",
+                        "signing_payload": "payload-1",
+                    }
+                )
+            if url.endswith("/vault-owner-token/device"):
+                self.issue_count += 1
+                return Response(
+                    {
+                        "token": f"owner-token-{self.issue_count}",
+                        "expiresAt": int(time.time() * 1000) + 15 * 60 * 1000,
+                    }
+                )
+            raise AssertionError(f"Unexpected POST {url}")
+
+    fake_http = FakeHttp()
+    bridge = HusshVaultBridge(
+        profile_home=tmp_path / "profile",
+        keychain=SimpleNamespace(),  # type: ignore[arg-type]
+        http=fake_http,  # type: ignore[arg-type]
+    )
+    bridge.identity.identity_path.parent.mkdir(parents=True)
+    bridge.identity.identity_path.write_text(
+        json.dumps(
+            {
+                "user_id": "owner-1",
+                "device_id": "tdv_device-1",
+                "profile_id": bridge.identity.profile_id,
+                "account_email": "owner@example.com",
+                "api_base": "https://api.uat.hushh.ai",
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge.identity.auth_headers = lambda: {"Authorization": "Bearer identity"}  # type: ignore[method-assign]
+    bridge.identity.sign = lambda _payload: "signature"  # type: ignore[method-assign]
+    bridge.identity.lock_identity = lambda: None  # type: ignore[method-assign]
+
+    assert bridge.acquire_vault_owner_token() == "owner-token-1"
+    assert bridge.acquire_vault_owner_token() == "owner-token-1"
+    assert fake_http.challenge_count == 1
+    assert fake_http.issue_count == 1
+
+    bridge.lock()
+    assert bridge.acquire_vault_owner_token() == "owner-token-2"
+    assert fake_http.challenge_count == 2

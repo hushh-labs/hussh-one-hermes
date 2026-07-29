@@ -1196,6 +1196,42 @@ def test_hussh_one_slash_connect_lists_disconnect_for_connected_unenrolled_profi
     assert "/hussh-one disconnect" in output
 
 
+def test_hussh_one_slash_status_explains_durable_custody_and_encrypted_sync(monkeypatch):
+    class _Bridge:
+        @staticmethod
+        def identity_status():
+            return {
+                "connected": True,
+                "account_email": "owner@example.com",
+                "onboarding_status": "ready",
+            }
+
+        @staticmethod
+        def vault_status():
+            return {
+                "enrolled": True,
+                "unlocked": True,
+                "custody_mode": "trusted_device_until_lock_or_revoke",
+                "owner_capability_mode": "automatic_short_lived",
+                "device_sync_status": "current",
+                "encrypted_replica_cursor": 42,
+            }
+
+        @staticmethod
+        def vault_preflight():
+            return {"vault_exists": True}
+
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: _Bridge())
+
+    output = server._live_slash_command_output("sid", {}, "hussh-one", "status")
+
+    assert output is not None
+    assert "identity: owner@example.com" in output
+    assert "local custody: trusted device until lock or revoke" in output
+    assert "owner capability: automatic short lived" in output
+    assert "encrypted sync: current (cursor 42)" in output
+
+
 def test_hussh_one_slash_connect_repairs_legacy_connection_without_verified_email(monkeypatch):
     class _Bridge:
         @staticmethod

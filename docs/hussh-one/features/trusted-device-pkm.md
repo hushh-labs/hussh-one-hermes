@@ -34,10 +34,15 @@ native Desktop write capability for explicitly approved PKM writes.
 1. Firebase proves account identity.
 2. The P-256 device signature proves this Hermes installation.
 3. The locally unwrapped vault key enables cryptographic PKM work.
-4. A 15-minute device-bound `VAULT_OWNER` capability authorizes a mutation.
-5. Every commit still requires Hermes MCP approval.
+4. A short-lived device-bound `VAULT_OWNER` capability authorizes a mutation.
+5. Every commit still requires the existing Hermes local approval surface.
 
 A Hussh developer token supplies none of these authorities.
+
+The trusted-device registration and Keychain-bound local custody are durable
+until lock, disconnect, or revocation. Hermes automatically reuses or renews
+the short-lived owner capability in memory, so its 15-minute lease is not a
+15-minute device enrollment or vault-access limit.
 
 ## Local custody
 
@@ -45,13 +50,18 @@ A Hussh developer token supplies none of these authorities.
   wrapping key: macOS Keychain.
 - Encrypted vault-key envelope and non-secret identity metadata: active Hermes
   profile with owner-only file permissions.
-- Unwrapped vault key and ID/owner tokens: process memory only.
+- Unwrapped vault key and ID/owner tokens: process memory only. A new local
+  process may restore the key from its Keychain-bound envelope while the
+  profile and macOS workstation remain unlocked.
+- Current PKM replica: ciphertext snapshots plus a metadata-only mutation
+  cursor in the active profile with owner-only permissions.
 - Vault passphrase: transient native-prompt input only; never configuration,
   renderer state, MCP, environment, log, trace, screenshot, or model context.
 
-The vault clears on explicit lock, inactivity, device authorization failure,
-system lock, and suspend. Revocation blocks new owner capabilities and the next
-identity refresh.
+The vault clears on explicit lock, macOS workstation lock, device
+authorization failure, and revocation. There is no arbitrary 15-minute vault
+timeout. Revocation blocks new owner capabilities and the next identity
+refresh.
 
 ## Read and write behavior
 
@@ -61,12 +71,25 @@ proposal, then commit. Commit displays the affected domain/path, human-readable
 summary, and current sharing/export impact; it re-reads the source revision and
 fails closed if content or sharing changed.
 
+Create, update, merge, path/scope delete, and whole-domain delete use the same
+confirmed mutation plan. Whole-domain deletion is compare-and-delete on the
+reviewed content revision, emits a durable tombstone, and marks overlapping
+continuous encrypted exports for refresh.
+
+Hermes follows a Postgres-backed metadata cursor in the background. An upsert
+event causes it to fetch the latest encrypted domain snapshot; a delete event
+removes the local ciphertext snapshot. The cloud remains authoritative and the
+replica never stores decrypted domain information. The event seam can move to
+Redis/Memorystore fan-out later without changing the device protocol.
+
 ## Configuration
 
 No vault material is stored in configuration. The first successful enrollment
-adds `hussh-one-pkm` to the active profile's `mcp_servers` map. Disconnect
-revokes the server-side device, removes that MCP entry, deletes local identity
-and envelope state, and removes related Keychain items.
+enables the bundled `save_to_pkm` native connector for the active profile; it
+does not add a privileged MCP server or alter the hosted MCP handshake.
+Disconnect revokes the server-side device, disables the native connector,
+deletes local identity, envelope, and ciphertext-replica state, and removes
+related Keychain items.
 
 ## Fresh-machine onboarding
 
@@ -162,6 +185,10 @@ device identity and vault envelope remain bound to that machine.
 - Passphrase failure and envelope identity binding.
 - PKCE, code replay, nonce replay, signature, and revocation service tests.
 - Proposal safe-result and single-use behavior.
+- Encrypted-replica cursor, snapshot permissions, and deletion tombstones.
+- Revision-safe whole-domain delete and export refresh invalidation.
+- Empty dynamic-scope materialization admission; static capabilities are
+  unaffected.
 - Existing Hermes approval and Hussh PKM validation/store regression
   suites remain the integration owners.
 

@@ -8,6 +8,9 @@ from __future__ import annotations
 import base64
 import json
 import os
+import plistlib
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -29,12 +32,14 @@ from .crypto import (
     write_envelope,
 )
 from .keychain import MacOSKeychain
+from .replica import EncryptedPkmReplica
 
 
 class HusshVaultBridge:
     """Owns identity, vault memory, and device-bound owner capabilities."""
 
-    INACTIVITY_TIMEOUT_SECONDS = 15 * 60
+    DEVICE_SYNC_INTERVAL_SECONDS = 30
+    WORKSTATION_LOCK_CHECK_SECONDS = 5
 
     def __init__(
         self,
@@ -53,8 +58,15 @@ class HusshVaultBridge:
         )
         self.envelope_path = self.profile_home / "hussh-one" / "vault-envelope.json"
         self.lock_state_path = self.profile_home / "hussh-one" / "vault-lock-state.json"
+        self.replica = EncryptedPkmReplica(self.profile_home)
         self._vault_key: bytearray | None = None
         self._last_activity = 0.0
+        self._owner_token: bytearray | None = None
+        self._owner_token_expires_at_ms = 0
+        self._next_device_sync_at = 0.0
+        self._next_workstation_lock_check_at = 0.0
+        self._last_device_sync_at_ms = 0
+        self._device_sync_status = "idle"
         self._lock = threading.RLock()
         self._onboarding_status = "idle"
         self._monitor = threading.Thread(
@@ -149,6 +161,11 @@ class HusshVaultBridge:
             "profile_locked": self._profile_is_locked(),
             "device_id": state.device_id if state else None,
             "profile_id": self.identity.profile_id,
+            "custody_mode": "trusted_device_until_lock_or_revoke",
+            "owner_capability_mode": "automatic_short_lived",
+            "encrypted_replica_cursor": self.replica.cursor(),
+            "device_sync_status": self._device_sync_status,
+            "last_device_sync_at_ms": self._last_device_sync_at_ms or None,
         }
 
     def vault_preflight(self) -> dict[str, Any]:
@@ -379,35 +396,100 @@ class HusshVaultBridge:
 
     def _monitor_shared_lock_state(self) -> None:
         while True:
-            inactive = False
-            with self._lock:
-                inactive = (
-                    self._vault_key is not None
-                    and time.monotonic() - self._last_activity
-                    > self.INACTIVITY_TIMEOUT_SECONDS
-                )
-            if inactive:
-                self.lock(reason="inactivity")
-            elif self._profile_is_locked():
+            if self._profile_is_locked():
                 with self._lock:
                     self._clear_vault_key_locked()
+                    self._clear_owner_token_locked()
                 self.identity.lock_identity()
+            elif time.monotonic() >= self._next_workstation_lock_check_at:
+                self._next_workstation_lock_check_at = (
+                    time.monotonic() + self.WORKSTATION_LOCK_CHECK_SECONDS
+                )
+                if self._macos_console_locked():
+                    self.lock(reason="workstation_lock")
+            elif time.monotonic() >= self._next_device_sync_at:
+                self._next_device_sync_at = (
+                    time.monotonic() + self.DEVICE_SYNC_INTERVAL_SECONDS
+                )
+                try:
+                    from .pkm import PkmClient
+
+                    PkmClient(self).sync_encrypted_replica()
+                    self._device_sync_status = "current"
+                    self._last_device_sync_at_ms = int(time.time() * 1000)
+                except Exception:
+                    # Background sync is opportunistic. Status and explicit
+                    # writes surface bounded actionable errors without placing
+                    # credentials or decrypted information in logs.
+                    self._device_sync_status = "retry_pending"
             time.sleep(1)
+
+    @staticmethod
+    def _macos_console_locked() -> bool:
+        if sys.platform != "darwin":
+            return False
+        try:
+            result = subprocess.run(
+                ["/usr/sbin/ioreg", "-n", "Root", "-d1", "-a"],
+                check=True,
+                capture_output=True,
+                timeout=3,
+            )
+            payload = plistlib.loads(result.stdout)
+            if isinstance(payload, dict):
+                return payload.get("IOConsoleLocked") is True
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                return payload[0].get("IOConsoleLocked") is True
+            return False
+        except (
+            KeyError,
+            OSError,
+            subprocess.SubprocessError,
+            plistlib.InvalidFileException,
+        ):
+            return False
 
     def _active_vault_key(self) -> bytes | None:
         with self._lock:
+            if self._macos_console_locked():
+                self._clear_vault_key_locked()
+                self._clear_owner_token_locked()
+                self._write_lock_state(locked=True, reason="workstation_lock")
+                self.identity.lock_identity()
+                return None
             if self._profile_is_locked():
                 self._clear_vault_key_locked()
                 return None
             if self._vault_key is None:
-                return None
-            if time.monotonic() - self._last_activity > self.INACTIVITY_TIMEOUT_SECONDS:
-                self._clear_vault_key_locked()
-                self._write_lock_state(locked=True, reason="inactivity")
-                self.identity.lock_identity()
+                try:
+                    self._restore_vault_key_locked()
+                except Exception:
+                    return None
+            if self._vault_key is None:
                 return None
             self._last_activity = time.monotonic()
             return bytes(self._vault_key)
+
+    def _restore_vault_key_locked(self) -> None:
+        state = self.identity.read_state()
+        if state is None or not self.envelope_path.exists():
+            raise VaultCryptoError("Complete Hussh One vault enrollment first.")
+        wrapping_key = self.keychain.get(self._account("device-wrapping-key"))
+        if wrapping_key is None:
+            raise VaultCryptoError("The device wrapping key is unavailable.")
+        envelope = read_envelope(self.envelope_path)
+        if (
+            envelope.user_id != state.user_id
+            or envelope.device_id != state.device_id
+            or envelope.profile_id != self.identity.profile_id
+        ):
+            raise VaultCryptoError("The local vault envelope identity does not match.")
+        vault_key = unwrap_local_vault_key(
+            envelope=envelope,
+            device_wrapping_key=wrapping_key,
+        )
+        self._vault_key = bytearray(vault_key)
+        self._last_activity = time.monotonic()
 
     def _clear_vault_key_locked(self) -> None:
         if self._vault_key is not None:
@@ -415,6 +497,13 @@ class HusshVaultBridge:
                 self._vault_key[index] = 0
         self._vault_key = None
         self._last_activity = 0.0
+
+    def _clear_owner_token_locked(self) -> None:
+        if self._owner_token is not None:
+            for index in range(len(self._owner_token)):
+                self._owner_token[index] = 0
+        self._owner_token = None
+        self._owner_token_expires_at_ms = 0
 
     def require_vault_key(self) -> bytes:
         key = self._active_vault_key()
@@ -428,6 +517,12 @@ class HusshVaultBridge:
         state = self.identity.read_state()
         if state is None:
             raise VaultCryptoError("Connect this Hermes profile to Hussh One first.")
+        with self._lock:
+            if (
+                self._owner_token is not None
+                and self._owner_token_expires_at_ms > int(time.time() * 1000) + 30_000
+            ):
+                return bytes(self._owner_token).decode("utf-8")
         try:
             identity_headers = self.identity.auth_headers()
         except Exception:
@@ -457,11 +552,18 @@ class HusshVaultBridge:
         if response.status_code in {401, 403}:
             self.lock()
         response.raise_for_status()
-        return str(response.json()["token"])
+        payload = response.json()
+        token = str(payload["token"])
+        with self._lock:
+            self._clear_owner_token_locked()
+            self._owner_token = bytearray(token.encode("utf-8"))
+            self._owner_token_expires_at_ms = int(payload.get("expiresAt") or 0)
+        return token
 
     def lock(self, *, reason: str = "explicit") -> dict[str, Any]:
         with self._lock:
             self._clear_vault_key_locked()
+            self._clear_owner_token_locked()
         self.identity.lock_identity()
         self._write_lock_state(locked=True, reason=reason)
         return {"locked": True}
@@ -473,6 +575,7 @@ class HusshVaultBridge:
             self.envelope_path.unlink()
         if self.lock_state_path.exists():
             self.lock_state_path.unlink()
+        self.replica.clear()
 
     def revoke_and_disconnect(self) -> dict[str, Any]:
         state = self.identity.read_state()

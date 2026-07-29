@@ -46,6 +46,7 @@ class HusshPkmWriteService:
         scope_path: str,
         merge_patch: dict[str, Any],
         summary: str,
+        operation: str = "upsert",
     ) -> dict[str, Any]:
         self.bridge.require_vault_key()
         proposal = self.client.propose(
@@ -53,6 +54,7 @@ class HusshPkmWriteService:
             scope_path=scope_path,
             merge_patch=merge_patch,
             summary=summary,
+            operation=operation,
         )
         decision = self.approve(
             self._approval_message(proposal),

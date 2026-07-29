@@ -23,6 +23,24 @@ _DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SCOPE_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){0,15}$")
 _PKM_CONTRACT_VERSION = "6.0.0"
 _READABLE_PROJECTION_VERSION = "6.0.0"
+_BLOCKED_EXTERNAL_PATH_PARTS = {
+    "changes",
+    "created_at",
+    "debug",
+    "debug_fields",
+    "entity_id",
+    "hash",
+    "metadata",
+    "parser_metadata",
+    "provenance",
+    "schema_version",
+    "source_agent",
+    "timestamps",
+    "updated_at",
+    "workflow",
+    "workflow_id",
+    "workflow_state",
+}
 
 
 class PkmBridgeError(RuntimeError):
@@ -135,6 +153,29 @@ def _path_exists(value: dict[str, Any], path: str) -> bool:
     return True
 
 
+def _count_materialized_leaves(value: Any, path: tuple[str, ...] = ()) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return 1 if value.strip() else 0
+    if isinstance(value, (bool, int, float)):
+        return 1
+    if isinstance(value, list):
+        return sum(
+            _count_materialized_leaves(item, (*path, "_items"))
+            for item in value
+        )
+    if not isinstance(value, dict):
+        return 0
+    count = 0
+    for raw_key, item in value.items():
+        key = str(raw_key).strip().lower()
+        if not key or key in _BLOCKED_EXTERNAL_PATH_PARTS:
+            continue
+        count += _count_materialized_leaves(item, (*path, key))
+    return count
+
+
 def _patch_leaf_paths(value: Any, prefix: str = "") -> list[str]:
     if not isinstance(value, dict) or not value:
         return [prefix] if prefix else []
@@ -143,6 +184,14 @@ def _patch_leaf_paths(value: Any, prefix: str = "") -> list[str]:
         path = f"{prefix}.{key}" if prefix else key
         paths.extend(_patch_leaf_paths(item, path))
     return paths
+
+
+def _patch_has_delete(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    return any(_patch_has_delete(item) for item in value.values())
 
 
 def _path_descriptors(value: Any, prefix: str = "") -> list[dict[str, Any]]:
@@ -227,9 +276,47 @@ class PkmClient:
             headers={"Authorization": f"Bearer {owner_token}"},
         )
         if response.status_code == 404:
+            self.bridge.replica.delete_domain(domain)
             return None
         response.raise_for_status()
-        return response.json()
+        snapshot = response.json()
+        self.bridge.replica.store_snapshot(domain, snapshot)
+        return snapshot
+
+    def sync_encrypted_replica(self) -> dict[str, Any]:
+        """Apply metadata events by fetching only current encrypted snapshots."""
+        state = self._state()
+        owner_token = self.bridge.acquire_vault_owner_token()
+        applied = 0
+        while True:
+            response = self.bridge.http.get(
+                f"{state.api_base}/api/pkm/device-sync/{state.user_id}",
+                headers={"Authorization": f"Bearer {owner_token}"},
+                params={
+                    "after_cursor": self.bridge.replica.cursor(),
+                    "limit": 100,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            events = payload.get("events") or []
+            for event in events:
+                cursor = int(event.get("cursor") or 0)
+                domain = str(event.get("domain") or "").strip().lower()
+                if not domain or not _DOMAIN_RE.fullmatch(domain):
+                    raise PkmBridgeError("The PKM sync feed returned an invalid domain.")
+                if event.get("operation") == "delete":
+                    self.bridge.replica.delete_domain(domain)
+                else:
+                    self._snapshot(domain=domain, owner_token=owner_token)
+                self.bridge.replica.advance(cursor)
+                applied += 1
+            if not payload.get("has_more") or not events:
+                return {
+                    "success": True,
+                    "events_applied": applied,
+                    "cursor": self.bridge.replica.cursor(),
+                }
 
     def validate_readiness(self) -> dict[str, Any]:
         """Validate current PKM ciphertext/manifest compatibility without saving."""
@@ -282,6 +369,7 @@ class PkmClient:
         scope_path: str,
         merge_patch: dict[str, Any],
         summary: str,
+        operation: str = "upsert",
     ) -> PkmProposal:
         domain = domain.strip().lower()
         scope_path = scope_path.strip().lower()
@@ -289,21 +377,54 @@ class PkmClient:
             raise PkmBridgeError(
                 "A normalized top-level domain and scope path are required."
             )
-        if not isinstance(merge_patch, dict) or not merge_patch:
+        requested_operation = str(operation or "upsert").strip().lower()
+        if requested_operation not in {
+            "upsert",
+            "create",
+            "update",
+            "merge",
+            "delete_path",
+            "delete_scope",
+            "delete_domain",
+        }:
+            raise PkmBridgeError("The requested PKM operation is not supported.")
+        if requested_operation == "delete_domain":
+            merge_patch = {}
+        elif not isinstance(merge_patch, dict) or not merge_patch:
             raise PkmBridgeError("A non-empty JSON merge patch is required.")
         changed_paths = _patch_leaf_paths(merge_patch)
-        if not changed_paths or any(
+        if requested_operation != "delete_domain" and (
+            not changed_paths
+            or any(
             path != scope_path and not path.startswith(f"{scope_path}.")
             for path in changed_paths
+            )
         ):
             raise PkmBridgeError(
                 "Every changed path must stay inside the reviewed PKM scope."
+            )
+        if (
+            requested_operation in {"delete_path", "delete_scope"}
+            and not _patch_has_delete(merge_patch)
+        ):
+            raise PkmBridgeError(
+                "A delete operation must use a JSON merge-patch null at the reviewed scope."
             )
         if not summary.strip() or len(summary) > 500:
             raise PkmBridgeError("A concise mutation summary is required.")
         self.bridge.require_vault_key()
         owner_token = self.bridge.acquire_vault_owner_token()
         snapshot = self._snapshot(domain=domain, owner_token=owner_token)
+        if requested_operation == "create" and snapshot is not None:
+            raise PkmBridgeError("The requested PKM domain already exists.")
+        if requested_operation in {
+            "update",
+            "merge",
+            "delete_path",
+            "delete_scope",
+            "delete_domain",
+        } and snapshot is None:
+            raise PkmBridgeError("The requested PKM target does not exist.")
         state = self._state()
         impact_response = self.bridge.http.get(
             f"{state.api_base}/api/pkm/memory/mutation-impact/{state.user_id}/{domain}",
@@ -311,11 +432,14 @@ class PkmClient:
             params={"scope_path": scope_path},
         )
         impact_response.raise_for_status()
+        resolved_operation = requested_operation
+        if requested_operation == "upsert":
+            resolved_operation = "update" if snapshot else "create"
         return PkmProposal(
             proposal_id=f"pkm_proposal_{uuid.uuid4().hex}",
             domain=domain,
             scope_path=scope_path,
-            operation="update" if snapshot else "create",
+            operation=resolved_operation,
             summary=summary.strip(),
             merge_patch=copy.deepcopy(merge_patch),
             sharing_impact=impact_response.json(),
@@ -369,6 +493,16 @@ class PkmClient:
         manifest_version = max(1, previous_manifest_version) + (
             1 if previous and has_new_paths else 0
         )
+        scope_materialization = {}
+        for raw_scope, value in domain_data.items():
+            scope = str(raw_scope).strip().lower()
+            if not scope or scope in _BLOCKED_EXTERNAL_PATH_PARTS:
+                continue
+            leaf_count = _count_materialized_leaves(value, (scope,))
+            scope_materialization[scope] = {
+                "state": "materialized" if leaf_count > 0 else "empty",
+                "materialized_leaf_count": leaf_count,
+            }
         return {
             "manifest_version": manifest_version,
             "domain_contract_version": max(
@@ -391,6 +525,7 @@ class PkmClient:
                 "externalizable_path_count": len(externalizable),
                 "pkm_contract_version": _PKM_CONTRACT_VERSION,
                 "readable_projection_version": _READABLE_PROJECTION_VERSION,
+                "scope_materialization": scope_materialization,
             },
             "top_level_scope_paths": sorted(domain_data),
             "externalizable_paths": externalizable,
@@ -415,13 +550,17 @@ class PkmClient:
             if projection.get("top_level_scope_path") == top_level_scope:
                 handle = str(scope.get("scope_handle") or handle)
                 break
-        operation = "update" if current else "create"
+        operation = (
+            "delete" if proposal.operation.startswith("delete_") else proposal.operation
+        )
+        if operation == "merge" and current is None:
+            operation = "create"
         return {
             "version": 2,
             "plan_id": plan_id,
             "operation": operation,
             **({} if operation == "create" else {"source_scope_handle": handle}),
-            "target_scope_handle": handle,
+            **({} if operation == "delete" else {"target_scope_handle": handle}),
             "proposed_domain": proposal.domain,
             "proposed_scope": proposal.scope_path,
             "friendly_domain_name": proposal.domain.replace("_", " ").title(),
@@ -444,7 +583,7 @@ class PkmClient:
             },
             "semantic_contract_version": _PKM_CONTRACT_VERSION,
             "writer_id": "hussh_one_hermes",
-            "structure_agent_id": "hussh_one_hermes_local_planner",
+            "structure_agent_id": "pkm_structure_agent",
             "source_revision": int((current or {}).get("content_revision") or 0),
             "confirmation_receipt": {
                 "version": 2,
@@ -473,12 +612,18 @@ class PkmClient:
             current_data = (
                 _decrypt_domain(current["encrypted_blob"], key) if current else {}
             )
-            merged = _merge_patch(current_data, proposal.merge_patch)
+            merged = (
+                {}
+                if proposal.operation == "delete_domain"
+                else _merge_patch(current_data, proposal.merge_patch)
+            )
             if not isinstance(merged, dict):
                 raise PkmBridgeError(
                     "The proposed mutation must produce a JSON object."
                 )
-            if not _path_exists(merged, proposal.scope_path):
+            if not proposal.operation.startswith("delete_") and not _path_exists(
+                merged, proposal.scope_path
+            ):
                 raise PkmBridgeError(
                     "The proposed mutation must retain the reviewed top-level scope."
                 )
@@ -495,6 +640,37 @@ class PkmClient:
                 raise PkmBridgeError(
                     "Sharing changed after review. Create and confirm a new proposal."
                 )
+            if proposal.operation.startswith("delete_") and not merged:
+                response = self.bridge.http.post(
+                    f"{state.api_base}/api/pkm/delete-domain",
+                    headers={"Authorization": f"Bearer {owner_token}"},
+                    json={
+                        "user_id": state.user_id,
+                        "domain": proposal.domain,
+                        "expected_data_version": current_revision,
+                        "mutation_plan": self._mutation_plan(
+                            proposal=proposal,
+                            state=state,
+                            current=current,
+                            impact=impact,
+                        ),
+                    },
+                )
+                if response.status_code == 409 and attempt < 2:
+                    continue
+                response.raise_for_status()
+                result = response.json()
+                self.bridge.replica.delete_domain(proposal.domain)
+                return {
+                    "success": True,
+                    "domain": proposal.domain,
+                    "data_version": result.get("data_version"),
+                    "deleted": True,
+                    "exports_marked_for_refresh": bool(
+                        impact.get("enters_next_export_revision")
+                    ),
+                }
+
             manifest = self._manifest(
                 domain_data=merged, scope_path=proposal.scope_path, current=current
             )
