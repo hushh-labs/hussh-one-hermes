@@ -125,6 +125,7 @@ authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-08-03 | `88ca24fb3` | **Gemini 3.6 Flash onboarded to VS Code Copilot BYOK (Vertex ADC)** — added `gemini-3.6-flash` configuration to `litellm-proxy-config.template.yaml` (global Vertex route with fallback to `gemini-3.5-flash`), updated `hussh-one-copilot-setup.sh` to write `Gemini 3.6 Flash (Vertex ADC)` (`1,048,576` in / `65,536` out) into `chatLanguageModels.json`, added `gemini-3.6-flash` to setup smoke tests, and verified native OpenAI-format tool calling (property-anyOf & root-anyOf) and live completions through the auth shim. |
 | 2026-07-28 | `30fd07202` | **Deterministic launchd onboarding.** Proxy/shim registration now waits for asynchronous bootout, retries launchd EIO handoffs, verifies each registered label, and fails explicitly if both loopback ports do not recover. This prevents setup from silently leaving a live shim backed by a missing proxy. |
 | 2026-07-16 | `41c4ef2ca` | Accept blank or absent Copilot bearer headers only through the loopback-bound compatibility shim, restoring affected VS Code custom endpoints without exposing the proxy remotely. |
 | 2026-07-16 | `100b7e4e6` | Completed the headerless VS Code BYOK fallback path through the local LiteLLM auth shim. |
