@@ -35,7 +35,7 @@ VS Code Copilot
 └──────────────────────────┘
       │  Vertex AI (global), ADC
       ▼
-  gemini-3.5-flash · gemini-3.1-pro-preview · claude-sonnet-4-6 · claude-opus-4-8 · claude-sonnet-5 · claude-fable-5
+  gemini-3.6-flash · gemini-3.5-flash · gemini-3.1-pro-preview · claude-sonnet-4-6 · claude-opus-4-8 · claude-sonnet-5 · claude-fable-5
 ```
 
 Both services bind to `127.0.0.1` only.
@@ -82,6 +82,7 @@ hard 400s mid-conversation.
 
 | Model | maxInputTokens | maxOutputTokens | Notes |
 |-------|---------------|-----------------|-------|
+| gemini-3.6-flash | 1,048,576 | 65,536 | output limit is `65537 (exclusive)` |
 | gemini-3.5-flash | 1,048,576 | 65,536 | output limit is `65537 (exclusive)` |
 | gemini-3.1-pro-preview | 2,097,152 | 65,536 | adaptive thinking (low/medium/high) |
 | claude-sonnet-4-6 | 1,000,000 | 128,000 | 1M native on Vertex — **no beta header needed** |
