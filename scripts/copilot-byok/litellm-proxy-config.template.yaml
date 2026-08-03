@@ -28,58 +28,90 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 model_list:
-  # ── Gemini 3.6 Flash: global ──
+  # ── Gemini 3.6 Flash: global (max reasoning: HIGH) ──
   - model_name: gemini-3.6-flash
     litellm_params:
       model: vertex_ai/gemini-3.6-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
       rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
 
-  # ── Gemini 3.5 Flash: multi-region pool (quota = sum of all regions) ──
+  # ── Gemini 3.5 Flash: multi-region pool (quota = sum of all regions, max reasoning: HIGH) ──
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
       rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: asia-southeast1
       rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: asia-northeast1
       rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: asia-south1
       rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
   - model_name: gemini-3.5-flash
     litellm_params:
       model: vertex_ai/gemini-3.5-flash
       vertex_project: __VERTEX_PROJECT__
       vertex_location: europe-west2
       rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
 
-  # ── Gemini 3.1 Pro Preview: global only ──
+  # ── Gemini 3.1 Pro Preview: global only (max reasoning: HIGH) ──
   - model_name: gemini-3.1-pro-preview
     litellm_params:
       model: vertex_ai/gemini-3.1-pro-preview
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
 
   - model_name: gemini-3.1-pro
     litellm_params:
       model: vertex_ai/gemini-3.1-pro-preview
       vertex_project: __VERTEX_PROJECT__
       vertex_location: global
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
 
   # ── Claude Sonnet 4.6: global only ──
   - model_name: claude-sonnet-4-6
