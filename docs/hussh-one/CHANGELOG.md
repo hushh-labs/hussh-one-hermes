@@ -125,6 +125,7 @@ authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-08-03 | `67eadbe41` | **Gemini BYOK search-tool schema enhancements.** Updated `litellm_auth_shim.py` to annotate search tool parameters for Gemini models (explicit relative pathing and literal query text hints) and added unit tests in `test_litellm_auth_shim_gemini_schema.py`. |
 | 2026-08-03 | `f5f271bde` | **Doctor guard updated for `max` reasoning effort.** Extended `hussh-one-doctor.sh` to accept both `high` and `max` as valid `agent.reasoning_effort` configurations without triggering a health check warning. |
 | 2026-08-03 | `f292a28f8` | **Maximum reasoning level (HIGH) default for Gemini BYOK models.** Configured `extra_body.generation_config.thinking_config.thinking_level: HIGH` across all Gemini models in `litellm-proxy-config.template.yaml` so VS Code Copilot requests default to maximum reasoning depth on Vertex AI. |
 | 2026-08-03 | `88ca24fb3` | **Gemini 3.6 Flash onboarded to VS Code Copilot BYOK (Vertex ADC)** — added `gemini-3.6-flash` configuration to `litellm-proxy-config.template.yaml` (global Vertex route with fallback to `gemini-3.5-flash`), updated `hussh-one-copilot-setup.sh` to write `Gemini 3.6 Flash (Vertex ADC)` (`1,048,576` in / `65,536` out) into `chatLanguageModels.json`, added `gemini-3.6-flash` to setup smoke tests, and verified native OpenAI-format tool calling (property-anyOf & root-anyOf) and live completions through the auth shim. |
