@@ -226,3 +226,28 @@ class TestScrubToolsForGemini:
         data = json.loads(out)
         assert data["tools"][0] == clean_tool  # untouched
         assert "anyOf" not in data["tools"][1]["function"]["parameters"]
+
+
+class TestSearchToolSchemaEnhancement:
+    def test_enhances_query_and_path_hints_for_search_tools(self, shim):
+        search_tool = {
+            "type": "function",
+            "function": {
+                "name": "file_search",
+                "description": "Search for files in workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search term."},
+                        "path": {"type": "string", "description": "Target folder."},
+                    },
+                },
+            },
+        }
+        body = json.dumps({"model": "gemini-3.5-flash", "tools": [search_tool]}).encode()
+        out = shim._scrub_tools_for_gemini(body, "application/json")
+        data = json.loads(out)
+        props = data["tools"][0]["function"]["parameters"]["properties"]
+        assert "Do NOT add leading or trailing '*' wildcards" in props["query"]["description"]
+        assert "Must be a relative workspace path" in props["path"]["description"]
+

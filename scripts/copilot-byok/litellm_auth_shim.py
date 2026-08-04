@@ -352,10 +352,57 @@ def _sanitize_gemini_tool_schema(schema: dict) -> dict:
     return out
 
 
+def _enhance_search_tool_schema_for_gemini(fn_name: str, fn: dict) -> dict:
+    """Enhance parameter descriptions for search-related tools so Gemini on Vertex
+    generates search queries that match VS Code Copilot's expectations:
+      - Plain literal text queries (no wildcards '*' or '?') for text search
+      - Relative workspace paths (e.g. 'src/components') instead of absolute paths
+    """
+    fn_lower = fn_name.lower()
+    if not any(k in fn_lower for k in ("search", "find", "grep", "file", "codebase")):
+        return fn
+
+    params = fn.get("parameters")
+    if not isinstance(params, dict) or not isinstance(params.get("properties"), dict):
+        return fn
+
+    props = dict(params["properties"])
+    modified = False
+
+    for prop_name, prop_def in props.items():
+        if not isinstance(prop_def, dict):
+            continue
+        p_lower = prop_name.lower()
+        desc = prop_def.get("description", "")
+
+        # 1) Search query / pattern guidance
+        if p_lower in ("query", "pattern", "searchtext", "term", "text", "substring"):
+            hint = "Note: Provide plain literal text or clean regex. Do NOT add leading or trailing '*' wildcards for substring searches."
+            if hint not in desc:
+                prop_def = dict(prop_def)
+                prop_def["description"] = f"{desc.rstrip()} {hint}".strip()
+                props[prop_name] = prop_def
+                modified = True
+
+        # 2) Path / directory guidance
+        elif p_lower in ("path", "dir", "directory", "folder", "location", "pathpattern"):
+            hint = "Note: Must be a relative workspace path (e.g. 'src/' or 'lib/'), NOT an absolute filesystem path."
+            if hint not in desc:
+                prop_def = dict(prop_def)
+                prop_def["description"] = f"{desc.rstrip()} {hint}".strip()
+                props[prop_name] = prop_def
+                modified = True
+
+    if modified:
+        return {**fn, "parameters": {**params, "properties": props}}
+    return fn
+
+
 def _scrub_tools_for_gemini(body: bytes, content_type: str) -> bytes:
     """If this is a Gemini-bound chat request carrying a `tools` array,
     strip any root-level anyOf/oneOf/allOf from each tool's parameters
-    schema so Vertex's function-calling validator accepts the manifest.
+    schema so Vertex's function-calling validator accepts the manifest,
+    and enhance search tool schema hints for Gemini.
     No-op (fails open) for non-Gemini models, missing tools, or parse
     errors — Claude requests are never touched by this path."""
     if "application/json" not in (content_type or ""):
@@ -378,21 +425,28 @@ def _scrub_tools_for_gemini(body: bytes, content_type: str) -> bytes:
             if not isinstance(fn, dict):
                 new_tools.append(tool)
                 continue
+            fn_name = fn.get("name", "")
+
+            # Enhance search tool schema for Gemini
+            enhanced_fn = _enhance_search_tool_schema_for_gemini(fn_name, fn)
+            if enhanced_fn != fn:
+                fn = enhanced_fn
+                changed = True
+
             params = fn.get("parameters")
-            if not isinstance(params, dict) or not any(
+            if isinstance(params, dict) and any(
                 k in params for k in ("anyOf", "oneOf", "allOf")
             ):
-                new_tools.append(tool)
-                continue
-            sanitized_params = _sanitize_gemini_tool_schema(params)
-            new_tools.append({**tool, "function": {**fn, "parameters": sanitized_params}})
-            changed = True
-            logger.warning(
-                "shim: stripped root-level anyOf/oneOf/allOf from tool "
-                "'%s' for Gemini model '%s' (Vertex rejects this shape); "
-                "folded constraint into description.",
-                fn.get("name", "<unnamed>"), data.get("model", ""),
-            )
+                sanitized_params = _sanitize_gemini_tool_schema(params)
+                fn = {**fn, "parameters": sanitized_params}
+                changed = True
+                logger.warning(
+                    "shim: stripped root-level anyOf/oneOf/allOf from tool "
+                    "'%s' for Gemini model '%s' (Vertex rejects this shape); "
+                    "folded constraint into description.",
+                    fn_name, data.get("model", ""),
+                )
+            new_tools.append({**tool, "function": fn})
         if not changed:
             return body
         data["tools"] = new_tools
