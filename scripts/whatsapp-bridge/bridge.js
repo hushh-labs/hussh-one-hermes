@@ -30,6 +30,22 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { isSelfChatJid, shouldRejectNonOwnerSelfChatEvent } from './self_chat_gate.js';
+import { createOutboundIdTracker } from './outbound_ids.js';
+import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import {
+  buildPollPayload,
+  createReconnectScheduler,
+  createVersionResolver,
+  buildLocationPayload,
+  buildTextSendPayload,
+  createBoundedMessageStore,
+  extractBridgeEvent,
+  inboundReadReceiptKeys,
+  inferMediaType,
+  mediaPayloadForFile,
+  pollCreationMessageFromPayload,
+  pollUpdateForAggregation,
+} from './bridge_helpers.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -43,6 +59,18 @@ const WHATSAPP_DEBUG =
   process.env &&
   typeof process.env.WHATSAPP_DEBUG === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
+
+const FORWARD_OWNER_MESSAGES =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
+
+const SEND_READ_RECEIPTS =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_SEND_READ_RECEIPTS === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_SEND_READ_RECEIPTS.toLowerCase());
 
 const PORT = parseInt(getArg('port', '8473'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
@@ -272,12 +300,15 @@ function saveToHistory(chatId, msg) {
   }
 }
 
+const scheduleReconnect = createReconnectScheduler(() => startSocket());
+const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
+
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+  const version = await getWAVersion();
 
   sock = makeWASocket({
-    version,
+    ...(version ? { version } : {}),
     auth: state,
     logger,
     printQRInTerminal: false,
@@ -829,13 +860,6 @@ const MIME_MAP = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 };
 
-function inferMediaType(ext) {
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
-  if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
-  return 'document';
-}
-
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -929,6 +953,30 @@ app.post('/typing', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false });
+  }
+});
+
+// Mark an inbound message as read only after the Python adapter has accepted
+// it through the authoritative DM/group/mention intake policy.
+app.post('/read', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const receiptKeys = inboundReadReceiptKeys({
+    key: req.body?.key,
+    enabled: SEND_READ_RECEIPTS,
+  });
+  if (receiptKeys.length === 0) {
+    return res.json({ success: true, marked: false });
+  }
+
+  try {
+    await sock.readMessages(receiptKeys);
+    return res.json({ success: true, marked: true });
+  } catch (err) {
+    console.warn('[bridge] failed to send read receipt:', err.message);
+    return res.status(500).json({ error: 'Failed to send read receipt' });
   }
 });
 
@@ -1084,6 +1132,8 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+    scriptHash: SCRIPT_HASH,
+    sendReadReceipts: SEND_READ_RECEIPTS,
   });
 });
 
@@ -1108,6 +1158,6 @@ if (PAIR_ONLY) {
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
     }
     console.log();
-    startSocket();
+    scheduleReconnect(0);
   });
 }

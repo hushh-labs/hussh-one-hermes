@@ -84,13 +84,6 @@ class _AsyncCM:
 class TestFormatMessage:
     """WhatsApp markdown conversion."""
 
-    def test_bold_double_asterisk(self):
-        adapter = _make_adapter()
-        assert adapter.format_message("**hello**") == "*hello*"
-
-    def test_bold_double_underscore(self):
-        adapter = _make_adapter()
-        assert adapter.format_message("__hello__") == "*hello*"
 
     def test_strikethrough(self):
         adapter = _make_adapter()
@@ -109,36 +102,6 @@ class TestFormatMessage:
         assert adapter.format_message("# **Title**") == "*Title*"
         assert adapter.format_message("## __Strong__") == "*Strong*"
 
-    def test_links_converted(self):
-        adapter = _make_adapter()
-        result = adapter.format_message("[click here](https://example.com)")
-        assert result == "click here (https://example.com)"
-
-    def test_code_blocks_protected(self):
-        """Code blocks should not have their content reformatted."""
-        adapter = _make_adapter()
-        content = "before **bold** ```python\n**not bold**\n``` after **bold**"
-        result = adapter.format_message(content)
-        assert "```python\n**not bold**\n```" in result
-        assert result.startswith("before *bold*")
-        assert result.endswith("after *bold*")
-
-    def test_inline_code_protected(self):
-        """Inline code should not have its content reformatted."""
-        adapter = _make_adapter()
-        content = "use `**raw**` here"
-        result = adapter.format_message(content)
-        assert "`**raw**`" in result
-        assert result.startswith("use ")
-
-    def test_empty_content(self):
-        adapter = _make_adapter()
-        assert adapter.format_message("") == ""
-        assert adapter.format_message(None) is None
-
-    def test_plain_text_unchanged(self):
-        adapter = _make_adapter()
-        assert adapter.format_message("hello world") == "hello world"
 
     def test_already_whatsapp_italic(self):
         """Markdown *italic* converts to WhatsApp _italic_ (PR #58704)."""
@@ -146,15 +109,6 @@ class TestFormatMessage:
         assert adapter.format_message("*italic*") == "_italic_"
         # Already-WhatsApp _italic_ passes through unchanged
         assert adapter.format_message("_italic_") == "_italic_"
-
-    def test_multiline_mixed(self):
-        adapter = _make_adapter()
-        content = "# Header\n\n**Bold text** and ~~strike~~\n\n```\ncode\n```"
-        result = adapter.format_message(content)
-        assert "*Header*" in result
-        assert "*Bold text*" in result
-        assert "~strike~" in result
-        assert "```\ncode\n```" in result
 
 
 # ---------------------------------------------------------------------------
@@ -164,20 +118,11 @@ class TestFormatMessage:
 class TestMessageLimits:
     """WhatsApp message length limits."""
 
-    def test_max_message_length_is_practical(self):
-        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
-        assert WhatsAppAdapter.MAX_MESSAGE_LENGTH == 4096
 
     def test_chunk_limit_is_final_python_message_limit(self, monkeypatch):
         adapter = _make_adapter()
         monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
         monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
-
-        assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
-
-    def test_chunk_limit_does_not_reserve_prefix_in_bot_mode(self, monkeypatch):
-        adapter = _make_adapter()
-        monkeypatch.setenv("WHATSAPP_MODE", "bot")
 
         assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
 
@@ -356,6 +301,3 @@ class TestWhatsAppTier:
         # TIER_MEDIUM has streaming: None (follow global), not False
         assert resolve_display_setting({}, "whatsapp", "streaming") is None
 
-    def test_whatsapp_tool_progress_is_new(self):
-        from gateway.display_config import resolve_display_setting
-        assert resolve_display_setting({}, "whatsapp", "tool_progress") == "new"

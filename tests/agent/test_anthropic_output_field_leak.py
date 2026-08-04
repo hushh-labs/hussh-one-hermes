@@ -15,11 +15,19 @@ def _assert_clean(block):
         assert isinstance(block["citations"], list) and block["citations"]
 
 
-def test_sanitize_replay_text_strips_sdk_only_fields():
-    result = _sanitize_replay_block(
-        {"type": "text", "text": "hi", "parsed_output": None, "citations": None}
-    )
-    assert result == {"type": "text", "text": "hi"}
+class TestSanitizeReplayBlock:
+
+    def test_tool_use_strips_caller(self):
+        poisoned = {"type": "tool_use", "id": "toolu_1", "name": "read_file",
+                    "input": {"path": "a"}, "caller": {"type": "agent"}}
+        out = _sanitize_replay_block(poisoned)
+        _assert_clean(out)
+        assert out["name"] == "read_file" and out["input"] == {"path": "a"}
+
+
+
+    def test_unknown_type_dropped(self):
+        assert _sanitize_replay_block({"type": "server_tool_use", "foo": 1}) is None
 
 
 def test_sanitize_replay_tool_use_strips_caller_and_preserves_input():

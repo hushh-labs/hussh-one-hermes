@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { api } from "@/lib/api";
 import type { HubAgentPluginRow, PluginsHubResponse } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -23,6 +23,252 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
+
+type MemoryFormValue = string | boolean | number;
+
+const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
+  ready: "ready",
+  needs_config: "needs setup",
+  unavailable: "unavailable",
+  missing: "missing",
+};
+
+const MEMORY_STATUS_TONE: Record<MemoryProviderInfo["status"], "success" | "warning" | "destructive" | "secondary"> = {
+  ready: "success",
+  needs_config: "warning",
+  unavailable: "destructive",
+  missing: "destructive",
+};
+
+function fieldInitialValue(field: MemoryProviderField): MemoryFormValue {
+  if (field.kind === "secret") return "";
+  if (field.kind === "boolean") return Boolean(field.value);
+  return String(field.value ?? "");
+}
+
+function fieldIsVisible(field: MemoryProviderField, values: Record<string, MemoryFormValue>) {
+  if (!field.when) return true;
+  return Object.entries(field.when).every(([key, expected]) => {
+    const current = values[key];
+    return String(current ?? "") === String(expected);
+  });
+}
+
+function setupHasDetails(setup?: MemoryProviderSetupInfo) {
+  if (!setup) return false;
+  return Boolean(
+    setup.external_dependencies?.length ||
+      setup.pip_dependencies?.length ||
+      setup.required_env?.length,
+  );
+}
+
+function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
+  if (!setup) return false;
+  return Boolean(
+    setup.external_dependencies?.some((dep) => dep.install) ||
+      setup.pip_dependencies?.length,
+  );
+}
+
+function SetupCommandBlock({ code, label }: { code: string; label: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[0.6875rem] text-muted-foreground">{label}</span>
+        <CopyButton text={code} />
+      </div>
+      <div className="border border-border bg-background/40 px-3 py-2 font-mono text-[0.6875rem] leading-relaxed">
+        <code className="break-all">{code}</code>
+      </div>
+    </div>
+  );
+}
+
+function setupResultLabel(status: string) {
+  if (status === "already_installed") return "already installed";
+  if (status === "no_declared_steps") return "no declared setup";
+  return status.replace(/_/g, " ");
+}
+
+function setupResultClass(status: string) {
+  if (status === "failed") return "border-destructive/50 text-destructive";
+  if (status === "installed" || status === "verified" || status === "already_installed") {
+    return "border-success/50 text-success";
+  }
+  if (status === "missing") return "border-warning/50 text-warning";
+  return "border-border text-muted-foreground";
+}
+
+function MemoryProviderSetupResults({ results }: { results: MemoryProviderSetupResult[] }) {
+  if (!results.length) return null;
+
+  return (
+    <div className="grid gap-2 border border-border bg-background/20 p-3">
+      <p className="text-muted-foreground">Setup results</p>
+      {results.map((result, index) => {
+        const detail = result.stderr || result.stdout;
+        return (
+          <div key={`${result.kind}-${result.name}-${index}`} className="grid gap-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={cn(
+                  "border px-2 py-0.5 font-mono text-[0.6875rem]",
+                  setupResultClass(result.status),
+                )}
+              >
+                {setupResultLabel(result.status)}
+              </span>
+              <span className="text-muted-foreground">
+                {result.name}
+                {result.kind ? ` (${result.kind.replace(/_/g, " ")})` : ""}
+              </span>
+            </div>
+            {result.command ? (
+              <code className="block break-all border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]">
+                {result.command}
+              </code>
+            ) : null}
+            {detail ? (
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem] text-muted-foreground">
+                {detail}
+              </pre>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MemoryProviderSetupHint({
+  installing,
+  onInstall,
+  provider,
+  results,
+}: {
+  installing: boolean;
+  onInstall: () => void;
+  provider: MemoryProviderInfo;
+  results: MemoryProviderSetupResult[] | null;
+}) {
+  const setup = provider.setup;
+  const hasDetails = setupHasDetails(setup);
+  const hasInstallableSteps = setupHasInstallableSteps(setup);
+  const dependenciesInstalled = setup?.dependencies_installed ?? !hasInstallableSteps;
+  const hasResults = Boolean(results?.length);
+  const needsDependencySetup = hasInstallableSteps && !dependenciesInstalled;
+  const isBlocked = provider.status === "unavailable" && needsDependencySetup;
+  const shouldShow =
+    hasResults ||
+    needsDependencySetup ||
+    (provider.status === "unavailable" && hasDetails && !dependenciesInstalled);
+
+  if (!shouldShow) return null;
+
+  if (!hasDetails || !setup) {
+    return (
+      <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+        This provider is installed but unavailable. It may need local dependencies or a manual setup step before Hermes can activate it.
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "grid gap-3 border px-3 py-3 text-xs text-foreground",
+        isBlocked ? "border-destructive/50" : "border-border",
+      )}
+    >
+      <p className={isBlocked ? "text-destructive" : "text-muted-foreground"}>
+        {needsDependencySetup
+          ? "Finish these setup steps before Hermes can activate this provider."
+          : "Provider dependency setup completed."}
+      </p>
+
+      {needsDependencySetup ? (
+        <Button
+          className="w-fit uppercase"
+          disabled={installing}
+          onClick={onInstall}
+          size="sm"
+        >
+          <span className="inline-flex items-center gap-2">
+            {installing ? <Spinner /> : null}
+            {installing ? "Installing provider dependencies" : "Install provider dependencies"}
+          </span>
+        </Button>
+      ) : null}
+
+      {installing ? (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <Spinner /> Running provider setup. This may take a minute…
+        </div>
+      ) : null}
+
+      {results ? <MemoryProviderSetupResults results={results} /> : null}
+
+      {needsDependencySetup ? (
+        <>
+          {setup.external_dependencies.map((dep, index) => (
+            <div key={`${dep.name || "dependency"}-${index}`} className="grid gap-2">
+              <p className="text-muted-foreground">
+                External dependency{dep.name ? `: ${dep.name}` : ""}
+              </p>
+              {dep.install ? (
+                <SetupCommandBlock
+                  label={dep.name ? `Install ${dep.name}` : "Install dependency"}
+                  code={dep.install}
+                />
+              ) : null}
+              {dep.check ? (
+                <SetupCommandBlock
+                  label={dep.name ? `Verify ${dep.name}` : "Verify dependency"}
+                  code={dep.check}
+                />
+              ) : null}
+            </div>
+          ))}
+
+          {setup.pip_dependencies.length ? (
+            <div className="grid gap-2">
+              <p className="text-muted-foreground">Python dependencies</p>
+              <div className="flex flex-wrap gap-2">
+                {setup.pip_dependencies.map((dep) => (
+                  <code
+                    key={dep}
+                    className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]"
+                  >
+                    {dep}
+                  </code>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+
+      {setup.required_env.length && needsDependencySetup ? (
+        <div className="grid gap-2">
+          <p className="text-muted-foreground">
+            Required environment values. Fill the matching fields below, or set them in the Hermes environment.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {setup.required_env.map((envKey) => (
+              <code
+                key={envKey}
+                className="border border-border bg-background/40 px-2 py-1 font-mono text-[0.6875rem]"
+              >
+                {envKey}
+              </code>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
@@ -179,12 +425,199 @@ export default function PluginsPage() {
                     {`(${t.pluginsPage.providerDefaults})`}
                   </SelectOption>
 
-                  {providers.memory_options.map((o) => (
-                    <SelectOption key={o.name} value={o.name}>
-                      {o.name}
-                    </SelectOption>
-                  ))}
-                </Select>
+                  {!selectedMemoryName && (
+                    <p className="text-xs text-muted-foreground">
+                      Hermes will use the built-in MEMORY.md and USER.md files.
+                    </p>
+                  )}
+
+                  {activeMemoryInfo?.status === "missing" && (
+                    <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+                      Active provider {providers.memory_provider} is no longer installed. Select another provider and save.
+                    </p>
+                  )}
+
+                  {selectedMemoryName && selectedMemoryInfo?.description && (
+                    <p className="text-xs text-muted-foreground">
+                      {selectedMemoryInfo.description}
+                    </p>
+                  )}
+
+                  {selectedMemoryName && selectedMemoryInfo && (
+                    <MemoryProviderSetupHint
+                      installing={memorySetupBusy}
+                      onInstall={() => void onSetupMemoryProvider()}
+                      provider={selectedMemoryInfo}
+                      results={memorySetupResults}
+                    />
+                  )}
+
+                  {selectedMemoryName && selectedMemoryInfo?.status === "needs_config" && (
+                    <p className="border border-warning/50 px-3 py-2 text-xs text-warning">
+                      Provider dependencies are installed. Add the required credentials or self-hosted URL below, then save the provider.
+                    </p>
+                  )}
+
+                  {selectedMemoryName && memoryConfigBusy && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Spinner /> Loading provider settings…
+                    </div>
+                  )}
+
+                  {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      This provider does not expose dashboard settings.
+                    </p>
+                  )}
+
+                  {selectedMemoryName && !memoryConfigBusy && visibleMemoryFields.length > 0 && (
+                    <div className="grid gap-4 border border-border p-4">
+                      {visibleMemoryFields.map((field) => {
+                        const value = memoryValues[field.key];
+                        const secretIsVisible = !!secretVisible[field.key];
+                        return (
+                          <div key={field.key} className="grid gap-2 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Label htmlFor={`memory-${field.key}`}>{field.label}</Label>
+                              {field.required && <Badge tone="outline">required</Badge>}
+                              {field.kind === "secret" && field.is_set && !value && (
+                                <Badge tone="success">set</Badge>
+                              )}
+                              {field.url && (
+                                <a
+                                  href={field.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs underline"
+                                >
+                                  Open <ExternalLink className="h-3 w-3" />
+                                </a>
+                              )}
+                            </div>
+
+                            {field.kind === "select" ? (
+                              <Select
+                                id={`memory-${field.key}`}
+                                className="w-full"
+                                value={String(value ?? "")}
+                                onValueChange={(next) =>
+                                  setMemoryValues((current) => ({ ...current, [field.key]: next }))
+                                }
+                              >
+                                {field.options.map((option) => (
+                                  <SelectOption key={option.value} value={option.value}>
+                                    {option.label}
+                                  </SelectOption>
+                                ))}
+                              </Select>
+                            ) : field.kind === "boolean" ? (
+                              <Switch
+                                checked={Boolean(value)}
+                                onCheckedChange={(next) =>
+                                  setMemoryValues((current) => ({ ...current, [field.key]: next }))
+                                }
+                              />
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <Input
+                                  id={`memory-${field.key}`}
+                                  type={
+                                    field.kind === "secret" && !secretIsVisible
+                                      ? "password"
+                                      : field.kind === "integer" || field.kind === "number"
+                                        ? "number"
+                                        : "text"
+                                  }
+                                  min={field.minimum ?? undefined}
+                                  max={field.maximum ?? undefined}
+                                  step={
+                                    field.step ?? (field.kind === "integer" ? 1 : undefined)
+                                  }
+                                  value={String(value ?? "")}
+                                  placeholder={
+                                    field.kind === "secret" && field.is_set
+                                      ? "Leave blank to keep existing value"
+                                      : field.placeholder
+                                  }
+                                  onChange={(event) =>
+                                    setMemoryValues((current) => ({
+                                      ...current,
+                                      [field.key]: event.target.value,
+                                    }))
+                                  }
+                                />
+                                {field.kind === "secret" && (
+                                  <Button
+                                    ghost
+                                    size="icon"
+                                    aria-label={secretIsVisible ? "Hide secret" : "Show secret"}
+                                    onClick={() =>
+                                      setSecretVisible((current) => ({
+                                        ...current,
+                                        [field.key]: !current[field.key],
+                                      }))
+                                    }
+                                  >
+                                    {secretIsVisible ? (
+                                      <EyeOff className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <Eye className="h-3.5 w-3.5" />
+                                    )}
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+
+                            {field.description && (
+                              <p className="text-xs text-muted-foreground">{field.description}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <Button
+                    className="w-fit uppercase"
+                    size="sm"
+                    disabled={memoryBusy || memoryConfigBusy || memorySetupBusy}
+                    onClick={() => void onSaveMemoryProvider()}
+                    prefix={memoryBusy ? <Spinner /> : undefined}
+                  >
+                    Save memory provider
+                  </Button>
+                </div>
+
+                <div className="grid content-start gap-3 min-w-0">
+                  <Label htmlFor="ctx-engine">{t.pluginsPage.contextEngineLabel}</Label>
+
+                  <Select
+                    id="ctx-engine"
+                    className="w-full"
+                    value={contextSel}
+                    onValueChange={setContextSel}
+                  >
+                    <SelectOption value="compressor">compressor</SelectOption>
+
+                    {providers.context_options
+                      .filter((o) => o.name !== "compressor")
+                      .map((o) => (
+                        <SelectOption key={o.name} value={o.name}>
+                          {o.name}
+                        </SelectOption>
+                      ))}
+                  </Select>
+
+                  <Button
+                    className="w-fit uppercase"
+                    size="sm"
+                    disabled={contextBusy}
+                    onClick={() => void onSaveContextEngine()}
+                    prefix={contextBusy ? <Spinner /> : undefined}
+                  >
+                    Save context engine
+                  </Button>
+                </div>
               </div>
 
               <div className="grid gap-2 min-w-0">
