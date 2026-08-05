@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
-from hermes_cli.brand import default_whatsapp_reply_prefix
+from hermes_cli.brand import BRAND_DISPLAY_NAME, default_whatsapp_reply_prefix
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,

@@ -52,7 +52,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
-from utils import base_url_host_matches
+from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
@@ -281,6 +281,61 @@ def _build_codex_gpt5_autoraise_notice(
         f"summarizing.\n"
         f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
     )
+
+
+def _codex_gpt55_autoraise_notice_marker():
+    """Path to the per-profile marker recording that the autoraise notice ran.
+
+    Lives under ``$HERMES_HOME`` (which is profile-scoped) alongside the other
+    internal markers like ``.container-mode`` — so it is not a user-facing config
+    key, and every profile tracks its own notice state independently.
+    """
+    return get_hermes_home() / ".codex_gpt55_autoraise_notice"
+
+
+def _codex_gpt55_autoraise_notice_state(autoraise: Dict[str, Any]) -> str:
+    """Stable identity for one autoraise notice, keyed on what it displays.
+
+    Uses the model slug plus the same from→to percentages the notice text
+    shows, so an unchanged threshold stays silent across restarts while a
+    later change (the user edits their global ``threshold``, or switches to a
+    different autoraised Codex model) re-notifies once.
+    """
+    model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
+    from_pct = int(round(float(autoraise["from"]) * 100))
+    to_pct = int(round(float(autoraise["to"]) * 100))
+    return f"{model}:{from_pct}:{to_pct}"
+
+
+def _codex_gpt55_autoraise_notice_seen(autoraise: Dict[str, Any]) -> bool:
+    """True if this exact autoraise notice was already shown for this profile.
+
+    A missing/unreadable marker (or one recording a different threshold) reads
+    as unseen, so the notice shows.
+    """
+    try:
+        current = _codex_gpt55_autoraise_notice_state(autoraise)
+        return _codex_gpt55_autoraise_notice_marker().read_text(
+            encoding="utf-8"
+        ).strip() == current
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, Any]) -> None:
+    """Persist that the autoraise notice was shown for this profile/config state.
+
+    Best-effort: a read-only or missing ``$HERMES_HOME`` just means the notice
+    may show again next init, which is preferable to breaking agent init.
+    """
+    try:
+        marker = _codex_gpt55_autoraise_notice_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            _codex_gpt55_autoraise_notice_state(autoraise), encoding="utf-8"
+        )
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -1720,6 +1775,10 @@ def init_agent(
     # tells the user what changed and how to revert.
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
+    ).lower() in {"true", "1", "yes"}
+    # Display gate: keep the threshold autoraise but suppress just the banner.
+    _codex_gpt55_autoraise_notice = str(
+        _compression_cfg.get("codex_gpt55_autoraise_notice", True)
     ).lower() in {"true", "1", "yes"}
     agent._compression_threshold_autoraised = None
     try:

@@ -1030,9 +1030,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.WHATSAPP:
-            result = await _registry_standalone_send("whatsapp", pconfig, chat_id, chunk, thread_id)
-        elif platform == Platform.SIGNAL:
+        if platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
@@ -1761,7 +1759,9 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
+    import ssl
     from email.mime.text import MIMEText
+    from email.utils import formatdate
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")

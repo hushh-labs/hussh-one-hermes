@@ -2144,15 +2144,21 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 def _get_custom_base_url() -> str:
     """Get the custom endpoint base_url from config.yaml."""
+    model_cfg = _get_model_config_dict()
+    return str(model_cfg.get("base_url", "")).strip()
+
+
+def _get_model_config_dict() -> dict[str, Any]:
+    """Return the main model config mapping, or an empty dict."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
-            return str(model_cfg.get("base_url", "")).strip()
+            return model_cfg
     except Exception:
         pass
-    return ""
+    return {}
 
 
 def curated_models_for_provider(
@@ -2211,6 +2217,15 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
 _AGGREGATOR_PROVIDERS = frozenset(
     {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
 )
+
+# Providers that re-expose other vendors' models under their own catalog
+# (`anthropic`, `gemini`, ...). They're tried only as a last resort, after
+# every native-vendor catalog. They are NOT aggregators (an explicit switch TO
+# them is still valid), so they stay out of _AGGREGATOR_PROVIDERS. None are
+# currently defined (tried only as a last resort for bare short-alias
+# resolution, after every native-vendor catalog, so they never hijack an
+# alias away from the model's native vendor).
+_BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 
 # Providers whose live endpoint is the authoritative rotating catalog. Their
 # picker merge stays live-first; single-provider catalogs remain curated-first
@@ -2769,6 +2784,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
     if normalized == "anthropic":
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        cfg_base_url = (
+            str(model_cfg.get("base_url", "") or "").strip()
+            if cfg_provider == "anthropic" else ""
+        )
         live = _fetch_anthropic_models()
         if live:
             if cfg_base_url:

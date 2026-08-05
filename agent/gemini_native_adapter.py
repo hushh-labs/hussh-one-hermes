@@ -463,6 +463,17 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
             merged_contents.append(content)
     contents = merged_contents
 
+    # Gemini's generateContent also rejects a request whose *last* content is
+    # role="model" ("Requests ending with a model turn are not supported").
+    # Every caller in this codebase is expected to close a turn on a user
+    # message, but a caller-side bug (retry logic, session resume, a future
+    # code path) can still hand us a trailing assistant turn — and today that
+    # is a hard, unrecoverable 400 with no fallback. Guard the wire-level
+    # invariant here so a caller bug degrades to "the model gets a nudge to
+    # continue" instead of the whole turn failing outright.
+    if contents and contents[-1]["role"] == "model":
+        contents.append({"role": "user", "parts": [{"text": "Please continue."}]})
+
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:

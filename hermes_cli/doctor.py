@@ -19,7 +19,7 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import agent_browser_runnable, display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()

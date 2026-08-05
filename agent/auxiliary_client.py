@@ -129,6 +129,7 @@ class _OpenAIProxy:
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import (
@@ -1861,6 +1862,74 @@ class AsyncAnthropicAuxiliaryClient:
         self._real_client = sync_wrapper._real_client
 
 
+class _BedrockCompletionsAdapter:
+    """Translates ``chat.completions.create(**kwargs)`` into Bedrock Converse."""
+
+    def __init__(self, region: str, model: str):
+        self._region = region
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        from agent.bedrock_adapter import call_converse
+
+        messages = kwargs.get("messages", [])
+        model = kwargs.get("model", self._model)
+        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
+        return call_converse(
+            region=self._region,
+            model=model,
+            messages=messages,
+            tools=kwargs.get("tools"),
+            max_tokens=int(max_tokens) if max_tokens else 4096,
+            temperature=kwargs.get("temperature"),
+            top_p=kwargs.get("top_p"),
+            stop_sequences=kwargs.get("stop"),
+        )
+
+
+class _BedrockChatShim:
+    def __init__(self, adapter: "_BedrockCompletionsAdapter"):
+        self.completions = adapter
+
+
+class BedrockAuxiliaryClient:
+    """OpenAI-client-compatible wrapper over AWS Bedrock Converse API."""
+
+    def __init__(self, region: str, model: str):
+        self._region = region
+        self._model = model
+        adapter = _BedrockCompletionsAdapter(region, model)
+        self.chat = _BedrockChatShim(adapter)
+        self.api_key = "aws-sdk"
+        self.base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+    def close(self):
+        pass
+
+
+class _AsyncBedrockCompletionsAdapter:
+    def __init__(self, sync_adapter: _BedrockCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncBedrockChatShim:
+    def __init__(self, adapter: _AsyncBedrockCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncBedrockAuxiliaryClient:
+    def __init__(self, sync_wrapper: "BedrockAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncBedrockCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncBedrockChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if the endpoint at ``base_url`` speaks the Anthropic Messages
     protocol instead of OpenAI chat.completions.
@@ -1914,6 +1983,8 @@ def _maybe_wrap_anthropic(
     """
     # Already wrapped — don't double-wrap.
     if _safe_isinstance(client_obj, AnthropicAuxiliaryClient):
+        return client_obj
+    if _safe_isinstance(client_obj, BedrockAuxiliaryClient):
         return client_obj
     # Other specialized adapters we should never re-dispatch.
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
@@ -4756,6 +4827,88 @@ def _try_main_agent_model_fallback(
     return client, resolved_model or main_model, label
 
 
+# ── Context-window screening for runtime fallback chains (issue #52392) ──
+#
+# When the runtime auxiliary fallback chain selects a candidate that is
+# reachable but has a context window smaller than the compression task
+# requires, the call errors out instead of continuing to the next, viable
+# candidate. The startup feasibility check in
+# ``agent.conversation_compression.check_compression_model_feasibility``
+# already filters too-small auxiliary models at startup, but the runtime
+# fallback chain (``_try_configured_fallback_chain`` and
+# ``_try_main_fallback_chain``) does not apply the same filter, so
+# compression can stop at the first alive door even if the room behind it
+# is too small.
+#
+# The helpers below screen each candidate by its effective context window
+# before it is returned. ``None`` results from ``get_model_context_length``
+# are passed through (we cannot prove a model is too small, so we do not
+# block it). This preserves the existing fallback surface for
+# unrecognised/custom models while closing the gap on the well-known ones.
+
+def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
+    """Return the minimum context length required for an auxiliary task.
+
+    Only ``compression`` carries an explicit minimum today (the same
+    ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
+    ``check_compression_model_feasibility`` already enforces at startup).
+    Other tasks (``vision``, ``title_generation``, ``web_extract``,
+    ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
+    have no per-task context floor and the runtime chain must remain
+    permissive for them.
+
+    Returns ``None`` for an empty/``None`` task name so the helper is a
+    safe no-op when called from generic sites.
+    """
+    if not task:
+        return None
+    if task == "compression":
+        return MINIMUM_CONTEXT_LENGTH
+    return None
+
+
+def _candidate_context_window(
+    provider: str,
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve the effective context window for a fallback candidate.
+
+    Thin wrapper around :func:`agent.model_metadata.get_model_context_length`
+    that swallows probe failures (returns ``None``). Callers treat
+    ``None`` as "unknown — pass through" so the existing fallback
+    surface is preserved when the context-length resolver chain cannot
+    determine a value (custom endpoints, models not in the registry,
+    offline endpoints).
+
+    Best-effort, never raises — the runtime fallback chain must keep
+    moving even if the resolver hits a probe error.
+    """
+    if not model:
+        return None
+    try:
+        ctx = get_model_context_length(
+            model,
+            base_url=base_url,
+            api_key=api_key,
+            provider=provider,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Auxiliary fallback: could not resolve context window for %s/%s: %s",
+            provider, model, exc,
+        )
+        return None
+    # ``get_model_context_length`` returns an int (with a 256K default
+    # fallback when nothing else matches). We still propagate ``None`` if
+    # a future change returns ``Optional[int]`` — being explicit is
+    # cheap and the test suite covers both shapes.
+    if isinstance(ctx, int) and ctx > 0:
+        return ctx
+    return None
+
+
 def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
@@ -4836,6 +4989,8 @@ def _try_configured_fallback_chain(
         ):
             continue
         fb_model = fb_model_raw or None
+        fb_base_url = str(entry.get("base_url", "")).strip() or None
+        fb_api_key = str(entry.get("api_key", "")).strip() or None
 
         label = f"fallback_chain[{i}]({fb_provider})"
 
@@ -5224,6 +5379,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, BedrockAuxiliaryClient):
+        return AsyncBedrockAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -5955,10 +6112,14 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "aws_sdk":
-        # AWS SDK providers (Bedrock) — use the Anthropic Bedrock client via
-        # boto3's credential chain (IAM roles, SSO, env vars, instance metadata).
+        # AWS SDK providers (Bedrock) — Claude models use the Anthropic Bedrock
+        # SDK (prompt caching, thinking); non-Claude models use Converse API.
         try:
-            from agent.bedrock_adapter import has_aws_credentials, resolve_bedrock_region
+            from agent.bedrock_adapter import (
+                has_aws_credentials,
+                is_anthropic_bedrock_model,
+                resolve_bedrock_region,
+            )
             from agent.anthropic_adapter import build_anthropic_bedrock_client
         except ImportError:
             logger.warning("resolve_provider_client: bedrock requested but "
@@ -5973,17 +6134,26 @@ def resolve_provider_client(
         region = resolve_bedrock_region()
         default_model = "anthropic.claude-haiku-4-5-20251001-v1:0"
         final_model = _normalize_resolved_model(model or default_model, provider)
-        try:
-            real_client = build_anthropic_bedrock_client(region)
-        except ImportError as exc:
-            logger.warning("resolve_provider_client: cannot create Bedrock "
-                           "client: %s", exc)
-            return None, None
-        client = AnthropicAuxiliaryClient(
-            real_client, final_model, api_key="aws-sdk",
-            base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
-        )
-        logger.debug("resolve_provider_client: bedrock (%s, %s)", final_model, region)
+        base_url = f"https://bedrock-runtime.{region}.amazonaws.com"
+
+        if is_anthropic_bedrock_model(final_model):
+            try:
+                real_client = build_anthropic_bedrock_client(region)
+            except ImportError as exc:
+                logger.warning("resolve_provider_client: cannot create Bedrock "
+                               "client: %s", exc)
+                return None, None
+            client = AnthropicAuxiliaryClient(
+                real_client, final_model, api_key="aws-sdk",
+                base_url=base_url,
+            )
+            logger.debug("resolve_provider_client: bedrock anthropic (%s, %s)",
+                         final_model, region)
+        else:
+            client = BedrockAuxiliaryClient(region, final_model)
+            logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
+                         final_model, region)
+
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -7050,6 +7220,17 @@ def _resolve_task_provider_model(
 
 _DEFAULT_AUX_TIMEOUT = 30.0
 
+# Compression summarises large conversation histories; a reasoning auxiliary
+# model (e.g. Codex / GPT-5.5) can legitimately take longer than the default
+# ``auxiliary.compression.timeout`` (120 s), causing the stream to time out and
+# the compressor to fall back to the deterministic context marker (#54915).
+# This is a bounded *floor* applied only to config-derived compression timeouts
+# — it does not affect other auxiliary tasks and does not override an explicit
+# per-call ``timeout=``.  A floor is harmless for fast compression models
+# (they finish before the deadline) and is a minimum, so a higher config value
+# is kept unchanged.
+_COMPRESSION_TIMEOUT_FLOOR_SECONDS = 300.0
+
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     """Return the config dict for auxiliary.<task>, or {} when unavailable.
@@ -7107,6 +7288,23 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
         except (ValueError, TypeError):
             pass
     return default
+
+
+def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
+    """Resolve the effective timeout for an auxiliary LLM call.
+
+    Uses the caller-provided ``timeout`` when given; otherwise reads
+    ``auxiliary.{task}.timeout`` from config via :func:`_get_task_timeout`.
+    For the ``compression`` task only, applies a bounded floor so a reasoning
+    model summarising a large context is not cut off by the default timeout
+    (#54915).  The floor is intentionally skipped when the caller passes an
+    explicit ``timeout=`` — explicit per-call deadlines are always honoured —
+    and it is a minimum (``max``), so a config value already above it is kept.
+    """
+    effective = timeout if timeout is not None else _get_task_timeout(task)
+    if timeout is None and task == "compression":
+        effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
+    return effective
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:

@@ -78,7 +78,28 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     ]
     contents, _ = _build_gemini_contents(messages)
     roles = [c["role"] for c in contents]
-    assert roles == ["user", "model"], roles
+    # Trailing "model" turn triggers the synthetic-continuation guard below,
+    # so alternation still holds and the merge itself is still verified.
+    assert roles == ["user", "model", "user"], roles
+    assert contents[0]["parts"] == [{"text": "first"}, {"text": "second"}]
+
+
+def test_trailing_model_turn_gets_synthetic_user_continuation():
+    """Gemini rejects a request whose last content is role="model" ("Requests
+    ending with a model turn are not supported"). A caller bug upstream
+    (retry logic, session resume, etc.) can still hand us history that ends
+    on an assistant turn — guard the wire-level invariant here rather than
+    hard-failing the whole call."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    contents, _ = _build_gemini_contents(messages)
+    roles = [c["role"] for c in contents]
+    assert roles == ["user", "model", "user"], roles
+    assert contents[-1]["parts"] == [{"text": "Please continue."}]
 
 
 
