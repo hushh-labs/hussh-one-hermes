@@ -244,6 +244,7 @@ export function FloatingOverlays({
           <ModelPicker
             gw={gw}
             initialRefresh={initialRefresh}
+            liveModel={liveModel}
             maxWidth={width}
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
