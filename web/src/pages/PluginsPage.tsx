@@ -3,13 +3,21 @@ import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
-import type { HubAgentPluginRow, PluginsHubResponse } from "@/lib/api";
+import type {
+  HubAgentPluginRow,
+  MemoryProviderConfig,
+  MemoryProviderField,
+  MemoryProviderInfo,
+  MemoryProviderSetupInfo,
+  MemoryProviderSetupResult,
+  PluginsHubResponse,
+} from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
+import { CommandBlock, CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -279,30 +287,83 @@ export default function PluginsPage() {
   const [installBusy, setInstallBusy] = useState(false);
   const [rescanBusy, setRescanBusy] = useState(false);
   const [memorySel, setMemorySel] = useState(MEMORY_PROVIDER_BUILTIN);
+  const [memoryConfig, setMemoryConfig] = useState<MemoryProviderConfig | null>(null);
+  const [memoryValues, setMemoryValues] = useState<Record<string, MemoryFormValue>>({});
+  const [memoryConfigBusy, setMemoryConfigBusy] = useState(false);
+  const [secretVisible, setSecretVisible] = useState<Record<string, boolean>>({});
   const [contextSel, setContextSel] = useState("compressor");
-  const [providerBusy, setProviderBusy] = useState(false);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memorySetupBusy, setMemorySetupBusy] = useState(false);
+  const [memorySetupResults, setMemorySetupResults] = useState<MemoryProviderSetupResult[] | null>(null);
+  const [contextBusy, setContextBusy] = useState(false);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
 
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle } = usePageHeader();
 
-  const loadHub = useCallback(() => {
+  const loadHub = useCallback((memorySelection?: string) => {
     return api
       .getPluginsHub()
       .then((h) => {
         setHub(h);
         const p = h.providers;
-        setMemorySel(p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN);
+        setMemorySel(
+          memorySelection ?? (p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN),
+        );
         setContextSel(p.context_engine || "compressor");
       })
       .catch(() => showToast(t.common.loading, "error"));
   }, [showToast, t.common.loading]);
 
   useEffect(() => {
-    setLoading(true);
     void loadHub().finally(() => setLoading(false));
   }, [loadHub]);
+
+  useEffect(() => {
+    const provider = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
+    let cancelled = false;
+
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      setSecretVisible({});
+      setMemorySetupResults(null);
+
+      if (!provider) {
+        setMemoryConfig(null);
+        setMemoryValues({});
+        setMemoryConfigBusy(false);
+        return;
+      }
+
+      setMemoryConfigBusy(true);
+      api
+        .getMemoryProviderConfig(provider)
+        .then((config) => {
+          if (cancelled) return;
+          setMemoryConfig(config);
+          setMemoryValues(
+            Object.fromEntries(
+              config.fields.map((field) => [field.key, fieldInitialValue(field)]),
+            ),
+          );
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setMemoryConfig(null);
+            setMemoryValues({});
+            showToast(e instanceof Error ? e.message : "Failed to load provider config", "error");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setMemoryConfigBusy(false);
+        });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [memorySel, showToast]);
 
   const onInstall = async () => {
     const id = installId.trim();
@@ -362,20 +423,72 @@ export default function PluginsPage() {
     return () => setAfterTitle(null);
   }, [loading, onRescan, rescanBusy, setAfterTitle, t.pluginsPage.refreshDashboard]);
 
-  const onSaveProviders = async () => {
-    setProviderBusy(true);
+  const onSaveMemoryProvider = async () => {
+    const provider = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
+    setMemoryBusy(true);
     try {
-      await api.savePluginProviders({
-        memory_provider:
-          memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel,
-        context_engine: contextSel,
-      });
+      if (!provider) {
+        await api.setMemoryProvider("");
+      } else {
+        const visibleValues = Object.fromEntries(
+          Object.entries(memoryValues).filter(([key]) => {
+            const field = memoryConfig?.fields.find((candidate) => candidate.key === key);
+            return field ? fieldIsVisible(field, memoryValues) : true;
+          }),
+        );
+        await api.updateMemoryProviderConfig(provider, visibleValues);
+      }
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Save failed", "error");
     } finally {
-      setProviderBusy(false);
+      setMemoryBusy(false);
+    }
+  };
+
+  const currentVisibleMemoryValues = () =>
+    Object.fromEntries(
+      Object.entries(memoryValues).filter(([key]) => {
+        const field = memoryConfig?.fields.find((candidate) => candidate.key === key);
+        return field ? fieldIsVisible(field, memoryValues) : true;
+      }),
+    );
+
+  const onSetupMemoryProvider = async () => {
+    const provider = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
+    if (!provider) return;
+
+    setMemorySetupBusy(true);
+    setMemorySetupResults(null);
+    try {
+      const result = await api.setupMemoryProvider(provider, currentVisibleMemoryValues());
+      setMemorySetupResults(result.results);
+      const failed = result.results.filter((row) => row.status === "failed");
+      if (failed.length) {
+        const names = Array.from(new Set(failed.map((row) => row.name))).join(", ");
+        showToast(`Provider setup failed: ${names || provider}. See setup results below.`, "error");
+      } else {
+        showToast("Provider setup finished", "success");
+      }
+      await loadHub(provider);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Provider setup failed", "error");
+    } finally {
+      setMemorySetupBusy(false);
+    }
+  };
+
+  const onSaveContextEngine = async () => {
+    setContextBusy(true);
+    try {
+      await api.savePluginProviders({ context_engine: contextSel });
+      showToast(t.pluginsPage.savedProviders, "success");
+      await loadHub();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Save failed", "error");
+    } finally {
+      setContextBusy(false);
     }
   };
 
@@ -393,6 +506,15 @@ export default function PluginsPage() {
 
   const rows = hub?.plugins ?? [];
   const providers = hub?.providers;
+  const selectedMemoryName = memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel;
+  const selectedMemoryInfo = selectedMemoryName
+    ? providers?.memory_options.find((provider) => provider.name === selectedMemoryName)
+    : null;
+  const activeMemoryInfo = providers?.memory_provider
+    ? providers.memory_options.find((provider) => provider.name === providers.memory_provider)
+    : null;
+  const visibleMemoryFields =
+    memoryConfig?.fields.filter((field) => fieldIsVisible(field, memoryValues)) ?? [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -410,20 +532,41 @@ export default function PluginsPage() {
             </CardHeader>
 
             <CardContent className="flex flex-col gap-6">
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(260px,0.65fr)]">
+                <div className="flex flex-col gap-4 min-w-0">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Label htmlFor="mem-provider">{t.pluginsPage.memoryProviderLabel}</Label>
+                      {selectedMemoryName && selectedMemoryInfo && (
+                        <Badge tone={MEMORY_STATUS_TONE[selectedMemoryInfo.status]}>
+                          {MEMORY_STATUS_LABEL[selectedMemoryInfo.status]}
+                        </Badge>
+                      )}
+                      {selectedMemoryName && selectedMemoryName === providers.memory_provider && (
+                        <Badge tone="outline">active</Badge>
+                      )}
+                      {!selectedMemoryName && !providers.memory_provider && (
+                        <Badge tone="success">active</Badge>
+                      )}
+                    </div>
 
-              <div className="grid gap-6 sm:grid-cols-2 max-w-full">
-              <div className="grid gap-2 min-w-0">
-                <Label htmlFor="mem-provider">{t.pluginsPage.memoryProviderLabel}</Label>
+                    <Select
+                      id="mem-provider"
+                      className="w-full"
+                      value={memorySel}
+                      onValueChange={setMemorySel}
+                    >
+                      <SelectOption value={MEMORY_PROVIDER_BUILTIN}>
+                        {`(${t.pluginsPage.providerDefaults})`}
+                      </SelectOption>
 
-                <Select
-                  id="mem-provider"
-                  className="w-full"
-                  value={memorySel}
-                  onValueChange={setMemorySel}
-                >
-                  <SelectOption value={MEMORY_PROVIDER_BUILTIN}>
-                    {`(${t.pluginsPage.providerDefaults})`}
-                  </SelectOption>
+                      {providers.memory_options.map((o) => (
+                        <SelectOption key={o.name} value={o.name}>
+                          {o.name}
+                        </SelectOption>
+                      ))}
+                    </Select>
+                  </div>
 
                   {!selectedMemoryName && (
                     <p className="text-xs text-muted-foreground">
@@ -619,38 +762,6 @@ export default function PluginsPage() {
                   </Button>
                 </div>
               </div>
-
-              <div className="grid gap-2 min-w-0">
-                <Label htmlFor="ctx-engine">{t.pluginsPage.contextEngineLabel}</Label>
-
-                <Select
-                  id="ctx-engine"
-                  className="w-full"
-                  value={contextSel}
-                  onValueChange={setContextSel}
-                >
-                  <SelectOption value="compressor">compressor</SelectOption>
-
-                  {providers.context_options
-                    .filter((o) => o.name !== "compressor")
-                    .map((o) => (
-                      <SelectOption key={o.name} value={o.name}>
-                        {o.name}
-                      </SelectOption>
-                    ))}
-                </Select>
-              </div>
-              </div>
-
-              <Button
-                className="w-fit uppercase"
-                size="sm"
-                disabled={providerBusy}
-                onClick={() => void onSaveProviders()}
-                prefix={providerBusy ? <Spinner /> : undefined}
-              >
-                {t.common.save}
-              </Button>
             </CardContent>
           </Card>
         )}
@@ -673,7 +784,7 @@ export default function PluginsPage() {
               <Input
                 className="font-mono-ui lowercase"
                 id="install-url"
-                placeholder="owner/repo or https://..."
+                placeholder="owner/repo, owner/repo/subdir, or https://..."
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}

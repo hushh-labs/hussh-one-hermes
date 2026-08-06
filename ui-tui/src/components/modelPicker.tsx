@@ -21,6 +21,28 @@ type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
+/**
+ * Resolve the model picker's initial selection so the popover opens reflecting
+ * the live session model instead of always row 0. Pure + exported for testing.
+ *
+ * - `currentModel` is the authoritative live model (session.info → status bar).
+ * - Provider index lands on the `is_current` provider (or 0).
+ * - Model index lands on `currentModel` within that provider (or 0).
+ */
+export function resolvePickerSelection(
+  providers: ModelOptionProvider[],
+  currentModel: string
+): { providerIdx: number; modelIdx: number } {
+  const providerIdx = Math.max(
+    0,
+    providers.findIndex(p => p.is_current)
+  )
+  const models = providers[providerIdx]?.models ?? []
+  const found = currentModel ? models.indexOf(currentModel) : -1
+
+  return { providerIdx, modelIdx: found >= 0 ? found : 0 }
+}
+
 export function providerIndexAfterClearingFilter(
   providerRows: ProviderRow[],
   provider: ModelOptionProvider | undefined
@@ -36,6 +58,7 @@ export function ModelPicker({
   allowPersistGlobal = true,
   gw,
   initialRefresh = false,
+  liveModel,
   maxWidth,
   onCancel,
   onSelect,
@@ -87,14 +110,18 @@ export function ModelPicker({
 
         const next = r.providers ?? []
         setProviders(next)
-        setCurrentModel(String(r.model ?? ''))
-        setProviderIdx(
-          Math.max(
-            0,
-            next.findIndex(p => p.is_current)
-          )
-        )
-        setModelIdx(0)
+        // liveModel (from session.info, the status-bar source of truth) wins
+        // over the RPC's snapshot so the popover always reflects what's shown
+        // above the tool calls. Fall back to the RPC value only when no live
+        // model has reached the client yet.
+        const authoritativeModel = (liveModel && liveModel.trim()) || String(r.model ?? '')
+        setCurrentModel(authoritativeModel)
+        // Land provider + model cursor on the live model (see
+        // resolvePickerSelection) so the popover opens in sync with the status
+        // bar instead of always highlighting provider 0 / model 0.
+        const sel = resolvePickerSelection(next, authoritativeModel)
+        setProviderIdx(sel.providerIdx)
+        setModelIdx(sel.modelIdx)
         setStage('provider')
         setErr('')
         setLoading(false)
@@ -103,7 +130,7 @@ export function ModelPicker({
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, initialRefresh, sessionId])
+  }, [gw, initialRefresh, liveModel, sessionId])
 
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
@@ -702,6 +729,9 @@ interface ModelPickerProps {
   allowPersistGlobal?: boolean
   gw: GatewayClient
   initialRefresh?: boolean
+  /** Authoritative live model from session.info (status-bar source of truth).
+   *  Wins over the model.options RPC snapshot so the popover can't desync. */
+  liveModel?: string
   maxWidth?: number
   onCancel: () => void
   onSelect: (value: string) => void
