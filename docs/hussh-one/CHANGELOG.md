@@ -175,6 +175,7 @@ alive across network blips, backgrounded tabs, and gateway restarts.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-08-05 | `f30349cd4` | **Repaired the dashboard + model-picker regressions left by the upstream merge.** `PluginsPage.tsx` was a non-compiling hybrid (upstream markup on older Hussh logic, dropped `<Select>` options/closing tag, duplicated ctx-engine block, stray `</div>`) which broke `npm run build -w web` and left `hermes_cli/web_dist/` unbuildable, crash-looping `:9119`. Restored it to upstream while keeping the i18n providers hint; re-added the Hussh-only `ChatDisabledPage`/`FeaturesPage` imports to `App.tsx`; and restored `resolvePickerSelection()` + the `liveModel` prop, which the merge had reverted to `setModelIdx(0)` — the exact desync **Contract J** guards against. |
 | 2026-07-28 | `c634b53ad` | Restored valid launchd dashboard-watchdog and doctor-helper control flow after the macOS-only boundary annotations were applied, allowing the managed dashboard to start and heal normally. |
 | 2026-07-23 | `3a9dc6b94` | **Deterministic macOS restart handoff.** The launchd supervisor now restarts its already-owned gateway directly instead of exiting early on Hermes' intentional nonzero handoff, waits/retries the narrow dashboard bootout→bootstrap race, and reports a real failure rather than silently leaving `:9119` down. |
 | 2026-07-22 | `458646ea6` | Documented the dashboard watchdog's active-TUI memory policy and recovery expectations in the deployment runbook. |
@@ -266,6 +267,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-08-04 | `7018d306d` | Reconciled `upstream/main` into `main`. The merge landed the upstream plugin/memory-provider work, but resolution left `web/` and `ui-tui/` partially spliced — newer upstream markup over older Hussh logic, with several declarations dropped while their usages survived. The dashboard build was broken until `f30349cd4`; treat this pair as one sync unit. |
 | 2026-07-22 | `4df42f7d9` | Defined the upstream-first operating policy: official Hermes is authoritative for generic contracts, `upstream` is fetch-only, and reconciliation happens on a short-lived sync branch with a real Vertex smoke before merging into the runtime `main`. |
 | 2026-07-15 | `12b402353` | Integrated upstream Hermes Agent **v0.18.2** into Hussh One. |
 | 2026-06-07 | `42f39a52b` | **Trunk reconciliation** — merged the drifted `hussh-one-hermes` branch (9 unique features: capsules, upgrade-safe header module, bootstrap/doctor/supervisor scripts) into `main`; `main` became the sole canonical trunk; old branch deleted, preserved at tag `safety/hussh-one-hermes-20260607-232148`. |
