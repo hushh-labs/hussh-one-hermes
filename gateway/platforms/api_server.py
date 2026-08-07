@@ -175,7 +175,14 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
     """
 
     def put_threadsafe(self, item, *, loop: asyncio.AbstractEventLoop = None) -> None:
-        (loop or self._loop_ref).call_soon_threadsafe(self.put_nowait, item)
+        target_loop = loop or self._loop_ref
+        try:
+            if asyncio.get_running_loop() is target_loop:
+                self.put_nowait(item)
+                return
+        except RuntimeError:
+            pass
+        target_loop.call_soon_threadsafe(self.put_nowait, item)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1813,6 +1820,59 @@ class APIServerAdapter(BasePlatformAdapter):
             return ""
         return normalized
 
+    @staticmethod
+    def _registry_models_enabled() -> bool:
+        """Whether API clients should see the active provider's model registry."""
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            return bool(
+                cfg_get(
+                    load_config(),
+                    "gateway",
+                    "api_server",
+                    "expose_provider_models",
+                    default=False,
+                )
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _configured_provider_model_routes() -> Dict[str, Dict[str, str]]:
+        """Build safe routes from Hermes' canonical catalog for the active provider."""
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            from hermes_cli.models import provider_model_ids
+
+            config = load_config()
+            provider = str(
+                cfg_get(config, "model", "provider", default="") or ""
+            ).strip()
+            if not provider:
+                return {}
+            return {
+                model_id: {"model": model_id, "provider": provider}
+                for model_id in provider_model_ids(provider)
+                if isinstance(model_id, str) and model_id.strip()
+            }
+        except Exception:
+            logger.debug("Could not build API provider-model registry", exc_info=True)
+            return {}
+
+    @staticmethod
+    def _configured_default_model() -> str:
+        """Return the configured runtime model without exposing provider secrets."""
+        try:
+            from hermes_cli.config import cfg_get, load_config
+
+            return str(
+                cfg_get(load_config(), "model", "default", default="") or ""
+            ).strip()
+        except Exception:
+            logger.debug("Could not resolve configured API default model", exc_info=True)
+            return ""
+
     def _get_platform_callback_adapter(
         self,
         request: "web.Request",
@@ -2576,6 +2636,7 @@ class APIServerAdapter(BasePlatformAdapter):
         route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None,
         confirmed_runtime_lock: bool = False,
+        reasoning_config_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -2633,7 +2694,11 @@ class APIServerAdapter(BasePlatformAdapter):
             runtime_kwargs = _resolve_runtime_agent_kwargs()
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
-        reasoning_config = GatewayRunner._load_reasoning_config()
+        reasoning_config = (
+            reasoning_config_override
+            if reasoning_config_override is not None
+            else GatewayRunner._load_reasoning_config()
+        )
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -3000,7 +3065,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "owned_by": "hermes",
                 "permission": [],
                 "root": route_cfg.get("model", alias),
-                "parent": None,
+                "parent": model_name,
             })
         if not models:
             models.append({
@@ -4108,11 +4173,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if text:
                     cleaned = _sanitize_reasoning_chunk(text)
                     if cleaned:
-                        _stream_q.put(("__reasoning__", cleaned))
+                        _stream_q.put_threadsafe(("__reasoning__", cleaned))
 
             def _on_status(kind, message):
                 if message:
-                    _stream_q.put(("__lifecycle__", {
+                    _stream_q.put_threadsafe(("__lifecycle__", {
                         "kind": str(kind or "status"),
                         "message": str(message),
                     }))
@@ -4370,8 +4435,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
+                if isinstance(item, tuple) and len(item) == 2:
+                    tag, payload = item
+                    if tag == "__tool_progress__":
+                        await response.write(_sse_frame(payload, event="hermes.tool.progress"))
+                    elif tag == "__reasoning__":
+                        reasoning_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"reasoning_content": payload}, "finish_reason": None}],
+                        }
+                        await response.write(_sse_frame(reasoning_chunk))
+                    elif tag == "__lifecycle__":
+                        await response.write(_sse_frame(payload, event="hermes.lifecycle"))
+                    else:
+                        content_chunk = {
+                            "id": completion_id, "object": "chat.completion.chunk",
+                            "created": created, "model": model,
+                            "choices": [{"index": 0, "delta": {"content": str(payload)}, "finish_reason": None}],
+                        }
+                        await response.write(_sse_frame(content_chunk))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -6051,6 +6134,7 @@ class APIServerAdapter(BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None,
         route_source: str = "global",
         confirmed_runtime_lock: bool = False,
+        reasoning_config_override: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -6110,6 +6194,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                         session_model=session_model,
                         confirmed_runtime_lock=confirmed_runtime_lock,
+                        reasoning_config_override=reasoning_config_override,
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent

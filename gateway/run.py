@@ -25865,7 +25865,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             def _run_sync_with_timeout_lifecycle():
                 try:
-                    return run_sync()
+                    return turn_runner.run_sync()
                 finally:
                     _turn_worker_done.set()
                     # `.turn.agent` on the session state is only reset to

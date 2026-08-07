@@ -24,7 +24,7 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -48,6 +48,7 @@ import {
 } from './bridge_helpers.js';
 
 // Parse CLI args
+const SCRIPT_HASH = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex').slice(0, 12);
 const args = process.argv.slice(2);
 function getArg(name, defaultVal) {
   const idx = args.indexOf(`--${name}`);
