@@ -3,10 +3,18 @@
 
 """Shared types for Xtreme Burst Compute (pure, no I/O).
 
-Ported from the TypeScript engine so the decision layer can run entirely on the
-person's own machine.  Nothing here touches the network, a credential, or a
-clock — which is what lets placement be decided without any information leaving
-the device.
+The decision layer runs entirely on the person's own machine.  Nothing here
+touches the network, a credential, or a clock — which is what lets placement be
+decided without any information leaving the device.
+
+``WorkloadEstimate``, ``DeviceProfile``, ``Headroom`` and ``PlacementDecision``
+correspond to the interfaces in ``src/lib/burst/types.ts`` in
+``hushh-labs/husshone``, in snake_case.  The remaining types
+(``AcceleratorClass``, ``HardwareRecommendation``, ``BenchmarkRow``,
+``WorkloadPreset``) have no counterpart there and originate in Hermes.
+
+See ``docs/hussh-one/architecture/xtreme-burst.md`` for the migration record,
+including the one deliberate incompatibility: ``PlacementTarget`` below.
 """
 
 from __future__ import annotations
@@ -18,6 +26,16 @@ from typing import Literal
 AcceleratorKind = Literal["gpu", "tpu"]
 
 #: Where a job actually runs: the person's own device, or a cloud burst.
+#:
+#: DELIBERATELY NOT WIRE-COMPATIBLE with the husshone control plane, which uses
+#: ``"puppy" | "gcp"`` (``src/lib/burst/types.ts``, the ``[puppy]`` enums in
+#: ``docs/specs/burst-control-plane.openapi.yaml``, and ``BurstClient.swift``).
+#: Those names bake in one device tier and one provider; Hermes is the burst
+#: home now and has to describe a Windows workstation bursting to a non-GCP
+#: cloud.  The mapping is exactly ``puppy → device`` and ``gcp → cloud``, so an
+#: adapter is a two-line translation — but it must be written deliberately at
+#: the boundary, not assumed.  See
+#: ``docs/hussh-one/architecture/xtreme-burst.md`` § *Vocabulary*.
 PlacementTarget = Literal["device", "cloud"]
 
 

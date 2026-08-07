@@ -63,6 +63,7 @@ survived.
 ---
 
 ### Related
+- [Xtreme Burst Compute — architecture & migration record](./xtreme-burst.md)
 - [Root machine-readable spec](../../../HUSSH_ONE.md)
 - [Upgrade & maintenance runbook](../operations/upgrading.md)
 - [Contracts](../contracts/README.md)

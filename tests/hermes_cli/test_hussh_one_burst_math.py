@@ -1,11 +1,21 @@
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Parity tests for the ported Xtreme Burst decision layer.
+"""Invariant tests for the Xtreme Burst decision layer.
 
-Every case here mirrors an assertion from the TypeScript engine this module was
-ported from, so a divergence shows up as a failure rather than as a silently
-different answer on someone's machine.  Invariants, not snapshots.
+Two different provenances are covered here, and the distinction matters when
+reading a failure:
+
+* **Placement** mirrors ``src/lib/burst/placement.ts`` in ``hushh-labs/husshone``
+  — the offline, TPU, unknown-size, safety-fraction and binding-constraint rules
+  each correspond to an assertion in that engine's own test file.  A failure here
+  means the two engines have diverged.
+* **Hardware matching, the accelerator catalog, the device profiles and the
+  workload presets have no counterpart in that TypeScript engine.**  They
+  originate here.  A failure in those sections is a regression against this
+  module's own contract, not a divergence from anything upstream.
+
+Invariants, not snapshots.
 """
 
 from __future__ import annotations
