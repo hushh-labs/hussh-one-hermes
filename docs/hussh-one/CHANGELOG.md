@@ -14,6 +14,14 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## 🚀 Xtreme Burst Compute
+
+| Date | Commit | What shipped |
+|------|--------|---------------|
+| 2026-08-07 | `d970f4711` | **The burst decision layer, local by construction.** Hermes now decides where a workload runs — the device in hand, or the person's own cloud — from resource numbers alone, with no network, credential, or clock access, so nothing about a job has to leave the machine to place it. Adds the placement engine (safety-fraction memory and disk headroom, TPU and offline and unknown-size rules), best-fit hardware matching across current GCP generations including H200, B200, GB200 NVL, TPU v6e and v5p, a matched-versus-naive cost benchmark the person can audit before anything runs, and six device profiles with seven workload presets. Execution, the consent and credential broker, and receipt sealing follow behind the same overlay boundary. |
+
+---
+
 ## 🔐 Consent MCP custody and one-time consumption
 
 | Date | Commit | What shipped |
