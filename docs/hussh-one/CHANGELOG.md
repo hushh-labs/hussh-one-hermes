@@ -305,7 +305,8 @@ Hussh-One-only surfaces: `hermes_cli/hussh_one_header.py`, `hermes_cli/brand.py`
 `scripts/hussh-one-*.sh`, `scripts/copilot-byok/`, `scripts/open-webui/`,
 `scripts/setup_open_webui.sh`, `plugins/model-providers/google-vertex-claude/`,
 `hermes_cli/hussh_one_identity.py`, `hermes_cli/hussh_one_router.py`,
-`hermes_cli/hussh_one_mcp_scan.py`, `docs/hussh-one/`, `HUSSH_ONE.md`.
+`hermes_cli/hussh_one_mcp_scan.py`, `hermes_cli/hussh_one_burst/`, `docs/hussh-one/`,
+`HUSSH_ONE.md`.
 
 Check for undocumented commits any time:
 ```bash
