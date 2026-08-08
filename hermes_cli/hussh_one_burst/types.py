@@ -69,6 +69,17 @@ class DeviceProfile:
     network_mbps: float
     online: bool = True
 
+    vram_gb: float | None = None
+    """Dedicated accelerator memory, when the GPU has a pool of its own.
+
+    ``None`` means unified memory (Apple Silicon) or no accelerator, and the
+    engine gates both accelerator and host need on ``unified_memory_gb`` — the
+    original behaviour, which every catalog profile still uses.  When this is
+    set, the machine has a discrete card and the two pools are checked
+    separately, because a 96GB workstation with an 8GB card can host the data
+    and still not fit the model.
+    """
+
 
 @dataclass(frozen=True)
 class Headroom:
