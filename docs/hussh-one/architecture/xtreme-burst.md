@@ -127,6 +127,7 @@ that first needs them — not before.
 ---
 
 ### Related
+- [Production-readiness scorecard](./xtreme-burst-roadmap.md) — live KPI status, updated each phase
 - [Architecture — the overlay model](./README.md)
 - [Design record, migrated from husshone](../reference/xtreme-burst/README.md)
 - [Changelog](../CHANGELOG.md)
