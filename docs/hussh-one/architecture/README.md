@@ -66,7 +66,10 @@ Mounted provider files remain authoritative blobs. The encrypted Source Library 
 domain is private semantic/control memory, while profile `source-library.db` is only a
 rebuildable opaque mapping and operations index. The bounded Steward proposes; parent
 services alone bind roots and execute one freshly approved, revision-pinned operation.
-See [Source Library Steward](../features/source-library.md).
+New local source-plane ciphertext requires both the unlocked vault key and a
+device-only, local-user-presence Data Protection Keychain secret. It is sealed
+field-by-field rather than treated as a second PKM share scope or a full SQLCipher
+database. See [Source Library Steward](../features/source-library.md).
 
 ---
 

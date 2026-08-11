@@ -18,7 +18,9 @@
 > 📚 **Source Library:** [`docs/hussh-one/features/source-library.md`](./docs/hussh-one/features/source-library.md)
 > defines the local private control plane over owner-bound mounted files. Provider bytes
 > remain authoritative; `source_library` PKM exposes no `attr.*` scopes; profile SQLite
-> is a rebuildable opaque mapping; the Steward may query and propose only.
+> is a rebuildable opaque mapping; every new source-plane ciphertext requires the
+> unlocked vault plus device-only local-user-presence Keychain custody; the Steward may
+> query and propose only.
 
 ---
 

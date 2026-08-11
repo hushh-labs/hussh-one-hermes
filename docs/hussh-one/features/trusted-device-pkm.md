@@ -83,6 +83,11 @@ the short-lived owner capability in memory, so its 15-minute lease is not a
 
 - Device signing key, Firebase refresh credential, and random vault-envelope
   wrapping key: macOS Keychain.
+- Source Library's separate 32-byte custody secret: macOS Data Protection
+  Keychain with `WhenUnlockedThisDeviceOnly` and local user-presence policy. It
+  combines with the unlocked vault key to derive source-plane AES-GCM keys and
+  is zeroized from bridge memory on every lock/revocation path. This is not
+  represented as a PKM scope or a non-exportable Secure Enclave `SecKey`.
 - Encrypted vault-key envelope and non-secret identity metadata: active Hermes
   profile with owner-only file permissions.
 - Unwrapped vault key and ID/owner tokens: process memory only. A new local
