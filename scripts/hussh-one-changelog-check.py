@@ -34,6 +34,8 @@ HUSSH_ONE_PATHS = [
     "hermes_cli/hussh_one_identity.py",
     "hermes_cli/hussh_one_router.py",
     "hermes_cli/hussh_one_mcp_scan.py",
+    "hermes_cli/hussh_one_source_library/",
+    "hermes_cli/hussh_one_pkm/manifest_policy.py",
     "hermes_cli/brand.py",
     "hermes_cli/skins/hussh-one.yaml",
     "hermes_cli/dashboard_themes/hussh-one.yaml",
@@ -46,6 +48,7 @@ HUSSH_ONE_PATHS = [
     "plugins/model-providers/google-vertex-claude/",
     "docs/hussh-one/",
     "HUSSH_ONE.md",
+    "tools/hussh_one_source_library_tool.py",
 ]
 
 CHANGELOG_ONLY_PATHS = {"docs/hussh-one/CHANGELOG.md"}

@@ -3,15 +3,17 @@
 
 """Hussh One Source Library: encrypted local evidence for reviewed PKM knowledge."""
 
-from .contracts import ReadLimits, ScanLimits
+from .contracts import ReadLimits, ScanLimits, SourceLibraryMemoryV2
 from .pkm_service import SourceLibraryPkmService
 from .service import SourceLibraryService
-from .steward import FILE_STEWARD_CONTRACT
+from .steward import FILE_STEWARD_CONTRACT, SOURCE_LIBRARY_STEWARD_CONTRACT
 
 __all__ = [
     "FILE_STEWARD_CONTRACT",
+    "SOURCE_LIBRARY_STEWARD_CONTRACT",
     "ReadLimits",
     "ScanLimits",
     "SourceLibraryPkmService",
+    "SourceLibraryMemoryV2",
     "SourceLibraryService",
 ]

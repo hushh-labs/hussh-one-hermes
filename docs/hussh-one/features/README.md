@@ -28,6 +28,7 @@ template so the catalog stays modular, deterministic, and advertisable.
 | Open WebUI browser chat variant | Web | ✅ Shipped | [open-webui.md](./open-webui.md) |
 | In-session model popover sync (TUI) | TUI | ✅ Shipped | [model-switching.md](./model-switching.md) |
 | Trusted-device PKM bridge | macOS/Desktop/MCP | 🧪 UAT | [trusted-device-pkm.md](./trusted-device-pkm.md) |
+| Source Library Steward | Local Hermes | 🧪 UAT | [source-library.md](./source-library.md) |
 
 ## Planned features
 See the [roadmap](../roadmap/README.md).

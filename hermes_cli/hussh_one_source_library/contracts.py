@@ -9,8 +9,13 @@ from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 
-SourceKind = Literal["icloud_drive", "google_drive"]
+SourceKind = Literal["icloud_drive", "google_drive", "local_drive"]
 EntryState = Literal["available", "metadata_only", "not_materialized"]
+BindingAccess = Literal["observe", "manage"]
+FileOperationKind = Literal["create", "rename", "move", "overwrite", "trash"]
+ShareMode = Literal[
+    "reference_existing", "copy_revision", "move_original", "knowledge_snapshot"
+]
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,7 @@ class SourceBinding:
     root_inode: int
     created_at: str
     read_only: bool = True
+    access_mode: BindingAccess = "observe"
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -106,3 +112,148 @@ class ExtractedArtifact:
     content_hash: str
     text: str
     truncated: bool
+
+
+@dataclass(frozen=True)
+class SourceLibraryMemoryV2:
+    """Private, provider-neutral semantic/control memory.
+
+    Device locators and source bytes deliberately live outside this payload.
+    """
+
+    schema_version: int
+    roots: dict[str, dict[str, Any]]
+    items: dict[str, dict[str, Any]]
+    collections: dict[str, dict[str, Any]]
+    knowledge: dict[str, dict[str, Any]]
+    relationships: dict[str, dict[str, Any]]
+
+    @classmethod
+    def empty(cls) -> "SourceLibraryMemoryV2":
+        return cls(
+            schema_version=2,
+            roots={},
+            items={},
+            collections={},
+            knowledge={},
+            relationships={},
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> "SourceLibraryMemoryV2":
+        if not isinstance(value, dict):
+            raise ValueError("Source Library memory must be a JSON object.")
+        allowed = {
+            "schema_version",
+            "roots",
+            "items",
+            "collections",
+            "knowledge",
+            "relationships",
+        }
+        if set(value) - allowed:
+            raise ValueError("Source Library memory contains an unsupported branch.")
+        memory = cls(
+            schema_version=int(value.get("schema_version", 2)),
+            roots=value.get("roots", {}),
+            items=value.get("items", {}),
+            collections=value.get("collections", {}),
+            knowledge=value.get("knowledge", {}),
+            relationships=value.get("relationships", {}),
+        )
+        memory.validate()
+        return memory
+
+    def validate(self) -> None:
+        """Reject source-plane details from durable private PKM memory."""
+        if self.schema_version != 2:
+            raise ValueError("Source Library memory schema_version must be 2.")
+        branches = {
+            "roots": self.roots,
+            "items": self.items,
+            "collections": self.collections,
+            "knowledge": self.knowledge,
+            "relationships": self.relationships,
+        }
+        if any(not isinstance(branch, dict) for branch in branches.values()):
+            raise ValueError("Every Source Library memory branch must be an object.")
+        self._validate_records(
+            self.roots,
+            prefix="root_",
+            allowed={"logical_kind", "synchronization_posture", "lifecycle_state"},
+        )
+        self._validate_records(
+            self.items,
+            prefix="item_",
+            allowed={
+                "blob_ref",
+                "revision",
+                "availability",
+                "semantic_type",
+                "organization",
+                "knowledge_refs",
+                "lifecycle_state",
+            },
+        )
+        self._validate_records(
+            self.collections,
+            prefix="collection_",
+            allowed={"aliases", "tags", "ordering", "lifecycle_state", "item_refs"},
+        )
+        self._validate_records(
+            self.relationships,
+            prefix="relationship_",
+            allowed={"kind", "from_ref", "to_ref", "created_at"},
+        )
+        knowledge_fields = {
+            "kind",
+            "statement",
+            "confidence",
+            "timestamp",
+            "provenance_ref",
+        }
+        self._validate_records(
+            self.knowledge,
+            prefix="k_",
+            allowed=knowledge_fields,
+            exact=True,
+        )
+
+    @staticmethod
+    def _validate_records(
+        records: dict[str, dict[str, Any]],
+        *,
+        prefix: str,
+        allowed: set[str],
+        exact: bool = False,
+    ) -> None:
+        forbidden_fragments = {
+            "path",
+            "title",
+            "filename",
+            "provider",
+            "locator",
+            "artifact",
+            "content_hash",
+            "raw_extract",
+        }
+        for reference, record in records.items():
+            if not isinstance(reference, str) or not reference.startswith(prefix):
+                raise ValueError("Source Library memory requires opaque references.")
+            if not isinstance(record, dict):
+                raise ValueError("Source Library memory records must be JSON objects.")
+            keys = set(record)
+            if keys - allowed or (exact and keys != allowed):
+                raise ValueError("Source Library memory record fields are invalid.")
+            if any(
+                fragment in key.casefold()
+                for key in keys
+                for fragment in forbidden_fragments
+            ):
+                raise ValueError(
+                    "Source-plane details cannot enter Source Library memory."
+                )

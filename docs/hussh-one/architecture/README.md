@@ -60,6 +60,14 @@ survived.
   **in-process** (per-session overrides), not as second profiles. See
   [features/whatsapp-capsules.md](../features/whatsapp-capsules.md).
 
+## Source Library authority overlay
+
+Mounted provider files remain authoritative blobs. The encrypted Source Library PKM
+domain is private semantic/control memory, while profile `source-library.db` is only a
+rebuildable opaque mapping and operations index. The bounded Steward proposes; parent
+services alone bind roots and execute one freshly approved, revision-pinned operation.
+See [Source Library Steward](../features/source-library.md).
+
 ---
 
 ### Related

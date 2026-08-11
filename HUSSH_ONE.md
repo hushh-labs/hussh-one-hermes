@@ -14,6 +14,11 @@
 > Check it first when onboarding a new machine or picking up work after a gap;
 > `scripts/hussh-one-changelog-check.py` (wired into the doctor + health index)
 > flags any commit that should have a row but doesn't.
+>
+> 📚 **Source Library:** [`docs/hussh-one/features/source-library.md`](./docs/hussh-one/features/source-library.md)
+> defines the local private control plane over owner-bound mounted files. Provider bytes
+> remain authoritative; `source_library` PKM exposes no `attr.*` scopes; profile SQLite
+> is a rebuildable opaque mapping; the Steward may query and propose only.
 
 ---
 

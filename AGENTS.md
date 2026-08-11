@@ -1001,6 +1001,10 @@ Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
 `messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
 `spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
 
+Hussh One adds the local-only `hussh_one_sources` proposal/query toolset for the
+least-authority Source Library Steward. Root binding and approved execution remain in
+the parent `hussh_one` toolset. See `docs/hussh-one/features/source-library.md`.
+
 Enable/disable per platform via `hermes tools` (the curses UI) or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in
 `config.yaml`.

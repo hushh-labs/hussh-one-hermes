@@ -131,11 +131,12 @@ def test_build_system_prompt_records_stable_prefix():
 
 
 def test_source_library_routing_guidance_is_present_only_for_the_parent_tool():
-    parent = _make_agent(valid_tool_names=["ask_file_steward"])
+    parent = _make_agent(valid_tool_names=["ask_source_library_steward"])
     parent_prompt = _stable_prompt(parent)
     assert "# Hussh One Source Library" in parent_prompt
     assert "semantically requires" in parent_prompt
-    assert "Do not use it for Drive/iCloud sharing, ACLs" in parent_prompt
+    assert "organizing, renaming, moving, Trashing, or sharing" in parent_prompt
+    assert "Audience labels are provider-managed and unverified" in parent_prompt
 
     steward = _make_agent(valid_tool_names=["hussh_one_source_browse"])
     assert "# Hussh One Source Library" not in _stable_prompt(steward)

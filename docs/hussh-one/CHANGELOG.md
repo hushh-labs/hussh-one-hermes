@@ -14,6 +14,18 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## 📚 Source Library Steward
+
+| Date | Commit | What shipped |
+|------|--------|---------------|
+| 2026-08-10 | pending | **Private mounted-source control plane.** Provider files remain authoritative while a profile-scoped encrypted SQLite mapping, bounded reconciliation, revision-pinned file proposals, mounted share targets, real-artifact revocation, and the least-authority Source Library Steward provide local query, organization, management, and sharing without creating any PKM consent scope or provider-ACL claim. |
+| 2026-08-10 | `2c245b438` | **Hermetic reviewer-profile rehearsal.** Proved bounded mounted-source extraction through approved encrypted PKM commit/readback without exposing source paths, titles, text, or artifact identifiers in the transmitted payload. |
+| 2026-08-10 | `60826823d` | **Initial encrypted Source Library operon.** Added explicit mounted-root binding, containment-safe bounded extraction, encrypted artifacts, reviewed knowledge proposals, local tools, and the original File Steward compatibility leaf. |
+
+📄 Feature page: [source-library.md](./features/source-library.md)
+
+---
+
 ## 🔐 Consent MCP custody and one-time consumption
 
 | Date | Commit | What shipped |
@@ -305,7 +317,9 @@ Hussh-One-only surfaces: `hermes_cli/hussh_one_header.py`, `hermes_cli/brand.py`
 `scripts/hussh-one-*.sh`, `scripts/copilot-byok/`, `scripts/open-webui/`,
 `scripts/setup_open_webui.sh`, `plugins/model-providers/google-vertex-claude/`,
 `hermes_cli/hussh_one_identity.py`, `hermes_cli/hussh_one_router.py`,
-`hermes_cli/hussh_one_mcp_scan.py`, `docs/hussh-one/`, `HUSSH_ONE.md`.
+`hermes_cli/hussh_one_mcp_scan.py`, `hermes_cli/hussh_one_source_library/`,
+`hermes_cli/hussh_one_pkm/manifest_policy.py`, `tools/hussh_one_source_library_tool.py`,
+`docs/hussh-one/`, `HUSSH_ONE.md`.
 
 Check for undocumented commits any time:
 ```bash
