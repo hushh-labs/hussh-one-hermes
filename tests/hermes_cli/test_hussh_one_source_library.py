@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -63,7 +64,9 @@ def _bound_library(tmp_path: Path) -> tuple[SourceLibraryService, Path, str]:
     return library, source_root, bound["source_id"]
 
 
-def test_scan_is_deterministic_bounded_and_never_follows_symlinks(tmp_path: Path) -> None:
+def test_scan_is_deterministic_bounded_and_never_follows_symlinks(
+    tmp_path: Path,
+) -> None:
     library, root, source_id = _bound_library(tmp_path)
     (root / "b.md").write_text("b", encoding="utf-8")
     (root / "a.txt").write_text("a", encoding="utf-8")
@@ -130,7 +133,9 @@ def test_placeholder_and_metadata_only_entries_are_not_opened(tmp_path: Path) ->
         library.read(entry_id=by_name["image.png"]["entry_id"])
 
 
-def test_catalog_and_artifact_are_encrypted_and_aad_profile_bound(tmp_path: Path) -> None:
+def test_catalog_and_artifact_are_encrypted_and_aad_profile_bound(
+    tmp_path: Path,
+) -> None:
     library, root, source_id = _bound_library(tmp_path)
     source = root / "private-note.md"
     source.write_text("fixture-private-content", encoding="utf-8")
@@ -220,7 +225,9 @@ def test_source_manifest_policy_overrides_forged_prior_exposure() -> None:
     )
     assert manifest["top_level_scope_paths"] == ["knowledge"]
     assert manifest["externalizable_paths"]
-    assert all(path.startswith("knowledge.") for path in manifest["externalizable_paths"])
+    assert all(
+        path.startswith("knowledge.") for path in manifest["externalizable_paths"]
+    )
     object_path = next(
         item for item in manifest["paths"] if item["json_path"] == "knowledge.k_item"
     )
@@ -323,10 +330,172 @@ def test_file_steward_is_a_leaf_with_only_source_tools(monkeypatch) -> None:
         return "delegated"
 
     monkeypatch.setattr("tools.delegate_tool.delegate_task", fake_delegate_task)
-    assert run_file_steward(request="Find reviewed facts", parent_agent=object()) == "delegated"
+    assert (
+        run_file_steward(request="Find reviewed facts", parent_agent=object())
+        == "delegated"
+    )
     assert captured["role"] == "leaf"
     assert captured["background"] is False
     assert captured["_internal_toolsets"] == ["hussh_one_sources"]
     assert FILE_STEWARD_CONTRACT.toolsets == ("hussh_one_sources",)
     assert "terminal" in FILE_STEWARD_CONTRACT.context
     assert "untrusted data" in FILE_STEWARD_CONTRACT.context
+
+
+class _ReviewerResponse:
+    def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self.payload = payload
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _ReviewerSharedDriveHttp:
+    """Deterministic encrypted-PKM transport for the non-production reviewer fixture."""
+
+    def __init__(self) -> None:
+        self.snapshot: dict[str, Any] | None = None
+        self.store_payload: dict[str, Any] | None = None
+
+    def get(self, url: str, **_kwargs: Any) -> _ReviewerResponse:
+        if "/domain-snapshot/" in url:
+            if self.snapshot is None:
+                return _ReviewerResponse(404, {})
+            return _ReviewerResponse(200, self.snapshot)
+        if "/memory/mutation-impact/" in url:
+            return _ReviewerResponse(
+                200,
+                {
+                    "active_recipient_count": 0,
+                    "recipient_labels": [],
+                    "enters_next_export_revision": False,
+                    "summary": "No active recipients are affected.",
+                    "affected_grant_ids": [],
+                    "affected_export_ids": [],
+                },
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def post(self, url: str, **kwargs: Any) -> _ReviewerResponse:
+        if url.endswith("/api/pkm/store-domain/validate"):
+            return _ReviewerResponse(200, {"success": True})
+        if url.endswith("/api/pkm/store-domain"):
+            payload = kwargs["json"]
+            self.store_payload = payload
+            self.snapshot = {
+                "content_revision": 1,
+                "manifest_revision": 1,
+                "encrypted_blob": payload["encrypted_blob"],
+                "manifest": payload["manifest"],
+                "scopes": [],
+            }
+            return _ReviewerResponse(200, {"success": True, "data_version": 1})
+        raise AssertionError(f"Unexpected POST {url}")
+
+
+class _ReviewerReplica:
+    def delete_domain(self, _domain: str) -> None:
+        return None
+
+    def store_snapshot(self, _domain: str, _snapshot: dict[str, Any]) -> None:
+        return None
+
+
+class _ReviewerSharedDriveBridge:
+    """Non-production reviewer identity with no credentials or external I/O."""
+
+    def __init__(self, profile_home: Path) -> None:
+        self.profile_home = profile_home
+        self.identity = SimpleNamespace(
+            profile_id="reviewer-source-library-profile-v1",
+            read_state=lambda: SimpleNamespace(
+                user_id="reviewer-source-library-fixture-v1",
+                api_base="https://reviewer-fixture.invalid",
+            ),
+        )
+        self.http = _ReviewerSharedDriveHttp()
+        self.replica = _ReviewerReplica()
+
+    def require_vault_key(self) -> bytes:
+        return bytes(range(32))
+
+    def acquire_vault_owner_token(self) -> str:
+        return "fixture-owner-token"
+
+
+def test_reviewer_shared_drive_fixture_rehearses_source_to_encrypted_pkm(
+    tmp_path: Path,
+) -> None:
+    """Prove the local Source Library flow without a real reviewer or cloud file."""
+    bridge = _ReviewerSharedDriveBridge(tmp_path / "reviewer-profile")
+    library = SourceLibraryService(bridge=bridge)  # type: ignore[arg-type]
+    shared_drive_root = tmp_path / "shared-drives"
+    shared_drive_root.mkdir()
+    source = shared_drive_root / "reviewer-source.md"
+    source_text = "Fixture evidence is retained only in the encrypted source plane."
+    source.write_text(source_text, encoding="utf-8")
+
+    binding = library.bind_mounted_root(
+        source_kind="google_drive",
+        label="Reviewer Shared Drive fixture",
+        root_path=str(shared_drive_root),
+    )
+    scan = library.scan(source_id=binding["source_id"])
+    assert scan == {
+        "success": True,
+        "source_id": binding["source_id"],
+        "entry_count": 1,
+        "counts_by_state": {"available": 1},
+        "limit_reached": False,
+    }
+    entry_id = library.browse(source_id=binding["source_id"])["entries"][0]["entry_id"]
+    read = library.read(entry_id=entry_id)
+
+    pkm = SourceLibraryPkmService(library, approve=lambda *_args: "accept")
+    proposal = pkm.propose(
+        entry_id=entry_id,
+        kind="summary",
+        statement="The owner has reviewed a durable source-derived planning summary.",
+        confidence=0.9,
+        timestamp="2026-08-10T00:00:00+00:00",
+    )
+    committed = pkm.commit(proposal["proposal_id"])
+    assert committed == {
+        "success": True,
+        "domain": "source_library",
+        "scope": "knowledge",
+        "data_version": 1,
+        "exports_marked_for_refresh": False,
+    }
+
+    read_back = PkmClient(bridge, manifest_policy=SOURCE_LIBRARY_MANIFEST_POLICY).read(
+        domain="source_library", scope_path="knowledge"
+    )
+    knowledge = read_back["value"]
+    assert set(knowledge) == {proposal["knowledge_id"]}
+    assert knowledge[proposal["knowledge_id"]] == {
+        "kind": "summary",
+        "statement": "The owner has reviewed a durable source-derived planning summary.",
+        "confidence": 0.9,
+        "timestamp": "2026-08-10T00:00:00+00:00",
+        "provenance_ref": proposal["provenance_ref"],
+    }
+
+    payload = bridge.http.store_payload
+    assert payload is not None
+    manifest = payload["manifest"]
+    assert manifest["top_level_scope_paths"] == ["knowledge"]
+    assert manifest["externalizable_paths"]
+    assert all(
+        path.startswith("knowledge.") for path in manifest["externalizable_paths"]
+    )
+    transmitted = json.dumps(payload, sort_keys=True)
+    assert source.name not in transmitted
+    assert source_text not in transmitted
+    assert str(shared_drive_root) not in transmitted
+    assert read["artifact_id"] not in transmitted
