@@ -18,7 +18,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
-| 2026-08-10 | pending | **Private mounted-source control plane.** Provider files remain authoritative while a profile-scoped encrypted SQLite mapping, bounded reconciliation, revision-pinned file proposals, mounted share targets, real-artifact revocation, and the least-authority Source Library Steward provide local query, organization, management, and sharing without creating any PKM consent scope or provider-ACL claim. |
+| 2026-08-11 | `71e66e868` | **Private mounted-source control plane.** Provider files remain authoritative while a profile-scoped encrypted SQLite mapping, bounded reconciliation, revision-pinned file proposals, mounted share targets, real-artifact revocation, and the least-authority Source Library Steward provide local query, organization, management, and sharing without creating any PKM consent scope or provider-ACL claim. |
 | 2026-08-10 | `2c245b438` | **Hermetic reviewer-profile rehearsal.** Proved bounded mounted-source extraction through approved encrypted PKM commit/readback without exposing source paths, titles, text, or artifact identifiers in the transmitted payload. |
 | 2026-08-10 | `60826823d` | **Initial encrypted Source Library operon.** Added explicit mounted-root binding, containment-safe bounded extraction, encrypted artifacts, reviewed knowledge proposals, local tools, and the original File Steward compatibility leaf. |
 
