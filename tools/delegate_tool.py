@@ -2784,6 +2784,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    _internal_toolsets: Optional[List[str]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2945,9 +2946,10 @@ def delegate_task(
             task_index=i,
             goal=t["goal"],
             context=t.get("context"),
-            # Subagents always inherit the parent's toolsets; the model
-            # cannot choose or narrow them (no model-facing toolsets arg).
-            toolsets=None,
+            # Normal model calls inherit the parent's toolsets. Trusted
+            # in-process specialist launchers may narrow a leaf to an exact
+            # parent-owned toolset through the non-schema internal argument.
+            toolsets=_internal_toolsets,
             model=creds["model"],
             max_iterations=effective_max_iter,
             task_count=n_tasks,

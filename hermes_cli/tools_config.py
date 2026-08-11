@@ -2490,6 +2490,11 @@ def _get_platform_tools(
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
 
+    # Native Source Library authority never crosses into a messaging agent,
+    # even if stale or hand-edited config explicitly names the toolset.
+    if platform not in {"cli", "desktop", "local", "tui"}:
+        enabled_toolsets.discard("hussh_one_sources")
+
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of
     # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends

@@ -18,6 +18,7 @@ import zipfile
 
 from tools.read_extract import (
     ExtractionError,
+    extract_document_bytes,
     extract_document_text,
     is_extractable_document,
 )
@@ -107,6 +108,14 @@ class TestNotebookExtraction(unittest.TestCase):
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
 
+    def test_byte_snapshot_extraction(self):
+        payload = json.dumps({
+            "cells": [{"cell_type": "markdown", "source": "Snapshot text"}],
+            "metadata": {},
+            "nbformat": 4,
+        }).encode()
+        self.assertIn("Snapshot text", extract_document_bytes(payload, ".ipynb"))
+
 
 # ---------------------------------------------------------------------------
 # Word documents (.docx) — #10737
@@ -140,6 +149,13 @@ class TestDocxExtraction(unittest.TestCase):
             z.writestr("other.xml", "<x/>")
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
+
+    def test_byte_snapshot_extraction(self):
+        p = os.path.join(self.tmp, "snapshot.docx")
+        _write_docx(p, self._doc(
+            '<w:p><w:r><w:t>Snapshot DOCX</w:t></w:r></w:p>'))
+        with open(p, "rb") as fh:
+            self.assertIn("Snapshot DOCX", extract_document_bytes(fh.read(), ".docx"))
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +212,13 @@ class TestXlsxExtraction(unittest.TestCase):
             fh.write(b"nope")
         with self.assertRaises(ExtractionError):
             extract_document_text(p)
+
+    def test_byte_snapshot_extraction(self):
+        p = os.path.join(self.tmp, "snapshot.xlsx")
+        self._build(p)
+        with open(p, "rb") as fh:
+            text = extract_document_bytes(fh.read(), ".xlsx")
+        self.assertIn("Alice\t95", text)
 
 
 # ---------------------------------------------------------------------------

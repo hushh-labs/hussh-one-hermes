@@ -18,6 +18,7 @@ from typing import Any
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .bridge import HusshVaultBridge
+from .manifest_policy import PkmManifestPolicy, RESERVED_PKM_DOMAINS
 
 _DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SCOPE_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){0,15}$")
@@ -271,8 +272,26 @@ def _sharing_fingerprint(impact: dict[str, Any]) -> dict[str, Any]:
 
 
 class PkmClient:
-    def __init__(self, bridge: HusshVaultBridge) -> None:
+    def __init__(
+        self,
+        bridge: HusshVaultBridge,
+        *,
+        manifest_policy: PkmManifestPolicy | None = None,
+    ) -> None:
         self.bridge = bridge
+        self.manifest_policy = manifest_policy
+
+    def _policy_for_domain(self, domain: str) -> PkmManifestPolicy | None:
+        policy = self.manifest_policy
+        if policy is not None and policy.domain != domain:
+            raise PkmBridgeError(
+                "The PKM manifest policy does not authorize this domain."
+            )
+        if domain in RESERVED_PKM_DOMAINS and policy is None:
+            raise PkmBridgeError(
+                f"The reserved PKM domain {domain!r} requires its canonical writer."
+            )
+        return policy
 
     def _state(self):
         state = self.bridge.identity.read_state()
@@ -407,6 +426,7 @@ class PkmClient:
         owner_token = self.bridge.acquire_vault_owner_token()
         domain_data = {"readiness": {"compatible": True}}
         manifest = self._manifest(
+            domain="hermes_contract_probe",
             domain_data=domain_data,
             scope_path="readiness",
             current=None,
@@ -459,6 +479,9 @@ class PkmClient:
             raise PkmBridgeError(
                 "A normalized top-level domain and scope path are required."
             )
+        policy = self._policy_for_domain(domain)
+        if policy is not None:
+            policy.validate_write(scope_path=scope_path, merge_patch=merge_patch)
         requested_operation = str(operation or "upsert").strip().lower()
         if requested_operation not in {
             "upsert",
@@ -533,10 +556,14 @@ class PkmClient:
     def _manifest(
         self,
         *,
+        domain: str,
         domain_data: dict[str, Any],
         scope_path: str,
         current: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        policy = self._policy_for_domain(domain)
+        if policy is not None:
+            policy.validate_domain_data(domain_data)
         previous = (current or {}).get("manifest") or {}
         discovered_paths = _path_descriptors(domain_data)
         previous_by_path = {
@@ -547,7 +574,7 @@ class PkmClient:
         paths = []
         for item in discovered_paths:
             prior = previous_by_path.get(item["json_path"]) or {}
-            paths.append({
+            descriptor = {
                 **item,
                 **{
                     key: prior[key]
@@ -561,7 +588,12 @@ class PkmClient:
                 "exposure_eligibility": bool(
                     prior.get("exposure_eligibility", item["path_type"] == "leaf")
                 ),
-            })
+            }
+            # Reserved-domain policy is applied last. A forged or stale prior
+            # manifest can never make a private path externalizable.
+            paths.append(
+                policy.decorate_path(descriptor) if policy is not None else descriptor
+            )
         externalizable = [
             item["json_path"]
             for item in paths
@@ -609,7 +641,11 @@ class PkmClient:
                 "readable_projection_version": _READABLE_PROJECTION_VERSION,
                 "scope_materialization": scope_materialization,
             },
-            "top_level_scope_paths": sorted(domain_data),
+            "top_level_scope_paths": (
+                policy.top_level_scope_paths(domain_data)
+                if policy is not None
+                else sorted(domain_data)
+            ),
             "externalizable_paths": externalizable,
             "paths": paths,
             "source_agent": "hussh_one_hermes",
@@ -681,6 +717,12 @@ class PkmClient:
         }
 
     def commit(self, proposal: PkmProposal) -> dict[str, Any]:
+        policy = self._policy_for_domain(proposal.domain)
+        if policy is not None:
+            policy.validate_write(
+                scope_path=proposal.scope_path,
+                merge_patch=proposal.merge_patch,
+            )
         key = self.bridge.require_vault_key()
         state = self._state()
         for attempt in range(3):
@@ -754,6 +796,7 @@ class PkmClient:
                 }
 
             manifest = self._manifest(
+                domain=proposal.domain,
                 domain_data=merged, scope_path=proposal.scope_path, current=current
             )
             previous_manifest = (current or {}).get("manifest") or {}

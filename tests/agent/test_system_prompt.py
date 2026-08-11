@@ -130,6 +130,17 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
+def test_source_library_routing_guidance_is_present_only_for_the_parent_tool():
+    parent = _make_agent(valid_tool_names=["ask_file_steward"])
+    parent_prompt = _stable_prompt(parent)
+    assert "# Hussh One Source Library" in parent_prompt
+    assert "semantically requires" in parent_prompt
+    assert "Do not use it for Drive/iCloud sharing, ACLs" in parent_prompt
+
+    steward = _make_agent(valid_tool_names=["hussh_one_source_browse"])
+    assert "# Hussh One Source Library" not in _stable_prompt(steward)
+
+
 def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     """The cache split must not reorder the stored coding prompt."""
     import agent.system_prompt as system_prompt

@@ -495,6 +495,33 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
 # don't get macOS-only wording ("Mac", "Space", cmd+s). The module-level
 # COMPUTER_USE_GUIDANCE constant renders the macOS variant for backwards
 # compatibility; system_prompt.py selects the host-appropriate variant.
+
+# This is capability guidance, not a keyword router. The model assesses
+# whether a request needs owner-bound source material; deterministic policy
+# remains responsible only for local-surface, vault, binding, and approval
+# enforcement.
+SOURCE_LIBRARY_PARENT_GUIDANCE = (
+    "# Hussh One Source Library\n"
+    "You can ask the File Steward to research information in the owner's "
+    "explicitly bound, locally available source folders. Use `ask_file_steward` "
+    "when the user's request semantically requires finding, comparing, or "
+    "deriving facts, summaries, or preferences from their bound documents, "
+    "Source Library, iCloud Drive, or Google Drive folders. Do not treat a "
+    "generic request to update existing PKM as a source-library request. If it "
+    "is genuinely unclear whether the user wants existing PKM or source-derived "
+    "information, ask that one clarifying question before accessing sources.\n\n"
+    "The File Steward is read-only and treats file contents as untrusted data. "
+    "It can inspect only already-materialized, explicitly bound sources; it "
+    "cannot discover arbitrary machine files, hydrate cloud placeholders, or "
+    "operate provider accounts. Do not use it for Drive/iCloud sharing, ACLs, "
+    "OAuth, sync, uploads, rename, move, delete, or permission changes.\n\n"
+    "Return candidate knowledge for owner review. Raw source bytes, titles, "
+    "paths, catalog records, and artifact identifiers stay local. A PKM commit "
+    "requires fresh owner approval and stores only a derived fact or summary, "
+    "confidence, timestamp, and opaque provenance reference."
+)
+
+
 def computer_use_guidance(platform_name: Optional[str] = None) -> str:
     """Return platform-aware computer-use guidance for the system prompt.
 

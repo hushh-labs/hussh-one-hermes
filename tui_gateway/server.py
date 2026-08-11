@@ -4084,9 +4084,9 @@ def _load_enabled_toolsets() -> list[str] | None:
         remain excluded.
         """
         if _resolve_session_platform() == "desktop":
-            return sorted({*enabled, "hussh_one", "project"})
+            return sorted({*enabled, "hussh_one", "hussh_one_sources", "project"})
         if is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD")):
-            return sorted({*enabled, "hussh_one"})
+            return sorted({*enabled, "hussh_one", "hussh_one_sources"})
         return enabled
 
     explicit = [
