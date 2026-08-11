@@ -4,8 +4,9 @@
 """Profile-scoped SQLite mapping and operation state for Source Library.
 
 The database is deliberately metadata-only.  Sensitive device locators and
-display metadata are sealed with the Source Library vault-derived key before
-they cross the SQLite boundary; source bytes and extracted text never enter it.
+display metadata are sealed with the Source Library vault- and device-custody-
+derived key before they cross the SQLite boundary; source bytes and extracted
+text never enter it.
 """
 
 from __future__ import annotations
@@ -182,6 +183,66 @@ class SourceLibraryIndexStore:
             raise SourceLibraryIndexError("The local Source Library index is invalid.")
         return result
 
+    def rekey_legacy_envelopes(self) -> None:
+        """Move every sealed SQLite value and lookup token to crypto v2.
+
+        The index is rebuildable, but rekeying in one transaction avoids a
+        mixed partially-upgraded mapping after a lock or process interruption.
+        Plaintext exists only inside this transaction while the owner vault and
+        device user-presence gate are both active.
+        """
+        with self._lock, self._connect() as conn, write_txn(conn):
+            bindings = conn.execute(
+                "SELECT source_id, sealed_record FROM source_bindings"
+            ).fetchall()
+            for row in bindings:
+                source_id = str(row["source_id"])
+                record = self._open(
+                    row["sealed_record"], purpose="binding", identifier=source_id
+                )
+                conn.execute(
+                    "UPDATE source_bindings SET sealed_record=? WHERE source_id=?",
+                    (self._seal(record, purpose="binding", identifier=source_id), source_id),
+                )
+
+            items = conn.execute(
+                "SELECT entry_id, lifecycle_state, sealed_record FROM observed_items"
+            ).fetchall()
+            for row in items:
+                entry_id = str(row["entry_id"])
+                entry = CatalogEntry.from_json(
+                    self._open(row["sealed_record"], purpose="item", identifier=entry_id)
+                )
+                self._upsert_entry(
+                    conn, entry, lifecycle_state=str(row["lifecycle_state"])
+                )
+
+            simple_records = (
+                ("sync_checkpoints", "source_id", "checkpoint"),
+                ("change_events", "event_id", "change"),
+                ("share_targets", "target_id", "share_target"),
+                ("share_records", "share_ref", "share"),
+                ("operation_proposals", "proposal_id", "proposal"),
+                ("operation_receipts", "receipt_id", "receipt"),
+                ("provenance_records", "provenance_ref", "provenance"),
+            )
+            for table, identifier_column, purpose in simple_records:
+                rows = conn.execute(
+                    f"SELECT {identifier_column}, sealed_record FROM {table}"
+                ).fetchall()
+                for row in rows:
+                    identifier = str(row[identifier_column])
+                    record = self._open(
+                        row["sealed_record"], purpose=purpose, identifier=identifier
+                    )
+                    conn.execute(
+                        f"UPDATE {table} SET sealed_record=? WHERE {identifier_column}=?",
+                        (self._seal(record, purpose=purpose, identifier=identifier), identifier),
+                    )
+            conn.execute(
+                "INSERT OR REPLACE INTO source_library_meta(key, value) VALUES('encryption_version', '2')"
+            )
+
     def migrate_legacy(self, legacy: EncryptedSourceStore) -> None:
         """Idempotently copy legacy catalog state without deleting rollback data."""
         with self._lock, self._connect() as conn:
@@ -302,6 +363,30 @@ class SourceLibraryIndexStore:
             for row in rows
         ]
 
+    def has_persisted_records(self) -> bool:
+        """Report whether the local mapping contains durable source state.
+
+        This intentionally inspects only row existence. It lets the composition
+        root distinguish a fresh profile from lost device custody without
+        decrypting metadata or prompting for LocalAuthentication.
+        """
+        tables = (
+            "source_bindings",
+            "observed_items",
+            "sync_checkpoints",
+            "change_events",
+            "share_targets",
+            "share_records",
+            "operation_proposals",
+            "operation_receipts",
+            "provenance_records",
+        )
+        with self._lock, self._connect() as conn:
+            return any(
+                conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+                for table in tables
+            )
+
     def _upsert_entry(
         self, conn: sqlite3.Connection, entry: CatalogEntry, *, lifecycle_state: str
     ) -> None:
@@ -416,7 +501,9 @@ class SourceLibraryIndexStore:
                 str(row["entry_id"]): str(row["lifecycle_state"]) for row in prior_rows
             }
             identity_candidates: dict[tuple[int, int], list[CatalogEntry]] = {}
+            path_candidates: dict[str, list[CatalogEntry]] = {}
             for old in prior.values():
+                path_candidates.setdefault(old.relative_path, []).append(old)
                 if old.device and old.inode:
                     identity_candidates.setdefault((old.device, old.inode), []).append(
                         old
@@ -425,13 +512,21 @@ class SourceLibraryIndexStore:
             normalized: list[CatalogEntry] = []
             claimed_prior_ids: set[str] = set()
             for entry in observed_list:
-                candidates = [
+                same_path = [
+                    old
+                    for old in path_candidates.get(entry.relative_path, [])
+                    if old.entry_id not in claimed_prior_ids
+                ]
+                inode_candidates = [
                     old
                     for old in identity_candidates.get((entry.device, entry.inode), [])
                     if old.entry_id not in claimed_prior_ids
                 ]
-                # Device+inode is a stable rename identity only when it is
-                # unambiguous. Hard links deliberately retain separate refs.
+                # Same-path preservation makes newly observed random ids stable
+                # between scans. Device+inode carries that opaque id through a
+                # rename only when it is unambiguous; hard links retain separate
+                # references rather than guessing identity.
+                candidates = same_path if len(same_path) == 1 else inode_candidates
                 if len(candidates) == 1:
                     stable = candidates[0]
                     claimed_prior_ids.add(stable.entry_id)

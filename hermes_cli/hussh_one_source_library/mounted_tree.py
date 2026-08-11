@@ -11,6 +11,7 @@ import stat
 import subprocess
 import time
 import uuid
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
@@ -44,9 +45,13 @@ _METADATA_SUFFIXES = frozenset({
 _PLACEHOLDER_SUFFIXES = frozenset({".gdoc", ".gsheet", ".gslides", ".gdraw"})
 
 
-def _entry_id(source_id: str, relative_path: str) -> str:
-    digest = hashlib.sha256(f"{source_id}\x00{relative_path}".encode()).hexdigest()
-    return f"src_entry_{digest[:24]}"
+def _entry_id(_source_id: str, _relative_path: str) -> str:
+    """Create a non-derivable candidate id for a newly observed file.
+
+    The index preserves it using a same-path or stable inode match on later
+    reconciliations. No filename-derived identifier crosses the SQLite boundary.
+    """
+    return f"src_entry_{uuid.uuid4().hex}"
 
 
 def _revision(st: os.stat_result) -> str:

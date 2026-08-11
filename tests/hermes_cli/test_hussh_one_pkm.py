@@ -455,6 +455,58 @@ def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
         mcp_bridge.require_vault_key()
 
 
+def test_source_library_device_custody_is_cached_zeroized_and_phase_latched(
+    tmp_path: Path,
+) -> None:
+    class FakeKeychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+            self.prompts: list[str] = []
+
+        def get(self, account: str) -> bytes | None:
+            return self.values.get(account)
+
+        def set(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete(self, account: str) -> None:
+            self.values.pop(account, None)
+
+        def get_user_presence_secret(self, account: str, *, prompt: str) -> bytes | None:
+            self.prompts.append(prompt)
+            return self.values.get(account)
+
+        def set_user_presence_secret(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete_user_presence_secret(self, account: str) -> None:
+            self.values.pop(account, None)
+
+    keychain = FakeKeychain()
+    bridge = HusshVaultBridge(
+        profile_home=tmp_path / "profile",
+        keychain=keychain,  # type: ignore[arg-type]
+    )
+    bridge._write_lock_state(locked=False, reason="test")
+    bridge._vault_key = bytearray(bytes(range(32)))
+
+    custody_key = bridge.require_source_library_custody_key(create_if_missing=True)
+    account = bridge._account("source-library-custody-key")
+    assert len(custody_key) == 32
+    assert keychain.values[account] == b"\x01" + custody_key
+    assert len(keychain.prompts) == 2
+    assert bridge.require_source_library_custody_key() == custody_key
+    assert len(keychain.prompts) == 2
+    assert bridge.source_library_custody_phase() == 1
+
+    bridge.complete_source_library_custody_upgrade()
+    assert keychain.values[account] == b"\x02" + custody_key
+    assert bridge.source_library_custody_phase() == 2
+    bridge.lock(reason="test")
+    assert bridge._source_library_custody_key is None
+    assert bridge._source_library_custody_phase is None
+
+
 def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> None:
     class FakeKeychain:
         def __init__(self) -> None:

@@ -47,13 +47,45 @@ class SourceLibraryService:
         self.bridge = bridge
         self.crypto = SourcePlaneCrypto(
             vault_key_provider=bridge.require_vault_key,
+            device_custody_key_provider=bridge.require_source_library_custody_key,
             profile_id=bridge.identity.profile_id,
             user_id=state.user_id,
+            device_id=str(getattr(state, "device_id", "")),
         )
         self.store = store or EncryptedSourceStore(bridge.profile_home, self.crypto)
         self.index = SourceLibraryIndexStore(bridge.profile_home, self.crypto)
-        self.index.migrate_legacy(self.store)
         self.adapter = adapter or MountedTreeAdapter()
+        self._custody_ready = False
+
+    def _has_persisted_source_data(self) -> bool:
+        return (
+            self.store.state_path.exists()
+            or any(self.store.artifact_root.glob("art_*.enc.json"))
+            or self.index.has_persisted_records()
+        )
+
+    def _ensure_custody(self) -> None:
+        """Open a source plane only after vault and device custody are present."""
+        if self._custody_ready:
+            return
+        self.bridge.require_vault_key()
+        self.bridge.require_source_library_custody_key(
+            create_if_missing=not self._has_persisted_source_data()
+        )
+        if self.bridge.source_library_custody_phase() != 2:
+            # v1 can be opened solely to migrate it. Once every legacy envelope
+            # and keyed SQLite token is replaced, the Keychain phase latch makes
+            # a replayed v1 database fail closed rather than silently downgrade.
+            self.index.migrate_legacy(self.store)
+            self.store.rekey_legacy_envelopes()
+            self.index.rekey_legacy_envelopes()
+            self.bridge.complete_source_library_custody_upgrade()
+        self.crypto.reject_legacy_v1()
+        self._custody_ready = True
+
+    def has_binding_records(self) -> bool:
+        """Side-effect-free availability hint for tool registration only."""
+        return self.index.has_persisted_records()
 
     def bind_mounted_root(
         self,
@@ -63,7 +95,7 @@ class SourceLibraryService:
         root_path: str,
         access_mode: str = "observe",
     ) -> dict[str, Any]:
-        self.bridge.require_vault_key()
+        self._ensure_custody()
         source_id = f"source_{uuid.uuid4().hex}"
         binding = self.adapter.bind(
             source_id=source_id,
@@ -84,6 +116,7 @@ class SourceLibraryService:
         }
 
     def list_sources(self) -> dict[str, Any]:
+        self._ensure_custody()
         sources = []
         for binding in self.index.list_bindings():
             try:
@@ -105,12 +138,14 @@ class SourceLibraryService:
         }
 
     def _binding(self, source_id: str) -> SourceBinding:
+        self._ensure_custody()
         try:
             return self.index.get_binding(source_id)
         except SourceLibraryIndexError as exc:
             raise SourceLibraryError(str(exc)) from exc
 
     def _entry(self, entry_id: str) -> CatalogEntry:
+        self._ensure_custody()
         try:
             return self.index.get_entry(entry_id)
         except SourceLibraryIndexError as exc:
@@ -177,6 +212,7 @@ class SourceLibraryService:
         cursor: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        self._ensure_custody()
         if source_id is not None:
             self._binding(source_id)
         items = self.index.list_entries(source_id)
@@ -202,6 +238,7 @@ class SourceLibraryService:
         cursor: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
+        self._ensure_custody()
         normalized = query.strip().casefold()
         if len(normalized) < 2 or len(normalized) > 200:
             raise SourceLibraryError(
@@ -336,9 +373,11 @@ class SourceLibraryService:
         return entry, artifact
 
     def sync_status(self) -> dict[str, Any]:
+        self._ensure_custody()
         return {"success": True, "checkpoints": self.index.sync_status()}
 
     def provenance_ref(self, entry: CatalogEntry, artifact: ExtractedArtifact) -> str:
+        self._ensure_custody()
         message = (
             f"{entry.source_id}\x00{entry.entry_id}\x00"
             f"{entry.content_revision}\x00{artifact.content_hash}"

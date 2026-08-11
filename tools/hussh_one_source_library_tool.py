@@ -40,8 +40,9 @@ def _source_library_ready() -> bool:
     if not _vault_unlocked():
         return False
     try:
-        sources = _library().list_sources().get("sources") or []
-        return any(item.get("status") == "available" for item in sources)
+        # Tool registration must not create a Keychain prompt. A real source
+        # operation opens device custody only after the owner selects it.
+        return _library().has_binding_records()
     except Exception:
         return False
 

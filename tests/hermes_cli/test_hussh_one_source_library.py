@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import hashlib
+from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -13,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from hermes_cli.hussh_one_pkm.pkm import PkmBridgeError, PkmClient, PkmProposal
 from hermes_cli.hussh_one_source_library.contracts import (
@@ -52,7 +55,7 @@ class _Identity:
     profile_id = "profile-test"
 
     def read_state(self):
-        return SimpleNamespace(user_id="user-test")
+        return SimpleNamespace(user_id="user-test", device_id="device-test")
 
 
 class _Bridge:
@@ -60,9 +63,23 @@ class _Bridge:
         self.profile_home = profile_home
         self.identity = _Identity()
         self._key = key
+        self._source_custody_key = bytes(reversed(range(32)))
+        self._source_custody_phase = 1
 
     def require_vault_key(self) -> bytes:
         return self._key
+
+    def require_source_library_custody_key(
+        self, *, create_if_missing: bool = False
+    ) -> bytes:
+        del create_if_missing
+        return self._source_custody_key
+
+    def source_library_custody_phase(self) -> int:
+        return self._source_custody_phase
+
+    def complete_source_library_custody_upgrade(self) -> None:
+        self._source_custody_phase = 2
 
 
 def _library(tmp_path: Path) -> SourceLibraryService:
@@ -217,6 +234,9 @@ def test_catalog_and_artifact_are_encrypted_and_aad_profile_bound(
     source.write_text("fixture-private-content", encoding="utf-8")
     library.scan(source_id=source_id)
     entry_id = library.browse(source_id=source_id)["entries"][0]["entry_id"]
+    assert entry_id != "src_entry_" + hashlib.sha256(
+        f"{source_id}\x00private-note.md".encode()
+    ).hexdigest()[:24]
     read = library.read(entry_id=entry_id)
 
     index_bytes = b"".join(
@@ -232,6 +252,7 @@ def test_catalog_and_artifact_are_encrypted_and_aad_profile_bound(
 
     other_crypto = SourcePlaneCrypto(
         vault_key_provider=lambda: bytes(range(32)),
+        device_custody_key_provider=lambda: bytes(reversed(range(32))),
         profile_id="profile-other",
         user_id="user-test",
     )
@@ -254,6 +275,53 @@ def test_catalog_and_artifact_are_encrypted_and_aad_profile_bound(
         )
     with pytest.raises(SourceLibraryIndexError, match="integrity"):
         library.index.get_binding(source_id)
+
+
+def test_device_custody_crypto_rejects_wrong_device_and_legacy_replay() -> None:
+    vault_key = bytes(range(32))
+    custody_key = bytes(reversed(range(32)))
+    crypto = SourcePlaneCrypto(
+        vault_key_provider=lambda: vault_key,
+        device_custody_key_provider=lambda: custody_key,
+        profile_id="profile-test",
+        user_id="user-test",
+        device_id="device-test",
+    )
+    envelope = crypto.seal(b"private source state", purpose="catalog", identifier="x")
+    assert envelope["schema_version"] == 2
+    assert crypto.open(envelope, purpose="catalog", identifier="x") == b"private source state"
+
+    wrong_device = SourcePlaneCrypto(
+        vault_key_provider=lambda: vault_key,
+        device_custody_key_provider=lambda: custody_key,
+        profile_id="profile-test",
+        user_id="user-test",
+        device_id="device-other",
+    )
+    with pytest.raises(SourceStoreError, match="integrity"):
+        wrong_device.open(envelope, purpose="catalog", identifier="x")
+
+    legacy = SourcePlaneCrypto(
+        vault_key_provider=lambda: vault_key,
+        profile_id="profile-test",
+        user_id="user-test",
+    )
+    nonce = os.urandom(12)
+    legacy_envelope = {
+        "schema_version": 1,
+        "nonce": b64encode(nonce).decode("ascii"),
+        "ciphertext": b64encode(
+            AESGCM(legacy.key("catalog", schema_version=1)).encrypt(
+                nonce,
+                b"legacy private state",
+                legacy.aad(purpose="catalog", identifier="x", schema_version=1),
+            )
+        ).decode("ascii"),
+    }
+    assert crypto.open(legacy_envelope, purpose="catalog", identifier="x") == b"legacy private state"
+    crypto.reject_legacy_v1()
+    with pytest.raises(SourceStoreError, match="Legacy"):
+        crypto.open(legacy_envelope, purpose="catalog", identifier="x")
 
 
 def test_generic_pkm_writer_cannot_claim_reserved_source_library_domain() -> None:
@@ -802,6 +870,7 @@ class _ReviewerSharedDriveBridge:
             read_state=lambda: SimpleNamespace(
                 user_id="reviewer-source-library-fixture-v1",
                 api_base="https://reviewer-fixture.invalid",
+                device_id="reviewer-source-library-device-v1",
             ),
         )
         self.http = _ReviewerSharedDriveHttp()
@@ -809,6 +878,18 @@ class _ReviewerSharedDriveBridge:
 
     def require_vault_key(self) -> bytes:
         return bytes(range(32))
+
+    def require_source_library_custody_key(
+        self, *, create_if_missing: bool = False
+    ) -> bytes:
+        del create_if_missing
+        return bytes(reversed(range(32)))
+
+    def source_library_custody_phase(self) -> int:
+        return 2
+
+    def complete_source_library_custody_upgrade(self) -> None:
+        return None
 
     def acquire_vault_owner_token(self) -> str:
         return "fixture-owner-token"

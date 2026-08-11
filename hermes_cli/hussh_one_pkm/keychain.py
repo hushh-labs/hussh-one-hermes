@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Minimal macOS Keychain adapter with no command-line secret exposure."""
+"""macOS Keychain adapter with no command-line secret exposure.
+
+The ordinary trusted-device envelope key uses the compatibility generic-password
+path. Source Library adds a device-only, user-presence protected Keychain item:
+the protected secret is never written to Hermes storage and its access-control
+decision is mediated by macOS's hardware-backed security subsystem.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +23,8 @@ class KeychainError(RuntimeError):
 class MacOSKeychain:
     _SUCCESS = 0
     _NOT_FOUND = -25300
+    _CF_STRING_ENCODING_UTF8 = 0x08000100
+    _USER_PRESENCE = 1
 
     def __init__(self, *, service: str = "ai.hushh.one.hermes") -> None:
         if sys.platform != "darwin":
@@ -66,7 +74,57 @@ class MacOSKeychain:
         self._security.SecKeychainItemDelete.restype = ctypes.c_int32
         self._security.SecKeychainItemFreeContent.argtypes = [c_void_p, c_void_p]
         self._security.SecKeychainItemFreeContent.restype = ctypes.c_int32
+        self._security.SecAccessControlCreateWithFlags.argtypes = [
+            c_void_p,
+            c_void_p,
+            c_uint32,
+            POINTER(c_void_p),
+        ]
+        self._security.SecAccessControlCreateWithFlags.restype = c_void_p
+        self._security.SecItemCopyMatching.argtypes = [c_void_p, POINTER(c_void_p)]
+        self._security.SecItemCopyMatching.restype = ctypes.c_int32
+        self._security.SecItemAdd.argtypes = [c_void_p, POINTER(c_void_p)]
+        self._security.SecItemAdd.restype = ctypes.c_int32
+        self._security.SecItemUpdate.argtypes = [c_void_p, c_void_p]
+        self._security.SecItemUpdate.restype = ctypes.c_int32
+        self._security.SecItemDelete.argtypes = [c_void_p]
+        self._security.SecItemDelete.restype = ctypes.c_int32
+        self._core.CFStringCreateWithCString.argtypes = [c_void_p, c_char_p, c_uint32]
+        self._core.CFStringCreateWithCString.restype = c_void_p
+        self._core.CFDataCreate.argtypes = [c_void_p, c_void_p, c_uint32]
+        self._core.CFDataCreate.restype = c_void_p
+        self._core.CFDataGetLength.argtypes = [c_void_p]
+        self._core.CFDataGetLength.restype = ctypes.c_long
+        self._core.CFDataGetBytePtr.argtypes = [c_void_p]
+        self._core.CFDataGetBytePtr.restype = c_void_p
+        self._core.CFDictionaryCreateMutable.argtypes = [
+            c_void_p,
+            ctypes.c_long,
+            c_void_p,
+            c_void_p,
+        ]
+        self._core.CFDictionaryCreateMutable.restype = c_void_p
+        self._core.CFDictionarySetValue.argtypes = [c_void_p, c_void_p, c_void_p]
         self._core.CFRelease.argtypes = [c_void_p]
+
+        self._protected_constants = {
+            name: c_void_p.in_dll(self._security, name).value
+            for name in (
+                "kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
+                "kSecAttrAccessControl",
+                "kSecAttrAccount",
+                "kSecAttrService",
+                "kSecClass",
+                "kSecClassGenericPassword",
+                "kSecMatchLimit",
+                "kSecMatchLimitOne",
+                "kSecReturnData",
+                "kSecUseDataProtectionKeychain",
+                "kSecUseOperationPrompt",
+                "kSecValueData",
+            )
+        }
+        self._cf_true = c_void_p.in_dll(self._core, "kCFBooleanTrue").value
 
     @staticmethod
     def _buffer(value: bytes) -> ctypes.Array:
@@ -154,3 +212,196 @@ class MacOSKeychain:
             raise KeychainError(
                 f"Keychain delete failed with OSStatus {delete_status}."
             )
+
+    def _cf_string(self, value: str) -> c_void_p:
+        encoded = value.encode("utf-8")
+        result = self._core.CFStringCreateWithCString(
+            None, encoded, self._CF_STRING_ENCODING_UTF8
+        )
+        if not result:
+            raise KeychainError("Keychain could not allocate a protected attribute.")
+        return c_void_p(result)
+
+    def _cf_data(self, value: bytes) -> c_void_p:
+        buffer = self._buffer(value)
+        result = self._core.CFDataCreate(None, buffer, len(value))
+        if not result:
+            raise KeychainError("Keychain could not allocate protected data.")
+        return c_void_p(result)
+
+    def _protected_query(
+        self,
+        *,
+        account: str,
+        return_data: bool = False,
+        operation_prompt: str | None = None,
+    ) -> tuple[c_void_p, list[c_void_p]]:
+        query = c_void_p(self._core.CFDictionaryCreateMutable(None, 0, None, None))
+        if not query:
+            raise KeychainError("Keychain could not allocate a protected query.")
+        retained: list[c_void_p] = [query]
+        service = self._cf_string(self._service.decode("utf-8"))
+        account_value = self._cf_string(account)
+        retained.extend((service, account_value))
+        constants = self._protected_constants
+        self._core.CFDictionarySetValue(
+            query, c_void_p(constants["kSecClass"]), c_void_p(constants["kSecClassGenericPassword"])
+        )
+        self._core.CFDictionarySetValue(
+            query, c_void_p(constants["kSecAttrService"]), service
+        )
+        self._core.CFDictionarySetValue(
+            query, c_void_p(constants["kSecAttrAccount"]), account_value
+        )
+        # On macOS, ThisDeviceOnly accessibility classes apply only to the
+        # Data Protection Keychain (never iCloud-synchronizable Keychain).
+        self._core.CFDictionarySetValue(
+            query,
+            c_void_p(constants["kSecUseDataProtectionKeychain"]),
+            c_void_p(self._cf_true),
+        )
+        if return_data:
+            self._core.CFDictionarySetValue(
+                query, c_void_p(constants["kSecReturnData"]), c_void_p(self._cf_true)
+            )
+            self._core.CFDictionarySetValue(
+                query,
+                c_void_p(constants["kSecMatchLimit"]),
+                c_void_p(constants["kSecMatchLimitOne"]),
+            )
+        if operation_prompt is not None:
+            prompt = self._cf_string(operation_prompt)
+            retained.append(prompt)
+            self._core.CFDictionarySetValue(
+                query, c_void_p(constants["kSecUseOperationPrompt"]), prompt
+            )
+        return query, retained
+
+    def _release_all(self, values: list[c_void_p]) -> None:
+        for value in reversed(values):
+            if value:
+                self._core.CFRelease(value)
+
+    def get_user_presence_secret(self, account: str, *, prompt: str) -> bytes | None:
+        """Read a device-only Keychain secret after explicit local user presence."""
+        query, retained = self._protected_query(
+            account=account, return_data=True, operation_prompt=prompt
+        )
+        result = c_void_p()
+        try:
+            status = self._security.SecItemCopyMatching(query, byref(result))
+            if status == self._NOT_FOUND:
+                return None
+            if status != self._SUCCESS or not result:
+                raise KeychainError(
+                    f"Protected Keychain read failed with OSStatus {status}."
+                )
+            length = self._core.CFDataGetLength(result)
+            pointer = self._core.CFDataGetBytePtr(result)
+            if length < 0 or (length and not pointer):
+                raise KeychainError("Protected Keychain returned invalid data.")
+            return ctypes.string_at(pointer, length)
+        finally:
+            if result:
+                self._core.CFRelease(result)
+            self._release_all(retained)
+
+    def set_user_presence_secret(self, account: str, secret: bytes) -> None:
+        """Persist a device-only secret protected by local user presence.
+
+        This deliberately has a separate API from ``set`` so callers cannot
+        accidentally downgrade Source Library custody to an ordinary Keychain
+        item.
+        """
+        if not secret:
+            raise KeychainError("A protected Keychain secret is required.")
+        existing = self.get_user_presence_secret(
+            account, prompt="Authorize Hussh One Source Library storage"
+        )
+        constants = self._protected_constants
+        if existing is not None:
+            query, query_refs = self._protected_query(account=account)
+            data = self._cf_data(secret)
+            attributes = c_void_p(self._core.CFDictionaryCreateMutable(None, 0, None, None))
+            if not attributes:
+                self._release_all(query_refs + [data])
+                raise KeychainError("Keychain could not allocate protected attributes.")
+            refs = query_refs + [data, attributes]
+            try:
+                self._core.CFDictionarySetValue(
+                    attributes, c_void_p(constants["kSecValueData"]), data
+                )
+                status = self._security.SecItemUpdate(query, attributes)
+                if status != self._SUCCESS:
+                    raise KeychainError(
+                        f"Protected Keychain update failed with OSStatus {status}."
+                    )
+            finally:
+                self._release_all(refs)
+            return
+
+        access_error = c_void_p()
+        access_control = c_void_p(
+            self._security.SecAccessControlCreateWithFlags(
+                None,
+                c_void_p(constants["kSecAttrAccessibleWhenUnlockedThisDeviceOnly"]),
+                self._USER_PRESENCE,
+                byref(access_error),
+            )
+        )
+        if not access_control:
+            if access_error:
+                self._core.CFRelease(access_error)
+            raise KeychainError(
+                "This Mac cannot create the required user-presence protected storage."
+            )
+        service = self._cf_string(self._service.decode("utf-8"))
+        account_value = self._cf_string(account)
+        data = self._cf_data(secret)
+        attributes = c_void_p(self._core.CFDictionaryCreateMutable(None, 0, None, None))
+        if not attributes:
+            self._release_all([service, account_value, data, access_control])
+            raise KeychainError("Keychain could not allocate protected attributes.")
+        refs = [attributes, service, account_value, data, access_control]
+        try:
+            self._core.CFDictionarySetValue(
+                attributes, c_void_p(constants["kSecClass"]), c_void_p(constants["kSecClassGenericPassword"])
+            )
+            self._core.CFDictionarySetValue(
+                attributes, c_void_p(constants["kSecAttrService"]), service
+            )
+            self._core.CFDictionarySetValue(
+                attributes, c_void_p(constants["kSecAttrAccount"]), account_value
+            )
+            self._core.CFDictionarySetValue(
+                attributes,
+                c_void_p(constants["kSecUseDataProtectionKeychain"]),
+                c_void_p(self._cf_true),
+            )
+            self._core.CFDictionarySetValue(
+                attributes, c_void_p(constants["kSecAttrAccessControl"]), access_control
+            )
+            self._core.CFDictionarySetValue(
+                attributes, c_void_p(constants["kSecValueData"]), data
+            )
+            status = self._security.SecItemAdd(attributes, None)
+            if status != self._SUCCESS:
+                raise KeychainError(
+                    f"Protected Keychain write failed with OSStatus {status}."
+                )
+        finally:
+            self._release_all(refs)
+
+    def delete_user_presence_secret(self, account: str) -> None:
+        """Delete a Source Library custody key without falling back to ``delete``."""
+        query, retained = self._protected_query(
+            account=account, operation_prompt="Remove Hussh One Source Library storage"
+        )
+        try:
+            status = self._security.SecItemDelete(query)
+            if status not in {self._SUCCESS, self._NOT_FOUND}:
+                raise KeychainError(
+                    f"Protected Keychain delete failed with OSStatus {status}."
+                )
+        finally:
+            self._release_all(retained)

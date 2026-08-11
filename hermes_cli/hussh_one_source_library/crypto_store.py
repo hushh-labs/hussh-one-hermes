@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Vault-derived, profile-bound encrypted storage for source-plane state."""
+"""Vault- and device-custody-bound encrypted storage for source-plane state."""
 
 from __future__ import annotations
 
@@ -33,59 +33,113 @@ class SourcePlaneCrypto:
         self,
         *,
         vault_key_provider: Callable[[], bytes],
+        device_custody_key_provider: Callable[[], bytes] | None = None,
         profile_id: str,
         user_id: str,
+        device_id: str = "",
     ) -> None:
         self._vault_key_provider = vault_key_provider
+        self._device_custody_key_provider = device_custody_key_provider
         self.profile_id = profile_id
         self.user_id = user_id
+        self.device_id = device_id
+        self._legacy_v1_allowed = True
 
-    def key(self, purpose: str) -> bytes:
+    def _vault_key(self) -> bytes:
         vault_key = self._vault_key_provider()
         if len(vault_key) != 32:
             raise SourceStoreError("The active vault key has an invalid length.")
+        return vault_key
+
+    def _device_custody_key(self) -> bytes:
+        if self._device_custody_key_provider is None:
+            raise SourceStoreError(
+                "Secure device custody is required before opening Source Library data."
+            )
+        custody_key = self._device_custody_key_provider()
+        if len(custody_key) != 32:
+            raise SourceStoreError("The device-custody key has an invalid length.")
+        return custody_key
+
+    def key(self, purpose: str, *, schema_version: int = 2) -> bytes:
+        if schema_version == 1:
+            vault_key = self._vault_key()
+            salt = b"hussh-one-source-library-v1"
+            key_material = vault_key
+        elif schema_version == 2:
+            vault_key = self._vault_key()
+            salt = b"hussh-one-source-library-v2"
+            # Both conditions are required to open new Source Library state:
+            # the unlocked owner vault and the device-only user-presence gate.
+            key_material = vault_key + self._device_custody_key()
+        else:
+            raise SourceStoreError("The encrypted source-plane version is unsupported.")
         return HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"hussh-one-source-library-v1",
+            salt=salt,
             info=(
                 f"{purpose}\x00{self.profile_id}\x00{self.user_id}"
+                f"\x00{self.device_id if schema_version == 2 else ''}"
             ).encode("utf-8"),
-        ).derive(vault_key)
+        ).derive(key_material)
 
-    def aad(self, *, purpose: str, identifier: str) -> bytes:
+    def aad(
+        self, *, purpose: str, identifier: str, schema_version: int = 2
+    ) -> bytes:
         return _canonical({
             "identifier": identifier,
+            "device_id": self.device_id if schema_version == 2 else "",
             "profile_id": self.profile_id,
             "purpose": purpose,
-            "schema_version": 1,
+            "schema_version": schema_version,
             "user_id": self.user_id,
         })
 
     def seal(self, value: bytes, *, purpose: str, identifier: str) -> dict[str, Any]:
+        schema_version = 2
         nonce = os.urandom(12)
-        ciphertext = AESGCM(self.key(purpose)).encrypt(
-            nonce, value, self.aad(purpose=purpose, identifier=identifier)
+        ciphertext = AESGCM(self.key(purpose, schema_version=schema_version)).encrypt(
+            nonce,
+            value,
+            self.aad(
+                purpose=purpose,
+                identifier=identifier,
+                schema_version=schema_version,
+            ),
         )
         return {
-            "schema_version": 1,
+            "schema_version": schema_version,
             "nonce": base64.b64encode(nonce).decode("ascii"),
             "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
         }
 
     def open(self, envelope: dict[str, Any], *, purpose: str, identifier: str) -> bytes:
-        if int(envelope.get("schema_version") or 0) != 1:
+        schema_version = int(envelope.get("schema_version") or 0)
+        if schema_version not in {1, 2}:
             raise SourceStoreError("The encrypted source-plane version is unsupported.")
+        if schema_version == 1 and not self._legacy_v1_allowed:
+            raise SourceStoreError(
+                "Legacy source-plane ciphertext is rejected after device-custody migration."
+            )
         try:
-            return AESGCM(self.key(purpose)).decrypt(
+            return AESGCM(self.key(purpose, schema_version=schema_version)).decrypt(
                 base64.b64decode(str(envelope["nonce"]), validate=True),
                 base64.b64decode(str(envelope["ciphertext"]), validate=True),
-                self.aad(purpose=purpose, identifier=identifier),
+                self.aad(
+                    purpose=purpose,
+                    identifier=identifier,
+                    schema_version=schema_version,
+                ),
             )
         except Exception as exc:
             raise SourceStoreError(
                 "The encrypted source-plane state failed its integrity check."
             ) from exc
+
+    def reject_legacy_v1(self) -> None:
+        """Fail closed if a migrated local plane is rolled back to v1."""
+        self._legacy_v1_allowed = False
 
 
 class EncryptedSourceStore:
@@ -181,3 +235,21 @@ class EncryptedSourceStore:
         if not isinstance(payload, dict):
             raise SourceStoreError("The local source artifact is invalid.")
         return payload
+
+    def rekey_legacy_envelopes(self) -> None:
+        """Re-encrypt legacy v1 local state under the device-custody v2 key.
+
+        The old envelope is retained only until this succeeds; every rewrite is
+        atomic, so an interruption leaves a readable v1 or v2 envelope rather
+        than plaintext or a partially written document.
+        """
+        with self._lock:
+            if self.state_path.exists():
+                state = self.load()
+                self.save(state)
+            if not self.artifact_root.exists():
+                return
+            for path in sorted(self.artifact_root.glob("art_*.enc.json")):
+                artifact_id = path.name.removesuffix(".enc.json")
+                payload = self.read_artifact(artifact_id)
+                self.write_artifact(artifact_id, payload)

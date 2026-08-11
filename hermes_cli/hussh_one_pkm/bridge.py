@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import threading
@@ -60,6 +61,8 @@ class HusshVaultBridge:
         self.lock_state_path = self.profile_home / "hussh-one" / "vault-lock-state.json"
         self.replica = EncryptedPkmReplica(self.profile_home)
         self._vault_key: bytearray | None = None
+        self._source_library_custody_key: bytearray | None = None
+        self._source_library_custody_phase: int | None = None
         self._last_activity = 0.0
         self._owner_token: bytearray | None = None
         self._owner_token_expires_at_ms = 0
@@ -200,6 +203,9 @@ class HusshVaultBridge:
             "device_id": state.device_id if state else None,
             "profile_id": self.identity.profile_id,
             "custody_mode": "trusted_device_until_lock_or_revoke",
+            "source_library_custody_mode": "device_only_user_presence",
+            "source_library_custody_unlocked": self._source_library_custody_key
+            is not None,
             "owner_capability_mode": "automatic_short_lived",
             "encrypted_replica_cursor": self.replica.cursor(),
             "device_sync_status": self._device_sync_status,
@@ -437,6 +443,7 @@ class HusshVaultBridge:
             if self._profile_is_locked():
                 with self._lock:
                     self._clear_vault_key_locked()
+                    self._clear_source_library_custody_key_locked()
                     self._clear_owner_token_locked()
                 self.identity.lock_identity()
             elif time.monotonic() >= self._next_workstation_lock_check_at:
@@ -491,12 +498,14 @@ class HusshVaultBridge:
         with self._lock:
             if self._macos_console_locked():
                 self._clear_vault_key_locked()
+                self._clear_source_library_custody_key_locked()
                 self._clear_owner_token_locked()
                 self._write_lock_state(locked=True, reason="workstation_lock")
                 self.identity.lock_identity()
                 return None
             if self._profile_is_locked():
                 self._clear_vault_key_locked()
+                self._clear_source_library_custody_key_locked()
                 return None
             if self._vault_key is None:
                 try:
@@ -536,6 +545,13 @@ class HusshVaultBridge:
         self._vault_key = None
         self._last_activity = 0.0
 
+    def _clear_source_library_custody_key_locked(self) -> None:
+        if self._source_library_custody_key is not None:
+            for index in range(len(self._source_library_custody_key)):
+                self._source_library_custody_key[index] = 0
+        self._source_library_custody_key = None
+        self._source_library_custody_phase = None
+
     def _clear_owner_token_locked(self) -> None:
         if self._owner_token is not None:
             for index in range(len(self._owner_token)):
@@ -550,6 +566,81 @@ class HusshVaultBridge:
                 "Unlock the Hussh One vault in this Hermes process before saving."
             )
         return key
+
+    def require_source_library_custody_key(
+        self, *, create_if_missing: bool = False
+    ) -> bytes:
+        """Return the local Source Library gate only with owner vault + user presence.
+
+        This is deliberately separate from the trusted-device wrapping key.
+        A local Source Library ciphertext needs both the unlocked canonical
+        vault key and this device-only Keychain item; neither secret is stored
+        in the Source Library database, artifact files, or model context.
+        """
+        self.require_vault_key()
+        with self._lock:
+            if self._source_library_custody_key is not None:
+                return bytes(self._source_library_custody_key)
+        account = self._account("source-library-custody-key")
+        getter = getattr(self.keychain, "get_user_presence_secret", None)
+        setter = getattr(self.keychain, "set_user_presence_secret", None)
+        if not callable(getter) or not callable(setter):
+            raise VaultCryptoError(
+                "This Hermes installation cannot provide device-only Source Library custody."
+            )
+        # Do not hold the bridge lock while macOS presents LocalAuthentication.
+        material = getter(account, prompt="Unlock Hussh One Source Library on this Mac")
+        if material is None:
+            if not create_if_missing:
+                raise VaultCryptoError(
+                    "The Source Library custody key is unavailable. Rebuild the local index only after explicitly re-binding empty sources."
+                )
+            setter(account, b"\x01" + os.urandom(32))
+            # Re-read through the protected path so first use is not reported
+            # as user-presence protected merely because this process generated
+            # the secret.
+            material = getter(
+                account, prompt="Unlock Hussh One Source Library on this Mac"
+            )
+        if material is None or len(material) != 33 or material[0] not in {1, 2}:
+            raise VaultCryptoError("The Source Library custody key is invalid.")
+        phase = int(material[0])
+        key = material[1:]
+        with self._lock:
+            # A lock, revocation, or profile switch that raced the native prompt
+            # must win over caching the recovered secret.
+            if self._profile_is_locked() or self._vault_key is None:
+                raise VaultCryptoError("The Hussh One vault locked during Source Library unlock.")
+            self._source_library_custody_key = bytearray(key)
+            self._source_library_custody_phase = phase
+            return bytes(self._source_library_custody_key)
+
+    def source_library_custody_phase(self) -> int:
+        self.require_source_library_custody_key()
+        with self._lock:
+            if self._source_library_custody_phase is None:
+                raise VaultCryptoError("The Source Library custody key is unavailable.")
+            return self._source_library_custody_phase
+
+    def complete_source_library_custody_upgrade(self) -> None:
+        """Latch v2 after all legacy ciphertext is atomically re-encrypted."""
+        self.require_source_library_custody_key()
+        with self._lock:
+            if self._source_library_custody_phase == 2:
+                return
+            if self._source_library_custody_key is None:
+                raise VaultCryptoError("The Source Library custody key is unavailable.")
+            material = b"\x02" + bytes(self._source_library_custody_key)
+        setter = getattr(self.keychain, "set_user_presence_secret", None)
+        if not callable(setter):
+            raise VaultCryptoError(
+                "This Hermes installation cannot update device-only Source Library custody."
+            )
+        setter(self._account("source-library-custody-key"), material)
+        with self._lock:
+            if self._source_library_custody_key is None or self._profile_is_locked():
+                raise VaultCryptoError("The Hussh One vault locked during Source Library upgrade.")
+            self._source_library_custody_phase = 2
 
     def acquire_vault_owner_token(self) -> str:
         state = self.identity.read_state()
@@ -601,6 +692,7 @@ class HusshVaultBridge:
     def lock(self, *, reason: str = "explicit") -> dict[str, Any]:
         with self._lock:
             self._clear_vault_key_locked()
+            self._clear_source_library_custody_key_locked()
             self._clear_owner_token_locked()
         self.identity.lock_identity()
         self._write_lock_state(locked=True, reason=reason)
@@ -609,11 +701,23 @@ class HusshVaultBridge:
     def remove_local_vault(self) -> None:
         self.lock()
         self.keychain.delete(self._account("device-wrapping-key"))
+        delete_custody = getattr(self.keychain, "delete_user_presence_secret", None)
+        if callable(delete_custody):
+            try:
+                delete_custody(self._account("source-library-custody-key"))
+            except Exception:
+                # An owner can cancel a Keychain deletion prompt after remote
+                # revocation. Source ciphertext is still removed below and the
+                # surviving device-only secret cannot open a deleted envelope.
+                pass
         if self.envelope_path.exists():
             self.envelope_path.unlink()
         if self.lock_state_path.exists():
             self.lock_state_path.unlink()
         self.replica.clear()
+        source_library_root = self.profile_home / "hussh-one" / "source-library"
+        if source_library_root.exists():
+            shutil.rmtree(source_library_root)
 
     def revoke_and_disconnect(self) -> dict[str, Any]:
         state = self.identity.read_state()
