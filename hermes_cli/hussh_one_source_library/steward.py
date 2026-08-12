@@ -44,6 +44,14 @@ def run_source_library_steward(*, request: str, parent_agent) -> str:
         background=False,
         parent_agent=parent_agent,
         _internal_toolsets=list(SOURCE_LIBRARY_STEWARD_CONTRACT.toolsets),
+        # This is a capability boundary, not ordinary model delegation: never
+        # re-add parent MCP toolsets after the exact local source toolset was
+        # selected.  MCP servers can carry authority the Steward must not get.
+        _internal_inherit_parent_mcp_toolsets=False,
+        # The parent gets the Steward entry point, not its raw source tools.
+        # This trusted in-process launch is the only path allowed to attach
+        # the exact leaf toolset below the parent capability.
+        _internal_allow_toolset_bypass=True,
     )
 
 

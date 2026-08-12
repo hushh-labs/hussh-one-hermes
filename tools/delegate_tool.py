@@ -1214,6 +1214,18 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Trusted in-process specialist launchers may require an exact internal
+    # tool surface.  These leaves must not inherit the parent's MCP servers:
+    # an MCP toolset can carry browser, credential, or provider authority that
+    # is intentionally outside the specialist's contract.  This is not a
+    # model-facing capability; ordinary delegate_task calls keep the existing
+    # configuration-controlled inheritance behaviour.
+    inherit_parent_mcp_toolsets: bool = True,
+    # A parent may hold a narrow capability to launch a named local leaf
+    # without receiving the leaf's raw tools itself.  Only in-process product
+    # code can set this private argument through ``delegate_task``; it never
+    # appears in the public delegation schema.
+    allow_internal_toolset_bypass: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1269,12 +1281,19 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks.
-        # Expand composite toolsets (e.g. hermes-cli) so that individual
-        # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if allow_internal_toolset_bypass:
+            # A product-owned capability launcher supplied an exact leaf
+            # contract.  This is deliberately separate from model-controlled
+            # delegation, whose requests always use the intersection below.
+            child_toolsets = list(dict.fromkeys(toolsets))
+        else:
+            # Intersect with parent — subagent must not gain tools the parent
+            # lacks. Expand composite toolsets (e.g. hermes-cli) so individual
+            # toolset names (e.g. web, terminal) are recognised during
+            # intersection.
+            expanded_parent = _expand_parent_toolsets(parent_toolsets)
+            child_toolsets = [t for t in toolsets if t in expanded_parent]
+        if inherit_parent_mcp_toolsets and _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
@@ -2785,6 +2804,8 @@ def delegate_task(
     background: Optional[bool] = None,
     parent_agent=None,
     _internal_toolsets: Optional[List[str]] = None,
+    _internal_inherit_parent_mcp_toolsets: bool = True,
+    _internal_allow_toolset_bypass: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2963,6 +2984,8 @@ def delegate_task(
             override_acp_command=creds.get("command"),
             override_acp_args=creds.get("args"),
             role=effective_role,
+            inherit_parent_mcp_toolsets=_internal_inherit_parent_mcp_toolsets,
+            allow_internal_toolset_bypass=_internal_allow_toolset_bypass,
         )
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract

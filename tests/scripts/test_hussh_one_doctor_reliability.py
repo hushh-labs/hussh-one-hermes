@@ -168,3 +168,31 @@ def test_dashboard_health_uses_reachable_watchdog_child_not_legacy_exit(monkeypa
     finding = next(item for item in index._findings if item["name"] == "ai.hussh-one.dashboard")
     assert finding["status"] == index.WARN
     assert "reachable" in finding["detail"]
+
+
+def test_source_library_health_probe_reads_only_opaque_binding_cardinality(
+    tmp_path, monkeypatch
+):
+    index = _load_script("hussh-one-health-index.py", "hussh_one_health_index_source_test")
+    monkeypatch.setattr(index, "HERMES_HOME", tmp_path)
+    index._findings.clear()
+
+    index.probe_source_library()
+    assert index._findings[-1]["detail"].startswith("not-enrolled")
+
+    root = tmp_path / "hussh-one"
+    root.mkdir()
+    (root / "identity.json").write_text("{}", encoding="utf-8")
+    (root / "vault-envelope.json").write_text("{}", encoding="utf-8")
+    database_dir = root / "source-library"
+    database_dir.mkdir()
+    database = database_dir / "source-library.db"
+    with index.sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE source_bindings (source_id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO source_bindings(source_id) VALUES ('opaque')")
+
+    index._findings.clear()
+    index.probe_source_library()
+    finding = index._findings[-1]
+    assert finding["status"] == index.INFO
+    assert "1 binding(s) configured" in finding["detail"]

@@ -2490,10 +2490,14 @@ def _get_platform_tools(
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
 
-    # Native Source Library authority never crosses into a messaging agent,
-    # even if stale or hand-edited config explicitly names the toolset.
-    if platform not in {"cli", "desktop", "local", "tui"}:
-        enabled_toolsets.discard("hussh_one_sources")
+    # Native Hussh One authority is not a user-configurable platform toolset.
+    # The Desktop/dashboard parent injects ``hussh_one`` only after it has
+    # established a local workstation surface; the trusted Source Library
+    # launcher attaches ``hussh_one_sources`` to its child after exact-contract
+    # validation. This also keeps stale or hand-edited config from exposing
+    # source tools on messaging or standalone TUI/CLI sessions.
+    enabled_toolsets.discard("hussh_one")
+    enabled_toolsets.discard("hussh_one_sources")
 
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of

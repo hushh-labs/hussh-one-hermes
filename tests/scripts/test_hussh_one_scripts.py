@@ -125,6 +125,7 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "plugins enable web-ddgs" in text
     assert "tools post-setup ddgs" in text
     assert "web.search_backend ddgs" in text
+    assert "hussh_one.source_library.enabled true" in text
     assert "WHATSAPP_REPLY_PREFIX" not in text
 
 

@@ -791,9 +791,117 @@ def test_file_steward_is_a_leaf_with_only_source_tools(monkeypatch) -> None:
     assert captured["role"] == "leaf"
     assert captured["background"] is False
     assert captured["_internal_toolsets"] == ["hussh_one_sources"]
+    assert captured["_internal_inherit_parent_mcp_toolsets"] is False
+    assert captured["_internal_allow_toolset_bypass"] is True
     assert FILE_STEWARD_CONTRACT.toolsets == ("hussh_one_sources",)
     assert "terminal" in FILE_STEWARD_CONTRACT.context
     assert "untrusted data" in FILE_STEWARD_CONTRACT.context
+
+
+def test_source_library_child_harness_has_exact_tools_even_with_parent_mcp(
+    monkeypatch,
+) -> None:
+    """Prove the actual child schema resolver cannot re-add parent MCP tools.
+
+    The production AIAgent constructor is replaced only at its network/client
+    edge.  The test still uses ``_build_child_agent`` and
+    ``model_tools.get_tool_definitions`` to exercise the real child harness,
+    registry, check functions, and toolset resolution.
+    """
+    from threading import Lock
+
+    import run_agent
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools import delegate_tool
+    from tools.registry import invalidate_check_fn_cache, registry
+    import tools.hussh_one_source_library_tool  # noqa: F401 - registers leaf tools
+
+    expected = {
+        "hussh_one_source_scan",
+        "hussh_one_source_browse",
+        "hussh_one_source_read",
+        "hussh_one_source_propose_knowledge",
+        "hussh_one_source_propose_memory_sync",
+        "hussh_one_source_propose_file_operation",
+        "hussh_one_source_share",
+    }
+    for entry in registry._tools.values():
+        if entry.toolset == "hussh_one_sources":
+            monkeypatch.setattr(entry, "check_fn", lambda: True)
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    captured: dict[str, object] = {}
+
+    class HarnessChild:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+            raw_schemas = get_tool_definitions(
+                enabled_toolsets=kwargs["enabled_toolsets"],
+                disabled_toolsets=kwargs["disabled_toolsets"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            self.raw_valid_tool_names = {
+                schema["function"]["name"] for schema in raw_schemas
+            }
+            schemas = get_tool_definitions(
+                enabled_toolsets=kwargs["enabled_toolsets"],
+                disabled_toolsets=kwargs["disabled_toolsets"],
+                quiet_mode=True,
+            )
+            self.valid_tool_names = {
+                schema["function"]["name"] for schema in schemas
+            }
+            self.session_id = "source-library-child"
+
+    parent = SimpleNamespace(
+        base_url="https://example.invalid/v1",
+        api_key="test-key",
+        provider="test-provider",
+        api_mode="chat_completions",
+        model="test-model",
+        platform="desktop",
+        enabled_toolsets=["hussh_one", "mcp-test"],
+        disabled_toolsets=[],
+        valid_tool_names=set(),
+        _delegate_depth=0,
+        _active_children=[],
+        _active_children_lock=Lock(),
+        _session_db=None,
+        session_id="source-library-parent",
+        providers_allowed=None,
+        providers_ignored=None,
+        providers_order=None,
+        provider_sort=None,
+        provider_require_parameters=False,
+        provider_data_collection="",
+    )
+    monkeypatch.setattr(run_agent, "AIAgent", HarnessChild)
+    monkeypatch.setattr(delegate_tool, "_load_config", lambda: {})
+
+    child = delegate_tool._build_child_agent(
+        task_index=0,
+        goal="Find shared-drive project documents",
+        context=FILE_STEWARD_CONTRACT.context,
+        toolsets=["hussh_one_sources"],
+        model=None,
+        max_iterations=1,
+        task_count=1,
+        parent_agent=parent,
+        inherit_parent_mcp_toolsets=False,
+        allow_internal_toolset_bypass=True,
+    )
+
+    assert captured["enabled_toolsets"] == ["hussh_one_sources"]
+    assert child.raw_valid_tool_names == expected
+    # Hermes may compact non-core tools behind its safe tool-search bridge;
+    # its raw deferred catalog above remains the authority boundary.
+    assert child.valid_tool_names == {"tool_search", "tool_describe", "tool_call"}
+    assert "ask_source_library_steward" not in child.valid_tool_names
+    assert "hussh_one_source_bind" not in child.valid_tool_names
+    assert "delegate_task" not in child.valid_tool_names
+    assert not any(name.startswith("mcp") for name in child.valid_tool_names)
 
 
 class _ReviewerResponse:

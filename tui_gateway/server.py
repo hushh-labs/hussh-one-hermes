@@ -4075,7 +4075,9 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
-    def with_desktop_native_toolsets(enabled: list[str]) -> list[str]:
+    def with_desktop_native_toolsets(
+        enabled: list[str], *, include_project: bool = False
+    ) -> list[str]:
         """Expose native custody tools only to local workstation chat surfaces.
 
         Native PKM tools remain independently gated on an enrolled local
@@ -4083,11 +4085,25 @@ def _load_enabled_toolsets() -> list[str] | None:
         workstation surfaces; standalone TUI and connected messaging channels
         remain excluded.
         """
+        # ``hussh_one_sources`` is a child-only capability.  Do not let an
+        # environment override make raw source tools visible to any parent
+        # TUI/Desktop agent; the Source Library Steward attaches them through
+        # its private in-process launcher instead.
+        parent_enabled = set(enabled) - {"hussh_one_sources"}
         if _resolve_session_platform() == "desktop":
-            return sorted({*enabled, "hussh_one", "hussh_one_sources", "project"})
+            return sorted({*parent_enabled, "hussh_one", "project"})
         if is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD")):
-            return sorted({*enabled, "hussh_one", "hussh_one_sources"})
-        return enabled
+            return sorted({*parent_enabled, "hussh_one"})
+        if include_project:
+            # The gateway's implicit coding/configured posture is still a
+            # local GUI experience even when it is not the desktop shell.
+            # Retain its existing project-tool contract without widening it
+            # to native custody or child Source Library authority.
+            return sorted({*parent_enabled, "project"})
+        # Preserve configured ordering on non-native surfaces; callers and
+        # focused-toolset tests treat that order as part of the selection
+        # contract. Only remove the child-only Source Library toolset.
+        return [name for name in enabled if name != "hussh_one_sources"]
 
     explicit = [
         item.strip()
@@ -4111,7 +4127,9 @@ def _load_enabled_toolsets() -> list[str] | None:
             if selection is not None:
                 # The focused coding path returns before the fallback below, so
                 # reapply Desktop-native tools here.
-                return with_desktop_native_toolsets(sorted(selection))
+                return with_desktop_native_toolsets(
+                    sorted(selection), include_project=True
+                )
         except Exception:
             pass
 
@@ -4225,7 +4243,7 @@ def _load_enabled_toolsets() -> list[str] | None:
         # The Desktop Project tools and Hussh One connector are deliberately
         # outside _HERMES_CORE_TOOLS. This local renderer is the only surface
         # that can follow a project move or hold the user-approved vault key.
-        return with_desktop_native_toolsets(sorted(enabled))
+        return with_desktop_native_toolsets(sorted(enabled), include_project=True)
     except Exception:
         if fallback_notice is not None:
             print(

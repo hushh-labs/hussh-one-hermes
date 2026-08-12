@@ -21,6 +21,9 @@
 > is a rebuildable opaque mapping; every new source-plane ciphertext requires the
 > unlocked vault plus device-only local-user-presence Keychain custody; the Steward may
 > query and propose only.
+> The local `hussh_one.source_library.enabled` switch defaults to enabled on Desktop and
+> loopback dashboard sessions only. The parent launches the exact source-only Steward
+> leaf; it never receives the leaf toolset or inherited MCP authority itself.
 
 ---
 
@@ -58,6 +61,7 @@ configuration_schema_mutations:
     display.interim_assistant_messages: false
     display.show_reasoning: false
     approvals.mode: false
+    hussh_one.source_library.enabled: true
 ```
 
 ---

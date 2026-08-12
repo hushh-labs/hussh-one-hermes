@@ -69,7 +69,11 @@ services alone bind roots and execute one freshly approved, revision-pinned oper
 New local source-plane ciphertext requires both the unlocked vault key and a
 device-only, local-user-presence Data Protection Keychain secret. It is sealed
 field-by-field rather than treated as a second PKM share scope or a full SQLCipher
-database. See [Source Library Steward](../features/source-library.md).
+database. The Desktop/dashboard parent exposes only the Steward launch and parent
+execution tools; its private child harness attaches the exact source leaf toolset without
+parent MCP inheritance. A future Research app adapter must call this service boundary with
+opaque references, never the SQLite database or mounted paths. See
+[Source Library Steward](../features/source-library.md).
 
 ---
 

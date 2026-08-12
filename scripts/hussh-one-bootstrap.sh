@@ -246,6 +246,10 @@ set_config_defaults() {
   run_cmd "$hermes" config set display.platforms.whatsapp.tool_progress off
   run_cmd "$hermes" config set display.platforms.whatsapp.show_reasoning false
   run_cmd "$hermes" config set display.interim_assistant_messages false
+  # The Source Library remains a local Desktop/dashboard-only capability. This
+  # explicit default gives operators a durable off switch without ever adding
+  # the toolset to messaging-platform configuration.
+  run_cmd "$hermes" config set hussh_one.source_library.enabled true
 
   configure_web_search
 }

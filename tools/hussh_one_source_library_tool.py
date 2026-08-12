@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home
+from utils import is_truthy_value
 
 from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
 from hermes_cli.hussh_one_source_library.contracts import ReadLimits, ScanLimits
@@ -18,6 +19,32 @@ from tools.approval import request_fresh_action_consent
 from tools.registry import registry, tool_error, tool_result
 
 
+def _source_library_feature_enabled() -> bool:
+    """Return the local owner's explicit Source Library feature posture.
+
+    Desktop/dashboard sessions inject only the parent ``hussh_one`` capability.
+    This persisted flag is the feature-level off switch; it is deliberately
+    separate from generic toolset configuration so it cannot be enabled on a
+    messaging surface by a stale ``platform_toolsets`` entry.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        hussh_one = load_config().get("hussh_one") or {}
+        source_library = (
+            hussh_one.get("source_library")
+            if isinstance(hussh_one, dict)
+            else None
+        )
+        if not isinstance(source_library, dict):
+            return True
+        return is_truthy_value(source_library.get("enabled"), default=True)
+    except Exception:
+        # Fail closed when the local configuration cannot be read.  This is a
+        # custody-bearing local feature rather than a generic assistant tool.
+        return False
+
+
 def _connector_enrolled() -> bool:
     root = get_hermes_home() / "hussh-one"
     return (root / "identity.json").is_file() and (
@@ -27,7 +54,11 @@ def _connector_enrolled() -> bool:
 
 def _vault_unlocked() -> bool:
     """Gate local source setup on the in-process vault without unlocking it."""
-    if not _connector_enrolled() or not _local_source_surface():
+    if (
+        not _source_library_feature_enabled()
+        or not _connector_enrolled()
+        or not _local_source_surface()
+    ):
         return False
     try:
         return bool(get_profile_bridge().vault_status().get("unlocked"))

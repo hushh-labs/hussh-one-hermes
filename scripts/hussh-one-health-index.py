@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import socket
 import subprocess
 import sys
@@ -307,6 +308,82 @@ def probe_changelog_freshness() -> None:
         add(harness, "changelog", WARN, f"could not run checker: {e}")
 
 
+def probe_source_library() -> None:
+    """Report Source Library harness readiness without opening vault custody.
+
+    A health-index process cannot observe another desktop process's in-memory
+    vault key, and it must not trigger a Keychain/user-presence prompt just to
+    render status.  This probe therefore reads only enrollment markers and
+    opaque SQLite table cardinality.  It never reads source bindings, sealed
+    records, paths, provider metadata, or any file content.
+    """
+    harness = "source-library"
+    root = HERMES_HOME / "hussh-one"
+    identity_path = root / "identity.json"
+    envelope_path = root / "vault-envelope.json"
+    if not identity_path.is_file() or not envelope_path.is_file():
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "not-enrolled; connect and enroll Hussh One on the local desktop first",
+        )
+        return
+
+    lock_state = root / "vault-lock-state.json"
+    try:
+        lock_payload = json.loads(lock_state.read_text(encoding="utf-8")) if lock_state.exists() else {}
+    except (OSError, ValueError):
+        lock_payload = {}
+    if bool(lock_payload.get("locked")):
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "vault-locked; unlock in the active desktop/dashboard session before Source Library is available",
+        )
+        return
+
+    database = root / "source-library" / "source-library.db"
+    if not database.is_file():
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "unbound; no owner-approved source roots are configured",
+        )
+        return
+    try:
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM source_bindings").fetchone()
+        binding_count = int(row[0]) if row else 0
+    except (OSError, sqlite3.Error) as exc:
+        add(
+            harness,
+            "readiness",
+            WARN,
+            f"binding-unavailable; opaque binding index cannot be read ({exc.__class__.__name__})",
+        )
+        return
+    if binding_count == 0:
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "unbound; no owner-approved source roots are configured",
+        )
+        return
+    add(
+        harness,
+        "readiness",
+        INFO,
+        (
+            f"{binding_count} binding(s) configured; unlock the active desktop/dashboard session "
+            "to make the Steward ready (this probe never opens custody)"
+        ),
+    )
+
+
 def _count_dir(path: Path, pattern: str = "*") -> int:
     try:
         return sum(1 for _ in path.glob(pattern))
@@ -453,6 +530,7 @@ def main() -> int:
         probe_skills_plugins,
         probe_session_bloat,
         probe_changelog_freshness,
+        probe_source_library,
     ]
     for p in probes:
         try:

@@ -57,6 +57,7 @@ def test_source_library_steward_naturally_covers_management_and_sharing() -> Non
 
 
 def test_locked_or_unbound_profiles_fail_source_availability_gate(monkeypatch) -> None:
+    monkeypatch.setattr(source_tools, "_source_library_feature_enabled", lambda: True)
     monkeypatch.setattr(source_tools, "_local_source_surface", lambda: True)
     monkeypatch.setattr(source_tools, "_connector_enrolled", lambda: True)
     monkeypatch.setattr(
@@ -66,6 +67,16 @@ def test_locked_or_unbound_profiles_fail_source_availability_gate(monkeypatch) -
     )
     assert source_tools._vault_unlocked() is False
     assert source_tools._source_library_ready() is False
+
+
+def test_source_library_feature_switch_fails_closed_before_vault_access(monkeypatch) -> None:
+    monkeypatch.setattr(source_tools, "_source_library_feature_enabled", lambda: False)
+    monkeypatch.setattr(
+        source_tools,
+        "get_profile_bridge",
+        lambda: (_ for _ in ()).throw(AssertionError("vault must not be opened")),
+    )
+    assert source_tools._vault_unlocked() is False
 
     monkeypatch.setattr(source_tools, "_local_source_surface", lambda: False)
     assert source_tools._vault_unlocked() is False
@@ -106,3 +117,12 @@ def test_hand_edited_messaging_config_cannot_enable_source_toolset() -> None:
 
     config = {"platform_toolsets": {"telegram": ["hussh_one_sources"]}}
     assert "hussh_one_sources" not in _get_platform_tools(config, "telegram")
+
+
+def test_hand_edited_local_config_cannot_expose_source_leaf() -> None:
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {"platform_toolsets": {"cli": ["hussh_one", "hussh_one_sources"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "hussh_one" not in enabled
+    assert "hussh_one_sources" not in enabled

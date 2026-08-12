@@ -1945,6 +1945,30 @@ def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
 
 
+def test_desktop_exposes_source_library_parent_but_not_leaf_tools(monkeypatch):
+    """Only the private Steward launch may attach the source leaf toolset."""
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_DASHBOARD", raising=False)
+
+    enabled = server._load_enabled_toolsets()
+
+    assert enabled is not None
+    assert {"web", "project", "hussh_one"} <= set(enabled)
+    assert "hussh_one_sources" not in enabled
+
+
+def test_tui_env_cannot_expose_source_library_leaf(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,hussh_one_sources")
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_TUI_DASHBOARD", raising=False)
+
+    enabled = server._load_enabled_toolsets()
+
+    assert enabled == ["web"]
+
+
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
     monkeypatch.setitem(
