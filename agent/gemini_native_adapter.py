@@ -389,11 +389,15 @@ def _translate_tool_result_to_gemini(
         or "tool"
     )
     content = _coerce_content_to_text(message.get("content"))
-    try:
-        parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
-    except json.JSONDecodeError:
-        parsed = None
-    response = parsed if isinstance(parsed, dict) else {"output": content}
+    # FunctionResponse.response is a Gemini-native structured payload, not a
+    # general JSON transport.  A Hermes tool result may itself be JSON (most
+    # notably ``tool_describe``), and a JSON Schema can contain ``$ref`` /
+    # ``$defs`` values.  Passing that object through makes Gemini interpret
+    # those references as function-response parts and reject the *next* model
+    # turn.  Preserve every tool result as opaque text under one stable field;
+    # the model can still inspect JSON text, while Gemini never treats its
+    # contents as native response structure.
+    response = {"output": content}
     return {
         "functionResponse": {
             "name": name,

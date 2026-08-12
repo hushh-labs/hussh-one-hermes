@@ -66,6 +66,56 @@ def test_parallel_tool_results_merge_into_one_user_content():
     assert outputs == ["AAA", "BBB"]
 
 
+def test_tool_describe_schema_is_opaque_function_response_text():
+    """A JSON Schema is data, never Gemini FunctionResponse structure."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    described_schema = json.dumps(
+        {
+            "name": "mcp__google_workspace_gmail__create_draft",
+            "parameters": {
+                "$defs": {"Attachment": {"type": "object"}},
+                "properties": {
+                    "attachments": {
+                        "items": {"$ref": "#/$defs/Attachment"},
+                        "type": "array",
+                    }
+                },
+            },
+        }
+    )
+    messages = [
+        {"role": "user", "content": "Describe the draft tool"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_describe",
+                    "type": "function",
+                    "function": {
+                        "name": "tool_describe",
+                        "arguments": '{"name":"mcp__google_workspace_gmail__create_draft"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "tool_describe",
+            "tool_call_id": "call_describe",
+            "content": described_schema,
+        },
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+    response = contents[-1]["parts"][0]["functionResponse"]
+
+    assert response["name"] == "tool_describe"
+    assert response["response"] == {"output": described_schema}
+    assert "$defs" not in response["response"]
+
+
 def test_consecutive_user_messages_merge_for_gemini_alternation():
     """Back-to-back user messages must also be merged, not sent as two
     consecutive user contents."""
@@ -309,7 +359,6 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
 # ---------------------------------------------------------------------------
 # X-Goog-Api-Client header tests
 # ---------------------------------------------------------------------------
-
 
 
 
