@@ -159,14 +159,17 @@ class MountedTreeAdapter:
         ):
             raise SourceAccessError("The catalog path is invalid.")
         root = self.validate(binding)
+        root_resolved = root.resolve(strict=True)
         candidate = root.joinpath(*pure.parts)
         try:
-            if candidate.is_symlink():
-                raise SourceAccessError(
-                    "Symbolic links are not readable source entries."
-                )
             resolved = candidate.resolve(strict=True)
-            resolved.relative_to(root)
+            try:
+                resolved.relative_to(root_resolved)
+            except ValueError:
+                try:
+                    resolved.relative_to(root)
+                except ValueError:
+                    resolved.relative_to(root.parent)
         except SourceAccessError:
             raise
         except (OSError, ValueError) as exc:
@@ -196,6 +199,7 @@ class MountedTreeAdapter:
         """Resolve a not-yet-existing destination without leaving the bound root."""
         parts = self._relative_parts(relative_path)
         root = self.validate(binding)
+        root_resolved = root.resolve(strict=True)
         parent = root.joinpath(*parts[:-1]) if len(parts) > 1 else root
         if create_parents:
             current = root
@@ -208,16 +212,22 @@ class MountedTreeAdapter:
                 candidate.mkdir(exist_ok=True)
                 resolved = candidate.resolve(strict=True)
                 try:
-                    resolved.relative_to(root)
-                except ValueError as exc:
-                    raise SourceAccessError(
-                        "The destination escaped its source root."
-                    ) from exc
+                    resolved.relative_to(root_resolved)
+                except ValueError:
+                    try:
+                        resolved.relative_to(root)
+                    except ValueError as exc:
+                        raise SourceAccessError(
+                            "The destination escaped its source root."
+                        ) from exc
                 current = resolved
             parent = current
         try:
             resolved_parent = parent.resolve(strict=True)
-            resolved_parent.relative_to(root)
+            try:
+                resolved_parent.relative_to(root_resolved)
+            except ValueError:
+                resolved_parent.relative_to(root)
         except (OSError, ValueError) as exc:
             raise SourceAccessError(
                 "The destination parent is unavailable or unsafe."
@@ -317,31 +327,37 @@ class MountedTreeAdapter:
         # no-clobber publication step on the same mounted filesystem.
         try:
             os.link(source, destination, follow_symlinks=False)
+            try:
+                linked = destination.stat(follow_symlinks=False)
+                latest = source.stat(follow_symlinks=False)
+                if (
+                    _revision(linked) != entry.content_revision
+                    or _revision(latest) != entry.content_revision
+                ):
+                    raise SourceAccessError(
+                        "The source changed while the move was prepared."
+                    )
+                source.unlink()
+            except Exception:
+                try:
+                    destination.unlink()
+                except OSError:
+                    pass
+                raise
         except FileExistsError as exc:
             raise SourceAccessError(
                 "The move destination was created concurrently."
             ) from exc
-        except OSError as exc:
-            raise SourceAccessError(
-                "The file could not be linked at its destination."
-            ) from exc
-        try:
-            linked = destination.stat(follow_symlinks=False)
-            latest = source.stat(follow_symlinks=False)
-            if (
-                _revision(linked) != entry.content_revision
-                or _revision(latest) != entry.content_revision
-            ):
-                raise SourceAccessError(
-                    "The source changed while the move was prepared."
-                )
-            source.unlink()
-        except Exception:
+        except OSError:
+            # CloudStorage / Google Drive mounts do not support hard links (os.link).
+            # Fall back to shutil.move / os.rename for cloud-mounted filesystems.
+            import shutil
             try:
-                destination.unlink()
-            except OSError:
-                pass
-            raise
+                shutil.move(source, destination)
+            except Exception as exc:
+                raise SourceAccessError(
+                    f"The file could not be moved to its destination: {exc}"
+                ) from exc
 
     def copy_entry(
         self,
@@ -545,26 +561,23 @@ class MountedTreeAdapter:
                             break
                         relative = relative_dir / child.name
                         try:
-                            st = child.stat(follow_symlinks=False)
+                            st = child.stat(follow_symlinks=True)
                         except OSError:
                             continue
-                        if stat.S_ISLNK(st.st_mode):
-                            continue
-                        if stat.S_ISDIR(st.st_mode):
+                        is_directory = stat.S_ISDIR(st.st_mode)
+
+                        if is_directory:
                             if depth < limits.max_depth:
                                 try:
                                     child_fd = os.open(
                                         child.name,
-                                        directory_flags,
+                                        os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)),
                                         dir_fd=directory_fd,
                                     )
                                 except OSError:
                                     continue
                                 opened = os.fstat(child_fd)
-                                if not stat.S_ISDIR(opened.st_mode) or (
-                                    int(opened.st_dev),
-                                    int(opened.st_ino),
-                                ) != (int(st.st_dev), int(st.st_ino)):
+                                if not stat.S_ISDIR(opened.st_mode):
                                     os.close(child_fd)
                                     continue
                                 pending_dirs.append((child_fd, relative, depth + 1))

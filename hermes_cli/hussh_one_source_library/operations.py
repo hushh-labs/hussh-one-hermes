@@ -55,7 +55,7 @@ class SourceLibraryOperationService:
             self.library.adapter.resolve_destination(
                 binding,
                 str(destination_relative_path or ""),
-                create_parents=False,
+                create_parents=True,
             )
         if kind in {"create", "overwrite"} and content is None:
             raise SourceLibraryError("This operation requires explicit text content.")

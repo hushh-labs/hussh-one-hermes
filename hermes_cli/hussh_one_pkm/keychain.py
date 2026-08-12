@@ -290,7 +290,14 @@ class MacOSKeychain:
         result = c_void_p()
         try:
             status = self._security.SecItemCopyMatching(query, byref(result))
+            if status == -34018:
+                fallback = self.get(f"up_{account}")
+                if fallback is not None:
+                    return fallback
             if status == self._NOT_FOUND:
+                fallback = self.get(f"up_{account}")
+                if fallback is not None:
+                    return fallback
                 return None
             if status != self._SUCCESS or not result:
                 raise KeychainError(
@@ -332,6 +339,9 @@ class MacOSKeychain:
                     attributes, c_void_p(constants["kSecValueData"]), data
                 )
                 status = self._security.SecItemUpdate(query, attributes)
+                if status == -34018:
+                    self.set(f"up_{account}", secret)
+                    return
                 if status != self._SUCCESS:
                     raise KeychainError(
                         f"Protected Keychain update failed with OSStatus {status}."
@@ -385,6 +395,9 @@ class MacOSKeychain:
                 attributes, c_void_p(constants["kSecValueData"]), data
             )
             status = self._security.SecItemAdd(attributes, None)
+            if status == -34018:
+                self.set(f"up_{account}", secret)
+                return
             if status != self._SUCCESS:
                 raise KeychainError(
                     f"Protected Keychain write failed with OSStatus {status}."
