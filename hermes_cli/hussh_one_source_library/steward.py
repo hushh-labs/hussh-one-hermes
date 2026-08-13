@@ -37,9 +37,30 @@ def run_source_library_steward(*, request: str, parent_agent) -> str:
         raise ValueError("A bounded Source Library Steward request is required.")
     from tools.delegate_tool import delegate_task
 
+    vault_guide = ""
+    try:
+        from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
+        status = get_profile_bridge().vault_status()
+        enrolled = bool(status.get("enrolled"))
+        unlocked = bool(status.get("unlocked"))
+        if not unlocked:
+            vault_guide = (
+                "\n\n[Hussh One Vault Status Notice]\n"
+                f"Hussh One Vault State: enrolled={enrolled}, unlocked={unlocked}.\n"
+                "The Hussh One Vault is currently locked or not enrolled on this workstation.\n"
+                "User Guidance:\n"
+                "- To enroll or unlock the Hussh One Vault, run `/hussh-one` in the Hermes CLI / TUI or connect via Hussh One Desktop.\n"
+                "- Once unlocked, local source library catalogs use AES-GCM purpose keys protected by macOS Data Protection Keychain custody."
+            )
+        else:
+            custody_mode = status.get("source_library_custody_mode", "device_only")
+            vault_guide = f"\n\n[Hussh One Vault Status Notice]\nHussh One Vault State: UNLOCKED (Custody: {custody_mode})."
+    except Exception:
+        vault_guide = ""
+
     return delegate_task(
         goal=request.strip(),
-        context=SOURCE_LIBRARY_STEWARD_CONTRACT.context,
+        context=SOURCE_LIBRARY_STEWARD_CONTRACT.context + vault_guide,
         role=SOURCE_LIBRARY_STEWARD_CONTRACT.role,
         background=False,
         parent_agent=parent_agent,
