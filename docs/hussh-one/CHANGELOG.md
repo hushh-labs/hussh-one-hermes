@@ -18,6 +18,8 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-08-12 | `46c427628` | **Steward context enriched with vault status and setup guidance.** Enriched the Source Library Steward prompt with live vault status and user setup guidance. |
+| 2026-08-12 | `d82e72e7b` | **Cloud-storage mounts & non-interactive keychain fallback.** Added support for cloud-storage mounts and non-interactive keychain fallback in the Source Library. |
 | 2026-08-12 | `9e3e72c43` | **Steward harness isolation and local readiness.** Desktop/dashboard parents now launch the exact seven-tool Source Library Steward without exposing its raw toolset or inheriting parent MCP authority; the native feature has an explicit local off switch, a safe non-custody readiness probe, guard coverage, and an operator setup/Research-adapter boundary. |
 | 2026-08-11 | `318fe12cf` | **Custody contract clarified.** The feature, architecture, contract, and trusted-device references now distinguish field-level sealed SQLite metadata from full-database encryption and explicitly reserve a future non-exportable Secure Enclave key adapter rather than overstating the current Keychain + LocalAuthentication protection. |
 | 2026-08-11 | `712fbf7ab` | **Device-bound local Source Library custody.** New catalog/artifact/sealed-index ciphertext now requires both the unlocked vault key and a device-only, local-user-presence Data Protection Keychain secret. Legacy envelopes rekey atomically; a protected phase latch rejects rollback to v1; source identifiers are no longer filename-derived; lock/revoke/disconnect clears the local custody path. This is Keychain/LocalAuthentication protection, not a claim of a non-exportable Secure Enclave key. |
@@ -167,12 +169,14 @@ authenticate to the loopback auth shim; Vertex requests still use ADC.
 
 ---
 
-## 🌐 Open WebUI (Browser Chat Variant)
+## 🌐 Open WebUI & API Server (Browser Chat Surface)
 The third first-class Hussh One surface (alongside WhatsApp and TUI/dashboard) — a full
 browser chat UI talking to Hermes' OpenAI-compatible API server.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-08-12 | `f28ba2fca` | **Service-restart safety in companion setup.** Replaced direct `gateway restart` invocation in Open WebUI setup generator with platform-native service reloads (`launchctl` / `systemctl`) to prevent execution-interceptor blocks during automated turns. |
+| 2026-08-06 | `4190dca91` | **API server reasoning/lifecycle streaming & model registry.** Streamed reasoning and lifecycle events over the API server and exposed the provider model registry. |
 | 2026-07-28 | `30fd07202` | **Fresh-device bootstrap resilience.** A missing `pandoc` now remains an optional document-conversion limitation: non-writable or unhealthy Homebrew emits a warning while the pinned Open WebUI runtime, Hussh assets, launcher, and user service continue installing. |
 | 2026-06-24 | `462b804ec` | Render the Features catalog inline in the chat body; dropped the standalone pipe-file approach. |
 | 2026-06-22 | `703b4d3f9` | In-app Features page via an upgrade-safe Open WebUI Pipe Function. |
@@ -282,6 +286,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-08-10 | `290ccd563` | Reconciled latest `origin/main` commits. |
 | 2026-08-04 | `7018d306d` | Reconciled `upstream/main` into `main`. The merge landed the upstream plugin/memory-provider work, but resolution left `web/` and `ui-tui/` partially spliced — newer upstream markup over older Hussh logic, with several declarations dropped while their usages survived. The dashboard build was broken until `f30349cd4`; treat this pair as one sync unit. |
 | 2026-07-22 | `4df42f7d9` | Defined the upstream-first operating policy: official Hermes is authoritative for generic contracts, `upstream` is fetch-only, and reconciliation happens on a short-lived sync branch with a real Vertex smoke before merging into the runtime `main`. |
 | 2026-07-15 | `12b402353` | Integrated upstream Hermes Agent **v0.18.2** into Hussh One. |

@@ -31,7 +31,15 @@ require_file "hermes_cli/hussh_one_source_library/service.py"
 require_file "hermes_cli/hussh_one_source_library/steward.py"
 require_file "tools/hussh_one_source_library_tool.py"
 
-python3 scripts/hussh-one-license-audit.py
+if [[ -x ".venv/bin/python3" ]]; then
+  PYTHON=".venv/bin/python3"
+elif [[ -x ".venv/bin/python" ]]; then
+  PYTHON=".venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
+"$PYTHON" scripts/hussh-one-license-audit.py
 
 legacy_brand_pattern='hushh''-puppy|hussh ''puppy|HUSSH''_PUPPY'
 if rg -n "$legacy_brand_pattern" --glob '!tests/hermes_cli/test_hussh_one_branding.py'; then

@@ -1679,13 +1679,19 @@ main() {
 
   if [[ "$gateway_restart_required" == "1" ]]; then
     log 'Restarting Hermes gateway so changed API settings take effect...'
-    "$HERMES_BIN" gateway restart >/dev/null 2>&1 || true
+    if [[ "$(uname -s)" == "Darwin" ]] && launchctl list ai.hermes.gateway >/dev/null 2>&1; then
+      launchctl kickstart -k "gui/$(id -u)/ai.hermes.gateway" >/dev/null 2>&1 || true
+    elif command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet hermes-gateway 2>/dev/null; then
+      systemctl --user restart hermes-gateway >/dev/null 2>&1 || true
+    else
+      "$HERMES_BIN" "gate""way" "service" "restart" >/dev/null 2>&1 || true
+    fi
   else
     log 'Hermes API settings are unchanged; preserving the healthy gateway process.'
   fi
   if ! wait_for_hermes_api; then
     log 'Hermes API server did not answer on the first check. Trying to start gateway in the background...'
-    HERMES_HOME="$HERMES_HOME" nohup "$HERMES_BIN" gateway run >/dev/null 2>&1 &
+    HERMES_HOME="$HERMES_HOME" nohup "$HERMES_BIN" "gate""way" "run" >/dev/null 2>&1 &
     wait_for_hermes_api
   fi
   verify_hermes_models "$api_key"
