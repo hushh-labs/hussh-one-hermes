@@ -37,6 +37,15 @@ Hussh One uses the hosted streamable endpoint
 bearer header references the one-time developer credential in the active
 profile's mode-`0600` `.env`; the token is never embedded in MCP configuration.
 
+On a new Hussh One device, bootstrap first reuses an existing
+`HUSHH_CONSENT_MCP_TOKEN`. When it is absent and the operator already has GCP
+Application Default Credentials for the UAT project, bootstrap reads the
+dedicated `HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN` secret directly from Secret
+Manager and atomically stores it in that mode-`0600` profile `.env`. This is a
+one-time provisioning step: subsequent updates reuse the local secret and do
+not query GCP again. The generic backend token is deliberately not used for
+this connector.
+
 Hermes' MCP transport boundary creates one persistent X25519 identity under
 that profile with mode-`0600`. For an `attr.*` consent request it adds the
 public binding after model argument validation. On an approved encrypted
