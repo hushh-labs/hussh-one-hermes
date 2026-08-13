@@ -2033,53 +2033,27 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 tui_dir,
                 include_child_workspaces=True,
             )
-        npm_install_cmd = [
-            npm,
-            "install",
-            *npm_workspace_args,
-            # --include=dev: ui-tui's build toolchain (esbuild, typescript)
-            # lives in devDependencies. An inherited NODE_ENV=production
-            # (e.g. from a container shell or a parent TUI launch) or an
-            # npm `omit=dev` config would silently skip them and the TUI
-            # build would fail. See _run_npm_install_deterministic.
-            "--include=dev",
-            "--silent",
-            "--no-fund",
-            "--no-audit",
-            "--progress=false",
-        ]
-
         def _run_tui_install() -> subprocess.CompletedProcess:
             from hermes_constants import with_hermes_node_path
 
-            # Managed tree first on PATH: if the EBADENGINE repair below
-            # provisioned a managed Node, npm's shebang/lifecycle scripts must
-            # resolve that node, not the mismatched system one.
-            return subprocess.run(
-                npm_install_cmd,
-                cwd=str(npm_cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+            # Use the same lock-preserving path as the dashboard build. A bare
+            # npm install here rewrites peer metadata with newer npm releases,
+            # dirtying package-lock.json every time the embedded TUI performs
+            # a cold dependency refresh.
+            return _run_npm_install_deterministic(
+                npm,
+                npm_cwd,
+                extra_args=(
+                    *npm_workspace_args,
+                    "--silent",
+                    "--no-fund",
+                    "--no-audit",
+                    "--progress=false",
+                ),
                 env={**with_hermes_node_path(), "CI": "1"},
             )
 
         result = _run_tui_install()
-        if result.returncode != 0:
-            # An npm outside the root package.json's `engines.npm` range fails
-            # here before doing any work; repair once (upgrade a Hermes-managed
-            # npm in place, or provision a managed runtime when the npm belongs
-            # to the user) and retry rather than dumping EBADENGINE at the user.
-            from hermes_cli.npm_engine import maybe_repair_npm_engine
-
-            combined_output = f"{result.stdout or ''}\n{result.stderr or ''}"
-            repaired_npm = maybe_repair_npm_engine(npm, combined_output)
-            if repaired_npm:
-                npm = repaired_npm
-                npm_install_cmd[0] = repaired_npm
-                result = _run_tui_install()
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
