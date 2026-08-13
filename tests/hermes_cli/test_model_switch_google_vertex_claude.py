@@ -164,7 +164,9 @@ def test_agent_switch_model_builds_anthropic_vertex(monkeypatch):
         _cached_system_prompt=None,
     )
     agent._anthropic_prompt_cache_policy = lambda **kwargs: (True, True)
-    agent._ensure_lmstudio_runtime_loaded = lambda: None
+    agent._ensure_lmstudio_runtime_loaded = lambda *a, **k: None
+    agent._lmstudio_load_was_unverified = lambda *a, **k: False
+    agent._effective_lmstudio_context_length = lambda *a, **k: 0
     agent._create_openai_client = lambda *a, **k: MagicMock()
 
     apply_switch(

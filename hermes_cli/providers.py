@@ -513,6 +513,23 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
             source="hermes",
         )
 
+    if canonical != "custom":
+        try:
+            from providers import get_provider_profile
+            profile = get_provider_profile(canonical)
+            if profile is not None:
+                return ProviderDef(
+                    id=profile.name,
+                    name=profile.display_name or profile.name,
+                    transport=profile.api_mode or "openai_chat",
+                    api_key_env_vars=tuple(profile.env_vars or ()),
+                    base_url=profile.base_url or "",
+                    auth_type=profile.auth_type or "api_key",
+                    source="provider-profile",
+                )
+        except Exception:
+            pass
+
     return None
 
 

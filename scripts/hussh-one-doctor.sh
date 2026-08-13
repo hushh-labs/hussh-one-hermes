@@ -239,8 +239,8 @@ else:
 
 if provider and provider != "gemini":
     warnings.append(f"model.provider is {provider}, expected gemini for global default")
-if default_model and default_model != "gemini-3.6-flash":
-    warnings.append(f"model.default is {default_model}, expected gemini-3.6-flash")
+if default_model and default_model not in ("gemini-3.7-flash", "gemini-3.6-flash"):
+    warnings.append(f"model.default is {default_model}, expected gemini-3.7-flash or gemini-3.6-flash")
 if not provider:
     warnings.append("model.provider is unset; bootstrap will set it to gemini")
 if not default_model:

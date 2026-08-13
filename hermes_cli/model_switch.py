@@ -2755,7 +2755,7 @@ def list_authenticated_providers(
             results.append({
                 "slug": ep_name,
                 "name": display_name,
-                "is_current": ep_name == current_provider,
+                "is_current": bool(_ep_is_current),
                 "is_user_defined": True,
                 "models": models_list,
                 "total_models": len(models_list) if models_list else 0,
