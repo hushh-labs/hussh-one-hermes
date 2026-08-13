@@ -175,7 +175,7 @@ browser chat UI talking to Hermes' OpenAI-compatible API server.
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
-| 2026-08-12 | `f28ba2fca` | **Service-restart safety in companion setup.** Replaced direct `gateway restart` invocation in Open WebUI setup generator with platform-native service reloads (`launchctl` / `systemctl`) to prevent execution-interceptor blocks during automated turns. |
+| 2026-08-12 | `b607aa92a` | **Service-restart safety in companion setup.** Replaced direct `gateway restart` invocation in Open WebUI setup generator with platform-native service reloads (`launchctl` / `systemctl`) to prevent execution-interceptor blocks during automated turns. |
 | 2026-08-06 | `4190dca91` | **API server reasoning/lifecycle streaming & model registry.** Streamed reasoning and lifecycle events over the API server and exposed the provider model registry. |
 | 2026-07-28 | `30fd07202` | **Fresh-device bootstrap resilience.** A missing `pandoc` now remains an optional document-conversion limitation: non-writable or unhealthy Homebrew emits a warning while the pinned Open WebUI runtime, Hussh assets, launcher, and user service continue installing. |
 | 2026-06-24 | `462b804ec` | Render the Features catalog inline in the chat body; dropped the standalone pipe-file approach. |
