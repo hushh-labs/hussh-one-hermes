@@ -27,13 +27,19 @@ Not everyone lives in a terminal or WhatsApp. Open WebUI gives Hussh One a mobil
 | `OPEN_WEBUI_AUTH` | `False` | Passwordless personal access; permitted only on loopback |
 | `OPEN_WEBUI_VERSION` | `0.10.2` | Repository-tested companion version; upgrades happen as a controlled Hussh contract change |
 | `OPEN_WEBUI_MODELS_CACHE_TTL` | `300` | Avoid repeated model-list calls while allowing bounded refresh |
+| `OPEN_WEBUI_STREAM_DELTA_CHUNK_SIZE` | `5` | Batches tiny stream deltas to reduce browser/render overhead without making output feel delayed |
 | `OPEN_WEBUI_ENABLE_TITLE_GENERATION` | `False` | `True` costs a full extra agent run per chat to auto-title |
 | `OPEN_WEBUI_ENABLE_TAGS_GENERATION` | `False` | `True` costs a full extra agent run per chat to auto-tag |
 | `HERMES_API_PORT` / `HERMES_API_HOST` | `8642` / `127.0.0.1` | Hermes OpenAI-compatible API server |
-| `HERMES_API_MODEL_NAME` | `Hermes Agent` | Model name advertised to `/v1/models` |
+| `HERMES_API_MODEL_NAME` | `🤫 Hussh One` | Legacy fallback name advertised only when no concrete provider route is available |
 
 ## Hussh One performance defaults
-Title/tag generation are **off by default** so Open WebUI stays at **one Hermes agent call per message** — each auto-title/tag would otherwise fire a full extra server-side agent run on the heavy engine. The managed launcher also caches the stable Hermes model catalog for five minutes, bounds OpenAI-compatible connection waits, disables per-token database writes, scopes CORS to the local UI origins, and pins Open WebUI to one worker because its default local SQLite/Chroma persistence is not multi-worker safe.
+Title/tag generation are **off by default** so Open WebUI stays at **one Hermes agent call per message** — each auto-title/tag would otherwise fire a full extra server-side agent run on the heavy engine. The managed launcher also caches the stable Hermes model catalog for five minutes, bounds OpenAI-compatible connection waits, batches very small stream deltas, uses the faster JSON serializer, disables per-token database writes, scopes CORS to the local UI origins, and pins Open WebUI to one worker because its default local SQLite/Chroma persistence is not multi-worker safe.
+
+Open WebUI is the browser front door, not a second agent runtime. Its native
+subagents are disabled in the managed launcher: Hermes owns orchestration,
+MCP/consent tools, model routing, memory, and cancellation. This prevents two
+agent loops from duplicating work, tool calls, context, and cost.
 
 The streaming path follows the proven Hussh Search Console shape without
 duplicating its search planner: one warm agent loop emits reasoning, answer
@@ -42,13 +48,25 @@ introduced. SSE disables proxy buffering, sends keepalives during long tools,
 flushes final tails, reports usage, and interrupts agent work when the browser
 disconnects.
 
-The composer adds compact model and thinking-level controls beside voice input.
-Its model list comes from Hermes' canonical configured-provider registry through
-`/v1/models`; adding or removing a model in the Hermes registry updates Open
-WebUI without a frontend edit. Reasoning is a per-request override and does not
-mutate the global default. The controls remain on the microphone row at compact
-widths. The sidebar Changelog and its content view use responsive spacing,
-scroll-safe tables, and an accessible icon-only state when the sidebar narrows.
+Open WebUI's top bar is the single model picker. The composer adds only a static
+**Thinking** label and a compact level selector (`Off` through `Max`) beside
+voice input. Reasoning is a per-request override and does not mutate the global
+default. Hussh branding remains visible when the sidebar control is hovered; a
+separate, persistent expand button sits on the following row. Changelog is
+icon-only in the compact sidebar and labeled only when expanded, so it never
+forces the collapsed rail open.
+
+### Google ADK alignment
+
+This integration deliberately does **not** embed Google ADK into Open WebUI or
+pretend that the prebuilt frontend is an ADK app. Open WebUI speaks the standard
+OpenAI-compatible Chat Completions protocol to Hermes. Hermes follows the same
+runtime principles that matter here: SSE partial events are yielded promptly,
+reasoning and tool/source events remain distinct, final responses close the
+stream deterministically, and browser disconnects cancel server-side work.
+Independent subagent branches may run concurrently inside Hermes; dependent
+work remains sequential. That keeps one owner for state, consent, tools, and
+session history while preserving ADK-quality streaming semantics.
 
 ## Reliability
 Open WebUI runs the **same agent** as the dashboard, so it inherits the
@@ -66,6 +84,11 @@ process alive, while the Hussh supervisor checks its local health endpoint.
 Setup does not restart an already-healthy Hermes gateway when API configuration
 is unchanged, avoiding a preventable connection-error window. Open WebUI startup
 also waits for the authenticated Hermes model endpoint.
+
+Setup also persists a stable `WEBUI_SECRET_KEY` in `~/.hermes/.env`. An
+existing Open WebUI key is migrated on upgrade, preserving encrypted MCP/OAuth
+credentials across restarts and new companion reconciliations instead of
+regenerating a checkout-local `.webui_secret_key`.
 
 ## Triggering / Behavior
 - Browser → Open WebUI (`:8080`) → Hermes API server (`:8642/v1`) → agent turn streamed back token-by-token with reasoning + tool status.
@@ -98,4 +121,4 @@ The feature documentation in this directory remains the source of truth.
 
 ## Future
 - First-class per-profile model picker inside Open WebUI.
-- Surface the live model + reasoning-effort badge in the web header (parity with the TUI status bar).
+- Surface the live reasoning-effort badge in the web header (parity with the TUI status bar).

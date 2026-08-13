@@ -13,6 +13,7 @@ act/
 .venv
 .vscode/
 .env
+.webui_secret_key
 .op.env
 .env.local
 .env.development.local

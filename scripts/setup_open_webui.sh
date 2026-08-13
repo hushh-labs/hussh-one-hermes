@@ -25,6 +25,7 @@ set -euo pipefail
 #   OPEN_WEBUI_AUTH=False  # default; passwordless and loopback-only
 #   OPEN_WEBUI_VERSION=0.10.2
 #   OPEN_WEBUI_MODELS_CACHE_TTL=300
+#   OPEN_WEBUI_STREAM_DELTA_CHUNK_SIZE=5
 #   OPEN_WEBUI_VENV=~/.local/open-webui-venv
 #   OPEN_WEBUI_DATA_DIR=~/.local/share/open-webui/data
 #   HERMES_API_PORT=8642
@@ -51,6 +52,7 @@ OPEN_WEBUI_VERSION="${OPEN_WEBUI_VERSION:-0.10.2}"
 OPEN_WEBUI_MODELS_CACHE_TTL="${OPEN_WEBUI_MODELS_CACHE_TTL:-300}"
 OPEN_WEBUI_API_TIMEOUT="${OPEN_WEBUI_API_TIMEOUT:-300}"
 OPEN_WEBUI_MODEL_LIST_TIMEOUT="${OPEN_WEBUI_MODEL_LIST_TIMEOUT:-10}"
+OPEN_WEBUI_STREAM_DELTA_CHUNK_SIZE="${OPEN_WEBUI_STREAM_DELTA_CHUNK_SIZE:-5}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
 OPEN_WEBUI_CORS_ALLOW_ORIGIN="${OPEN_WEBUI_CORS_ALLOW_ORIGIN:-http://${OPEN_WEBUI_HOST}:${OPEN_WEBUI_PORT};http://localhost:${OPEN_WEBUI_PORT}}"
@@ -165,6 +167,18 @@ print(secrets.token_urlsafe(32))
 PY
 }
 
+read_secret_file() {
+  local file="$1"
+  python3 - "$file" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if path.is_file():
+    print(path.read_text().strip())
+PY
+}
+
 file_sha256() {
   python3 - "$1" <<'PY'
 import hashlib
@@ -205,6 +219,12 @@ can_use_systemd_user() {
 install_macos_dependencies() {
   if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
     if ! command -v pandoc >/dev/null 2>&1; then
+      local brew_prefix
+      brew_prefix="$(brew --prefix 2>/dev/null || true)"
+      if [[ -n "$brew_prefix" && ! -w "$brew_prefix" ]]; then
+        log "Skipping optional pandoc install because Homebrew is not writable: $brew_prefix"
+        return 0
+      fi
       log 'Installing pandoc with Homebrew (recommended by Open WebUI docs)...'
       if ! brew install pandoc; then
         log 'Warning: optional pandoc installation failed; continuing without document conversion support.'
@@ -397,7 +417,25 @@ PY
     return 0
   fi
 
-  log "Installing Hermes reasoning-panel assets into: $static_dir"
+  log "Installing Hussh One browser assets into: $static_dir"
+
+  cat > "$static_dir/hussh-one-mark.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Hussh One">
+  <defs>
+    <linearGradient id="hushh-gold" x1="10" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE078"/>
+      <stop offset="0.55" stop-color="#F6B91B"/>
+      <stop offset="1" stop-color="#D88B00"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="28" fill="url(#hushh-gold)"/>
+  <circle cx="23" cy="25" r="2.75" fill="#30230B"/>
+  <circle cx="41" cy="25" r="2.75" fill="#30230B"/>
+  <path d="M25 37c4.5 3.2 9.5 3.2 14 0" fill="none" stroke="#30230B" stroke-width="3.2" stroke-linecap="round"/>
+  <rect x="29.25" y="30" width="5.5" height="24" rx="2.75" fill="#FFE9B1" stroke="#A86B00" stroke-width="1.5"/>
+  <path d="M32 29.5v-7.25" fill="none" stroke="#A86B00" stroke-width="2" stroke-linecap="round"/>
+</svg>
+SVG
 
   cat > "$static_dir/custom.css" <<'CSS'
 /*
@@ -436,12 +474,19 @@ PY
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
-  gap: 0.35rem;
-  margin-inline: 0.25rem;
+  gap: 0.45rem;
+  margin-inline: 0.2rem;
   min-width: 0;
-  max-width: min(23rem, 42vw);
+  max-width: min(12rem, 32vw);
   white-space: nowrap;
   vertical-align: middle;
+}
+
+#hushh-thinking-label {
+  color: rgb(75 85 99);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
 }
 
 #hushh-composer-controls select {
@@ -458,12 +503,8 @@ PY
   text-overflow: ellipsis;
 }
 
-#hushh-model-select {
-  width: clamp(7rem, 14vw, 10rem);
-}
-
 #hushh-reasoning-select {
-  width: clamp(6.6rem, 12vw, 8.6rem);
+  width: clamp(4.8rem, 9vw, 6rem);
 }
 
 .dark #hushh-composer-controls select {
@@ -472,8 +513,65 @@ PY
   color: rgb(229 231 235);
 }
 
+.dark #hushh-thinking-label {
+  color: rgb(209 213 219);
+}
+
+#sidebar button[aria-label="Open Sidebar"] .group-hover\:hidden {
+  display: flex !important;
+}
+
+#sidebar button[aria-label="Open Sidebar"] .group-hover\:flex:not(img) {
+  display: none !important;
+}
+
+#hushh-sidebar-expand-row {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+#hushh-sidebar-expand-button {
+  align-items: center;
+  border-radius: 0.75rem;
+  color: rgb(75 85 99);
+  display: inline-flex;
+  height: 2.25rem;
+  justify-content: center;
+  width: 2.25rem;
+}
+
+#hushh-sidebar-expand-button:hover {
+  background: rgb(243 244 246);
+  color: rgb(17 24 39);
+}
+
+.dark #hushh-sidebar-expand-button:hover {
+  background: rgb(31 41 55);
+  color: rgb(243 244 246);
+}
+
 #hushh-changelog-menu-item {
   min-width: 0;
+}
+
+#hushh-changelog-menu-item[data-hushh-compact="true"] {
+  display: flex;
+  justify-content: center;
+  padding: 0;
+  width: 2.25rem;
+}
+
+#hushh-changelog-menu-item[data-hushh-compact="true"] #sidebar-changelog-button {
+  flex: none;
+  height: 2.25rem;
+  justify-content: center;
+  padding: 0;
+  width: 2.25rem;
+}
+
+#hushh-changelog-menu-item[data-hushh-compact="true"] .hushh-changelog-text {
+  display: none;
 }
 
 #sidebar-changelog-button {
@@ -513,12 +611,8 @@ PY
     font-size: 0.6875rem;
   }
 
-  #hushh-model-select {
-    width: min(26vw, 7rem);
-  }
-
   #hushh-reasoning-select {
-    width: min(18vw, 5.8rem);
+    width: min(18vw, 5rem);
   }
 
   .hushh-changelog-topbar {
@@ -544,6 +638,7 @@ CSS
   // ---------------------------------------------------------------------------
   const brandTitles = new Set(["Hussh One", "🤫 Hussh One"]);
   const appTitle = "🤫 Hussh One";
+  const husshMarkPath = "/static/hussh-one-mark.svg";
   const fallbackChatTitle = appTitle;
   let lastGoodDocumentTitle = appTitle;
 
@@ -581,7 +676,12 @@ CSS
 
   const isGenericTitle = (value) => {
     const text = compactText(stripTitleMarkup(value)).toLowerCase();
-    return !text || text === "open webui" || text === appTitle.toLowerCase();
+    return (
+      !text ||
+      text === "open webui" ||
+      text === appTitle.toLowerCase() ||
+      /hussh one\s*\(open webui\)$/i.test(text)
+    );
   };
 
   const isUsableChatTitle = (value) => {
@@ -630,6 +730,7 @@ CSS
   const shouldSkipTextNode = (node) => {
     const parent = node && node.parentElement;
     if (!parent) return true;
+    if (parent.closest && parent.closest("#hushh-thinking-label")) return true;
     const tag = (parent.tagName || "").toLowerCase();
     if (["script", "style", "textarea", "input", "code", "pre"].includes(tag)) return true;
     const text = compactText(node.nodeValue || "");
@@ -669,9 +770,11 @@ CSS
       (isLeakyTitle(current) || isGenericTitle(current) || sanitized !== current.trim());
     const next = shouldUseSidebar
       ? sidebarTitle
-      : isUsableChatTitle(sanitized)
-        ? sanitized
-        : lastGoodDocumentTitle;
+      : isGenericTitle(current)
+        ? appTitle
+        : isUsableChatTitle(sanitized)
+          ? sanitized
+          : lastGoodDocumentTitle;
 
     if (next && next !== document.title) {
       document.title = next;
@@ -782,13 +885,10 @@ CSS
   };
 
   // ---------------------------------------------------------------------------
-  // Part 2c: Registry-driven model + reasoning controls
+  // Part 2c: One authoritative model picker + compact reasoning control
   // ---------------------------------------------------------------------------
-  const MODEL_STORAGE_KEY = "hushh.openwebui.model";
   const REASONING_STORAGE_KEY = "hushh.openwebui.reasoning";
-  let selectedModel = localStorage.getItem(MODEL_STORAGE_KEY) || "";
   let selectedReasoning = localStorage.getItem(REASONING_STORAGE_KEY) || "medium";
-  let composerControlsPending = false;
 
   const nativeFetch = window.fetch.bind(window);
   window.fetch = async (input, init = {}) => {
@@ -801,7 +901,6 @@ CSS
     ) {
       try {
         const payload = JSON.parse(init.body);
-        if (selectedModel) payload.model = selectedModel;
         payload.reasoning_effort = selectedReasoning;
         init = { ...init, body: JSON.stringify(payload) };
       } catch (_error) {
@@ -809,23 +908,6 @@ CSS
       }
     }
     return nativeFetch(input, init);
-  };
-
-  const modelEntries = async () => {
-    try {
-      const response = await nativeFetch("/api/models");
-      if (!response.ok) return [];
-      const payload = await response.json();
-      const values = Array.isArray(payload) ? payload : payload.data || payload.models || [];
-      return values
-        .map((entry) => ({
-          id: String(entry && (entry.id || entry.name) || "").trim(),
-          name: String(entry && (entry.name || entry.id) || "").trim(),
-        }))
-        .filter((entry) => entry.id);
-    } catch (_error) {
-      return [];
-    }
   };
 
   const composerForm = () => {
@@ -836,50 +918,29 @@ CSS
     return input.closest("form") || input.parentElement?.parentElement || null;
   };
 
-  const installComposerControls = async () => {
-    if (composerControlsPending || document.getElementById("hushh-composer-controls")) return;
+  const installComposerControls = () => {
+    if (document.getElementById("hushh-composer-controls")) return;
     const form = composerForm();
     if (!form) return;
 
-    composerControlsPending = true;
-    const models = await modelEntries();
-    composerControlsPending = false;
-    if (!models.length || document.getElementById("hushh-composer-controls")) return;
-    if (!selectedModel || !models.some((entry) => entry.id === selectedModel)) {
-      selectedModel = models[0].id;
-      localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
-    }
-
     const controls = document.createElement("div");
     controls.id = "hushh-composer-controls";
-    controls.setAttribute("aria-label", "Hussh One model controls");
+    controls.setAttribute("aria-label", "Hussh One response controls");
 
-    const modelSelect = document.createElement("select");
-    modelSelect.id = "hushh-model-select";
-    modelSelect.title = "Model";
-    modelSelect.setAttribute("aria-label", "Model");
-    for (const entry of models) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = entry.name;
-      option.selected = entry.id === selectedModel;
-      modelSelect.appendChild(option);
-    }
-    modelSelect.addEventListener("change", () => {
-      selectedModel = modelSelect.value;
-      localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
-    });
+    const thinkingLabel = document.createElement("span");
+    thinkingLabel.id = "hushh-thinking-label";
+    thinkingLabel.textContent = "Thinking";
 
     const reasoningSelect = document.createElement("select");
     reasoningSelect.id = "hushh-reasoning-select";
-    reasoningSelect.title = "Thinking level";
-    reasoningSelect.setAttribute("aria-label", "Thinking level");
+    reasoningSelect.title = "Reasoning level";
+    reasoningSelect.setAttribute("aria-label", "Reasoning level");
     for (const [value, label] of [
-      ["none", "Thinking off"],
-      ["low", "Thinking low"],
-      ["medium", "Thinking medium"],
-      ["high", "Thinking high"],
-      ["xhigh", "Thinking max"],
+      ["none", "Off"],
+      ["low", "Low"],
+      ["medium", "Medium"],
+      ["high", "High"],
+      ["xhigh", "Max"],
     ]) {
       const option = document.createElement("option");
       option.value = value;
@@ -892,7 +953,7 @@ CSS
       localStorage.setItem(REASONING_STORAGE_KEY, selectedReasoning);
     });
 
-    controls.append(modelSelect, reasoningSelect);
+    controls.append(thinkingLabel, reasoningSelect);
     const buttons = Array.from(form.querySelectorAll("button"));
     const dictate = buttons.find((button) =>
       /dictat|voice|microphone|record/i.test(
@@ -1011,10 +1072,91 @@ CSS
   );
 
   // ---------------------------------------------------------------------------
+  // Part 3b: Stable Hussh branding + a discoverable compact-sidebar control
+  // ---------------------------------------------------------------------------
+  const applyHusshBranding = () => {
+    for (const image of document.querySelectorAll("img[src*='/static/favicon']")) {
+      if (image.getAttribute("src") !== husshMarkPath) image.setAttribute("src", husshMarkPath);
+      image.setAttribute("alt", "Hussh One");
+    }
+    for (const image of document.querySelectorAll("img[src*='/api/v1/models/model/profile/image']")) {
+      const src = decodeURIComponent(image.getAttribute("src") || "");
+      if (!/Hussh One/i.test(src)) continue;
+      if (image.getAttribute("src") !== husshMarkPath) image.setAttribute("src", husshMarkPath);
+      image.setAttribute("alt", "Hussh One");
+    }
+    for (const icon of document.querySelectorAll("link[rel~='icon']")) {
+      if (icon.getAttribute("href") !== husshMarkPath) icon.setAttribute("href", husshMarkPath);
+    }
+
+    if (!document.createTreeWalker) return;
+    const showText =
+      (window.NodeFilter && window.NodeFilter.SHOW_TEXT) ||
+      (typeof NodeFilter !== "undefined" && NodeFilter.SHOW_TEXT) ||
+      4;
+    const walker = document.createTreeWalker(document.body || document.documentElement, showText);
+    const replacements = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!/^\s*🤫?\s*Hussh One\s*\(Open WebUI\)\s*$/i.test(node.nodeValue || "")) continue;
+      const parent = node.parentElement;
+      const rect = parent && parent.getBoundingClientRect ? parent.getBoundingClientRect() : null;
+      if (!rect || (rect.top < 96 && rect.left < 360)) replacements.push(node);
+    }
+    for (const node of replacements) node.nodeValue = "Hussh One";
+  };
+
+  const syncSidebarExpandControl = () => {
+    const openButton = document.querySelector("#sidebar button[aria-label='Open Sidebar']");
+    let row = document.getElementById("hushh-sidebar-expand-row");
+    if (!openButton) {
+      if (row) row.remove();
+      return;
+    }
+
+    const logoImage = openButton.querySelector("img");
+    if (logoImage) {
+      logoImage.classList.remove("group-hover:hidden");
+      if (logoImage.getAttribute("src") !== husshMarkPath) logoImage.setAttribute("src", husshMarkPath);
+      logoImage.setAttribute("alt", "Hussh One");
+    }
+    for (const child of openButton.children) {
+      if (child !== logoImage && child.matches && child.matches("svg")) child.style.display = "none";
+    }
+
+    if (row) return;
+    row = document.createElement("div");
+    row.id = "hushh-sidebar-expand-row";
+    row.innerHTML = `
+      <button id="hushh-sidebar-expand-button" type="button" title="Expand sidebar" aria-label="Expand sidebar">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="size-5" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 5.25A2.25 2.25 0 0 1 6 3h12a2.25 2.25 0 0 1 2.25 2.25v13.5A2.25 2.25 0 0 1 18 21H6a2.25 2.25 0 0 1-2.25-2.25V5.25Zm4.5-2.25v18m4.5-13.5L17.25 12l-4.5 4.5" />
+        </svg>
+      </button>
+    `;
+    row.querySelector("button").addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openButton.click();
+    });
+    const logoRow = openButton.parentElement;
+    if (logoRow) logoRow.insertAdjacentElement("afterend", row);
+  };
+
+  // ---------------------------------------------------------------------------
   // Part 4: Sidebar Changelog view (static info instead of chat component)
   // ---------------------------------------------------------------------------
   let isChangelogActive = false;
   let lastPathname = window.location.pathname;
+
+  const syncChangelogButtonLayout = () => {
+    const item = document.getElementById("hushh-changelog-menu-item");
+    const button = document.getElementById("sidebar-changelog-button");
+    if (!item || !button) return;
+    const compact = Boolean(document.querySelector("#sidebar button[aria-label='Open Sidebar']"));
+    item.dataset.hushhCompact = compact ? "true" : "false";
+    button.title = compact ? "Changelog" : "Open Hussh One changelog";
+  };
 
   const CHANGELOG_HTML = `
 <div class="space-y-8">
@@ -1188,12 +1330,13 @@ CSS
               <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
             </svg>
           </div>
-          <div class="flex flex-1 self-center translate-y-[0.5px]">
+          <div class="hushh-changelog-text flex flex-1 self-center translate-y-[0.5px]">
             <div class="hushh-changelog-label self-center text-sm font-primary font-medium text-gray-600 dark:text-gray-300 group-hover:text-gray-800 dark:group-hover:text-gray-100 transition">Changelog</div>
           </div>
         </button>
       `;
       list.appendChild(item);
+      syncChangelogButtonLayout();
       return;
     }
 
@@ -1215,6 +1358,7 @@ CSS
       `;
       anchor.insertAdjacentElement('afterend', button);
     }
+    syncChangelogButtonLayout();
   };
 
   const updateChangelogView = () => {
@@ -1322,11 +1466,14 @@ CSS
   // ---------------------------------------------------------------------------
   const run = () => {
     suppressDisabledAuthChrome();
+    applyHusshBranding();
+    syncSidebarExpandControl();
     sanitizeVisibleLeakyTitles();
     syncDocumentTitle();
     processReasoning();
-    void installComposerControls();
+    installComposerControls();
     injectChangelogButton();
+    syncChangelogButtonLayout();
     checkRouteChanged();
     if (isChangelogActive) {
       updateChangelogView();
@@ -1359,6 +1506,7 @@ write_launcher() {
 
   local quoted_data_dir quoted_name quoted_base_url quoted_host quoted_port quoted_venv quoted_home quoted_env
   local quoted_repo_root quoted_setup_script quoted_setup_revision quoted_cors_origin quoted_hermes_bin
+  local quoted_stream_delta_chunk_size
   quoted_data_dir="$(shell_quote "$OPEN_WEBUI_DATA_DIR")"
   quoted_name="$(shell_quote "$OPEN_WEBUI_NAME")"
   quoted_base_url="$(shell_quote "$HERMES_API_BASE_URL")"
@@ -1372,6 +1520,7 @@ write_launcher() {
   quoted_setup_revision="$(shell_quote "$SETUP_REVISION_PATH")"
   quoted_cors_origin="$(shell_quote "$OPEN_WEBUI_CORS_ALLOW_ORIGIN")"
   quoted_hermes_bin="$(shell_quote "$HERMES_BIN")"
+  quoted_stream_delta_chunk_size="$(shell_quote "$OPEN_WEBUI_STREAM_DELTA_CHUNK_SIZE")"
   local quoted_managed_setup
   quoted_managed_setup="$(shell_quote "$MANAGED_SETUP_SCRIPT")"
 
@@ -1448,7 +1597,19 @@ for raw in p.read_text().splitlines():
         break
 PY
 )
+WEBUI_SECRET_KEY=\$(python3 - <<'PY'
+import os
+from pathlib import Path
+p = Path(os.environ["HERMES_ENV_FILE"])
+for raw in p.read_text().splitlines():
+    line = raw.strip()
+    if line.startswith('WEBUI_SECRET_KEY='):
+        print(line.split('=', 1)[1])
+        break
+PY
+)
 export DATA_DIR=${quoted_data_dir}
+export WEBUI_SECRET_KEY="\$WEBUI_SECRET_KEY"
 export WEBUI_NAME=${quoted_name}
 export ENABLE_SIGNUP=${OPEN_WEBUI_ENABLE_SIGNUP}
 export ENABLE_LOGIN_FORM=False
@@ -1492,6 +1653,12 @@ export ENABLE_EVALUATION_ARENA_MODELS=False
 export ENABLE_MESSAGE_RATING=False
 export ENABLE_COMMUNITY_SHARING=False
 export ENABLE_REALTIME_CHAT_SAVE=False
+# Batch tiny token deltas just enough to reduce browser/render overhead while
+# retaining a responsive consumer-grade stream. Hermes remains the sole agent
+# orchestrator; Open WebUI must not launch a competing subagent loop.
+export CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE=${quoted_stream_delta_chunk_size}
+export ENABLE_SUBAGENTS=False
+export ENABLE_ORJSON=True
 # Open WebUI's default SQLite/Chroma persistence is single-worker only.
 export UVICORN_WORKERS=1
 # Hussh One defaults to passwordless access and enforces loopback binding during
@@ -1654,10 +1821,22 @@ main() {
 
   install_macos_dependencies
 
-  local api_key gateway_restart_required=0 env_before env_after registry_models
+  local api_key webui_secret_key gateway_restart_required=0 env_before env_after registry_models
   api_key="$(get_env_value API_SERVER_KEY "$HERMES_ENV_FILE")"
   if [[ -z "$api_key" ]]; then
     api_key="$(generate_secret)"
+  fi
+  webui_secret_key="$(get_env_value WEBUI_SECRET_KEY "$HERMES_ENV_FILE")"
+  if [[ -z "$webui_secret_key" && -f "$HOME/.webui_secret_key" ]]; then
+    webui_secret_key="$(read_secret_file "$HOME/.webui_secret_key")"
+    log 'Migrating the existing Open WebUI encryption key into the managed Hermes environment.'
+  fi
+  if [[ -z "$webui_secret_key" && -f "$REPO_ROOT/.webui_secret_key" ]]; then
+    webui_secret_key="$(read_secret_file "$REPO_ROOT/.webui_secret_key")"
+    log 'Migrating the checkout-local Open WebUI encryption key into the managed Hermes environment.'
+  fi
+  if [[ -z "$webui_secret_key" ]]; then
+    webui_secret_key="$(generate_secret)"
   fi
 
   log 'Ensuring Hermes API server is configured...'
@@ -1667,6 +1846,7 @@ main() {
   upsert_env API_SERVER_PORT "$HERMES_API_PORT" "$HERMES_ENV_FILE"
   upsert_env API_SERVER_MODEL_NAME "$HERMES_API_MODEL_NAME" "$HERMES_ENV_FILE"
   upsert_env API_SERVER_KEY "$api_key" "$HERMES_ENV_FILE"
+  upsert_env WEBUI_SECRET_KEY "$webui_secret_key" "$HERMES_ENV_FILE"
   ensure_env_permissions
   env_after="$(file_sha256 "$HERMES_ENV_FILE")"
   [[ "$env_before" == "$env_after" ]] || gateway_restart_required=1
