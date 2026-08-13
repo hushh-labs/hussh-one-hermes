@@ -137,7 +137,7 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
     )
 
 
-def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
+def test_make_tui_argv_uses_lock_preserving_install_without_workspace_for_standalone_tui(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
     """When ui-tui/ has its own package-lock.json, _workspace_root returns
@@ -158,21 +158,28 @@ def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
-    calls = []
+    calls: list[tuple[str, Path, tuple[str, ...]]] = []
 
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
+    def fake_install(npm, cwd, *, extra_args=(), **_kwargs):
+        calls.append((npm, cwd, extra_args))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_mod, "_run_npm_install_deterministic", fake_install)
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: types.SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    )
 
     main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
-    install_cmd = calls[0][0][0]
+    npm, cwd, extra_args = calls[0]
     # Must NOT contain --workspace when npm_cwd == tui_dir
-    assert "--workspace" not in install_cmd, (
-        f"npm install should omit --workspace when tui_dir has its own lockfile, got: {install_cmd}"
+    assert "--workspace" not in extra_args, (
+        f"npm install should omit --workspace when tui_dir has its own lockfile, got: {extra_args}"
     )
-    assert install_cmd[:2] == ["/bin/npm", "install"]
+    assert npm == "/bin/npm"
     # cwd must be tui_dir (standalone), not parent
-    assert calls[0][1]["cwd"] == str(tui_dir)
+    assert cwd == tui_dir
