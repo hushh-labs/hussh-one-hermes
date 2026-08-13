@@ -205,8 +205,14 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert "expose_provider_models" in text
     assert "preserving the healthy gateway process" in text
     assert 'for attempt in $(seq 1 90)' in text
-    assert '"hushh-model-select"' in text
+    assert '"hushh-model-select"' not in text
     assert '"hushh-reasoning-select"' in text
+    assert 'thinkingLabel.textContent = "Thinking"' in text
+    assert '["medium", "Medium"]' in text
+    assert '["medium", "Thinking medium"]' not in text
+    assert 'id="hushh-sidebar-expand-button"' in text
+    assert 'data-hushh-compact="true"' in text
+    assert 'hussh-one-mark.svg' in text
     assert "Hussh One — Changelog &amp; Features" in text
     assert "hushh-changelog-content" in text
     assert "reasoning_effort" in text
@@ -227,6 +233,7 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert '"$OPEN_WEBUI_VENV/bin/python" -c' in text
     assert "A runnable Python 3.11 or 3.12 interpreter is required." in text
     assert "if ! brew install pandoc; then" in text
+    assert "Skipping optional pandoc install because Homebrew is not writable" in text
     assert "optional pandoc installation failed; continuing" in text
     for performance_default in (
         "export ENABLE_BASE_MODELS_CACHE=True",
@@ -235,9 +242,14 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
         "export AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST=",
         "export CORS_ALLOW_ORIGIN=",
         "export ENABLE_REALTIME_CHAT_SAVE=False",
+        "export CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE=",
+        "export ENABLE_SUBAGENTS=False",
+        "export ENABLE_ORJSON=True",
         "export UVICORN_WORKERS=1",
     ):
         assert performance_default in text
+    assert "upsert_env WEBUI_SECRET_KEY" in text
+    assert 'export WEBUI_SECRET_KEY="\\$WEBUI_SECRET_KEY"' in text
     for stale in ("Google Ads", "Google Agent Development Kit", "Hussh One ADK", "applyAdkLogo"):
         assert stale not in text
 
