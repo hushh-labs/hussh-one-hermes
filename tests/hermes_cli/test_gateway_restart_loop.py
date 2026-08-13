@@ -695,6 +695,15 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_read_referenced_script_handles_nul_byte_in_path(self, tmp_path):
+        """_read_referenced_script must catch ValueError when os.open receives a path containing a NUL byte."""
+        from cron.lifecycle_guard import _read_referenced_script
+        from pathlib import Path
+        nul_path = Path(str(tmp_path / "script\x00.sh"))
+        text, unsafe = _read_referenced_script(nul_path)
+        assert text is None
+        assert unsafe is False
+
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""
