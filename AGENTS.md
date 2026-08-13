@@ -31,6 +31,28 @@ The historical two-trunk layout already split Hussh features across branches.
 The full recovery rationale and upgrade procedure are in
 `docs/hussh-one-upstream-maintenance.md`.
 
+## Hussh Consent Connector Contract
+
+- The only Hussh One consent lifecycle endpoint is the streamable HTTP MCP at
+  `https://api.uat.hushh.ai/mcp/`; never downgrade it to stdio/SSE or put a
+  credential in its URL.
+- Hermes and Codex both reference `HUSHH_CONSENT_MCP_TOKEN`. The raw token
+  belongs only in the active profile's mode-`0600` `.env`, never in Git, MCP
+  configuration, logs, prompts, or conversation history.
+- Fresh-device bootstrap may retrieve
+  `HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN` once from UAT GCP Secret Manager when
+  Application Default Credentials already authorize that access. Later
+  updates must reuse the local value instead of repeatedly fetching or
+  rotating it.
+- Do not combine a static developer bearer with OAuth client credentials.
+  Select exactly one transport-authentication mechanism for a host.
+- Consent is not a reason to suppress approved information. Follow the
+  bundled `hussh-consent-mcp-workflow` skill: select the narrowest scope,
+  request and poll consent, retrieve only after `granted`, then consume the
+  local one-time lease when the user explicitly asked to analyze the approved
+  data. `CONNECTOR_KEY_REQUIRED` is a provisioning failure to repair, not a
+  normal answer to the user.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

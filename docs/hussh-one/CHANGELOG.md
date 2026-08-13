@@ -35,6 +35,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 | Date | Commit | What shipped |
 |------|--------|---------------|
+| 2026-08-12 | `22cd185fd` | **One-time consent credential bootstrap.** Fresh Hussh One devices with existing UAT GCP Application Default Credentials securely retrieve the dedicated Hussh Technologies partner MCP token from Secret Manager, persist it only in the active mode-`0600` Hermes secret file, and reuse it for the shared Hermes/Codex streamable endpoint on later updates. |
 | 2026-07-28 | `78bb52f58` | **Hosted consent connector packaged end to end.** The canonical UAT streamable MCP now receives a persistent device public binding only after model argument validation; Hermes authenticates and decrypts approved envelopes locally, projects the exact granted `attr.*` scope into a one-time lease, blocks model-supplied connector keys, and installs the same token-referenced remote endpoint for Hermes and Codex during onboarding. |
 | 2026-07-28 | `bff45fe60` | **Gemini-safe consent consumption.** Added canonical tool-name protection, connector-only decryption, bounded `0600` one-time plaintext leases, explicit-consumption policy, and live TUI terminal-state verification. Hosted ciphertext and key material remain outside model context. |
 

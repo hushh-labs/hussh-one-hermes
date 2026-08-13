@@ -277,9 +277,133 @@ configure_hussh_persona() {
   warn "Preserving a customized SOUL.md; merge the canonical Hussh One persona manually if desired"
 }
 
+persist_env_secret() {
+  local key="$1" value="$2" python file
+  python="$(python_bin)"
+  file="$HERMES_HOME/.env"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: persist $key in the mode-0600 Hermes secret file"
+    return 0
+  fi
+  if [[ -z "$python" || ! -x "$python" ]]; then
+    warn "Cannot persist $key: repository Python is unavailable"
+    return 1
+  fi
+  run_cmd mkdir -p "$HERMES_HOME"
+  "$python" - "$file" "$key" 3<<<"$value" <<'PY'
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+destination = Path(sys.argv[1])
+key = sys.argv[2]
+with os.fdopen(3, encoding="utf-8") as secret_input:
+    value = secret_input.read().strip()
+if not value or "\n" in value or "\r" in value:
+    raise SystemExit(f"refusing to persist malformed {key}")
+
+lines = destination.read_text(encoding="utf-8").splitlines() if destination.exists() else []
+replacement = f"{key}={value}"
+updated: list[str] = []
+replaced = False
+for line in lines:
+    if line.startswith(f"{key}="):
+        if not replaced:
+            updated.append(replacement)
+            replaced = True
+        continue
+    updated.append(line)
+if not replaced:
+    if updated and updated[-1]:
+        updated.append("")
+    updated.append(replacement)
+
+destination.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(updated) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary_name, 0o600)
+    os.replace(temporary_name, destination)
+finally:
+    if os.path.exists(temporary_name):
+        os.unlink(temporary_name)
+PY
+}
+
+bootstrap_hussh_consent_token() {
+  local python token
+  if [[ -n "$(env_value HUSHH_CONSENT_MCP_TOKEN)" ]]; then
+    log "Hussh Consent MCP credential: configured in the active Hermes profile."
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: retrieve the one-time Hussh Technologies MCP credential from GCP Secret Manager"
+    persist_env_secret HUSHH_CONSENT_MCP_TOKEN '<gcp-secret>'
+    return 0
+  fi
+  python="$(python_bin)"
+  if [[ -z "$python" || ! -x "$python" ]]; then
+    warn "Hussh Consent MCP credential is missing and repository Python is unavailable"
+    return 0
+  fi
+
+  # This is intentionally a one-time machine bootstrap. The dedicated partner
+  # credential remains in Secret Manager and is copied only into the active
+  # profile's mode-0600 .env. It is never written into Git or MCP config.
+  if ! token="$("$python" - <<'PY'
+import base64
+import os
+
+try:
+    import google.auth
+    from google.auth.transport.requests import AuthorizedSession
+except ImportError as exc:
+    raise SystemExit(f"google-auth unavailable: {exc}") from exc
+
+project = (
+    os.getenv("GOOGLE_CLOUD_PROJECT")
+    or os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+    or "hushh-pda-uat"
+).strip()
+try:
+    credentials, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    session = AuthorizedSession(credentials)
+    url = (
+        "https://secretmanager.googleapis.com/v1/projects/"
+        f"{project}/secrets/HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN/versions/latest:access"
+    )
+    response = session.get(url, timeout=20)
+    response.raise_for_status()
+    token = base64.b64decode(response.json()["payload"]["data"]).decode().strip()
+except Exception as exc:
+    raise SystemExit(f"credential bootstrap unavailable: {exc}") from exc
+print(token)
+PY
+  )"; then
+    warn "Hussh Consent MCP credential is missing; existing GCP ADC could not access the dedicated Hussh Technologies secret"
+    return 0
+  fi
+  if [[ -z "$token" ]]; then
+    warn "Hussh Consent MCP credential is missing; GCP Secret Manager returned an empty value"
+    return 0
+  fi
+  if ! persist_env_secret HUSHH_CONSENT_MCP_TOKEN "$token"; then
+    return 0
+  fi
+  log "Hussh Consent MCP credential: securely bootstrapped from GCP Secret Manager."
+}
+
 configure_hussh_consent_connector() {
   local hermes token
   hermes="$(hermes_bin)"
+
+  bootstrap_hussh_consent_token
 
   # Keep the hosted streamable MCP as the lifecycle source of truth. Hermes'
   # transport boundary owns the local X25519 identity and decrypts approved

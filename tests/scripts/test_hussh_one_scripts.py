@@ -129,6 +129,26 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "WHATSAPP_REPLY_PREFIX" not in text
 
 
+def test_bootstrap_packages_one_time_consent_credential_provisioning():
+    text = (ROOT / "scripts/hussh-one-bootstrap.sh").read_text(encoding="utf-8")
+
+    assert "bootstrap_hussh_consent_token" in text
+    assert "persist_env_secret" in text
+    assert "HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN" in text
+    assert "secretmanager.googleapis.com/v1/projects/" in text
+    assert "google.auth.default" in text
+    assert "HUSHH_CONSENT_MCP_TOKEN" in text
+    assert "os.chmod(temporary_name, 0o600)" in text
+    assert "os.replace(temporary_name, destination)" in text
+    assert "one-time machine bootstrap" in text
+    assert "MCP_DEVELOPER_TOKEN/versions/latest" not in text
+
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Hussh Consent Connector Contract" in agents
+    assert "CONNECTOR_KEY_REQUIRED" in agents
+    assert "Consent is not a reason to suppress approved information" in agents
+
+
 def test_bootstrap_auto_provisions_companions_only_when_prerequisites_exist():
     text = (ROOT / "scripts/hussh-one-bootstrap.sh").read_text(encoding="utf-8")
 
