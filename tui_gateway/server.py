@@ -12371,8 +12371,18 @@ def _hussh_one_setup_output(arg: str) -> str:
     recovery keys are accepted or displayed only by protected native prompts,
     never in the dashboard chat or model context.
     """
-    action = (arg or "").strip().lower()
-    if action not in {"", "connect", "enroll", "status", "unlock", "lock", "disconnect", "help"}:
+    action = " ".join((arg or "").strip().lower().split())
+    if action not in {
+        "",
+        "connect",
+        "enroll",
+        "status",
+        "unlock",
+        "lock",
+        "disconnect",
+        "disconnect confirm",
+        "help",
+    }:
         return "usage: /hussh-one [connect|enroll|status|unlock|lock|disconnect|help]"
     if action == "help":
         return (
@@ -12382,7 +12392,8 @@ def _hussh_one_setup_output(arg: str) -> str:
             "  /hussh-one status — inspect this profile\n\n"
             "  /hussh-one unlock — open this profile's Keychain-bound vault envelope\n"
             "  /hussh-one lock — clear local vault memory\n"
-            "  /hussh-one disconnect — revoke this device and remove local custody\n\n"
+            "  /hussh-one disconnect — review the destructive disconnect impact\n"
+            "  /hussh-one disconnect confirm — revoke this device and remove local custody\n\n"
             "Passphrases and recovery keys stay in native protected prompts, never chat."
         )
 
@@ -12442,12 +12453,30 @@ def _hussh_one_setup_output(arg: str) -> str:
         if action == "disconnect":
             if not identity.get("connected"):
                 return "This Hermes profile is not connected to Hussh One."
-            from hermes_cli.hussh_one_pkm.native_prompt import confirm_disconnect
-
-            if not confirm_disconnect(str(identity.get("account_email") or "Hussh One account")):
-                return "Hussh One disconnect was canceled."
-            bridge.revoke_and_disconnect()
-            return "Hussh One was disconnected. The trusted device was revoked and local vault custody was removed."
+            return (
+                "Disconnecting revokes this trusted device and removes this profile's "
+                "local vault envelope, encrypted PKM replica, Source Library index, "
+                "and device-only Source Library custody. The remote encrypted vault "
+                "and provider-owned files are not deleted.\n\n"
+                "If that is what you want, run /hussh-one disconnect confirm."
+            )
+        if action == "disconnect confirm":
+            if not identity.get("connected"):
+                return "This Hermes profile is not connected to Hussh One."
+            result = bridge.revoke_and_disconnect()
+            if result.get("remote_revocation") == "unverified":
+                return (
+                    "Hussh One was disconnected locally, so this installation no "
+                    "longer holds the old device key, vault, PKM replica, or Source "
+                    "Library custody. Remote device revocation could not be verified; "
+                    "review trusted devices in One when connectivity returns. Use "
+                    "/hussh-one connect to choose an account."
+                )
+            return (
+                "Hussh One was disconnected. The trusted device was revoked and "
+                "local vault, PKM replica, and Source Library custody were removed. "
+                "Use /hussh-one connect to choose an account."
+            )
         if action == "enroll":
             if not identity.get("connected"):
                 return "Connect this Hermes profile first with /hussh-one connect."
@@ -12495,20 +12524,20 @@ def _hussh_one_setup_output(arg: str) -> str:
                     "  /hussh-one status — inspect the account and vault\n"
                     "  /hussh-one unlock — open the local vault envelope\n"
                     "  /hussh-one lock — clear local vault memory\n"
-                    "  /hussh-one disconnect — revoke this device and remove local custody"
+                    "  /hussh-one disconnect — review account-switch cleanup"
                 )
             return (
                 f"Hussh One is connected as {str(identity.get('account_email') or '').strip()}.\n"
                 "  /hussh-one enroll — secure this device or create the first vault\n"
                 "  /hussh-one status — inspect the account and vault\n"
-                "  /hussh-one disconnect — revoke this device and remove local custody"
+                "  /hussh-one disconnect — review account-switch cleanup"
             )
         if identity.get("connected") and action != "connect":
             return (
                 "Hussh One must be reconnected to verify this Hermes profile's account.\n"
                 "  /hussh-one connect — open One sign-in and repair this trusted device\n"
                 "  /hussh-one status — inspect the account and vault\n"
-                "  /hussh-one disconnect — revoke this device and remove local custody"
+                "  /hussh-one disconnect — review account-switch cleanup"
             )
 
         bridge.begin_onboarding(

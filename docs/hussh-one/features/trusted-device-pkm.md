@@ -198,7 +198,11 @@ sidebar, or use `/hussh-one` from a local Hermes chat.
 1. Select **Connect in browser** and confirm the full verified email shown on
    the Hussh One approval page.
 2. Approve the new Mac as a trusted device in the Hussh One UAT surface.
-3. Return to Desktop after identity reports connected as that same email.
+3. Wait until the browser confirms that Hermes completed the connection, then
+   return to Desktop after identity reports connected as that same email. The
+   callback page no longer claims success merely because it received the
+   one-time approval code; exchange or persistence failures are reported as
+   incomplete and remain retryable from `/hussh-one status`.
 4. Select **Secure this device**. For an existing vault, the approval browser
    first offers its compatible One passkey. If none exists or that ceremony is
    canceled, enter the vault passphrase in the native macOS protected prompt.
@@ -214,8 +218,11 @@ secret through chat: `/hussh-one connect` opens browser approval, then
 through native protected prompts. `/hussh-one status` shows the linked verified
 email and vault state; `/hussh-one unlock` opens the existing Keychain-bound
 envelope without asking for the passphrase again; `/hussh-one lock` clears local vault memory; and
-`/hussh-one disconnect` confirms locally, revokes the device, and removes local
-custody. None of these commands send a passphrase or recovery key to the model.
+`/hussh-one disconnect` shows the exact destructive impact, and
+`/hussh-one disconnect confirm` performs the revocation and local cleanup. This
+explicit two-step command works consistently in Desktop, TUI, and the loopback
+dashboard without relying on a background native dialog. None of these commands
+send a passphrase or recovery key to the model.
 
 ### What each command means
 
@@ -226,7 +233,8 @@ custody. None of these commands send a passphrase or recovery key to the model.
 | `/hussh-one status` | Show the verified email, environment, device, enrollment, lock, and sync state |
 | `/hussh-one unlock` | Open the existing Keychain-bound envelope |
 | `/hussh-one lock` | Clear the vault key and action capabilities from memory |
-| `/hussh-one disconnect` | Confirm locally, revoke the device, and delete profile and Keychain custody |
+| `/hussh-one disconnect` | Review what local state will be removed; makes no changes |
+| `/hussh-one disconnect confirm` | Revoke the device and delete profile, PKM replica, Source Library index, and Keychain custody |
 
 `connect` proves identity and registers the installation. `enroll` proves
 cryptographic access to the existing remote encrypted vault or creates the
@@ -273,9 +281,13 @@ device identity and vault envelope remain bound to that machine.
 - Revoked/invalid device: reconnect through browser approval.
 - Vault contract mismatch: stop; update Hussh One and the UAT service before
   retrying. Do not rewrite the vault or bypass golden-vector validation.
-- Disconnect: use the trusted local control-plane disconnect action. It revokes
-  the server-side device, removes the local envelope, and deletes related
-  Keychain items.
+- Disconnect: run `/hussh-one disconnect`, review the impact, then run
+  `/hussh-one disconnect confirm`. Hermes revokes the server-side device before
+  removing the local envelope and related Keychain items. If remote revocation
+  cannot be verified, Hermes still removes this installation's private device
+  key and local custody so account switching remains possible, reports the
+  remote status as unverified, and directs the owner to review trusted devices
+  in One after connectivity returns.
 - Full rollback: disconnect first, then use the normal Hussh One repository
   rollback procedure. Never restore trusted-device secrets from Git.
 

@@ -181,6 +181,9 @@ class HusshIdentityClient:
         redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
         server.expected_state = state  # type: ignore[attr-defined]
         server.result = None  # type: ignore[attr-defined]
+        server.callback_event = threading.Event()  # type: ignore[attr-defined]
+        server.completion_event = threading.Event()  # type: ignore[attr-defined]
+        server.completion_status = "pending"  # type: ignore[attr-defined]
 
         with self._pending_lock:
             if self._pending is not None:
@@ -252,10 +255,28 @@ class HusshIdentityClient:
                 "error": self._pending.get("error"),
             }
 
+    def cancel_pending_authorization(self) -> bool:
+        """Invalidate a browser grant before disconnecting or switching accounts."""
+        with self._pending_lock:
+            pending = self._pending
+            self._pending = None
+        if pending is None:
+            return False
+        server = pending.get("server")
+        if server is not None:
+            try:
+                server.server_close()
+            except Exception:
+                pass
+        return True
+
     def _serve_authorization(self, server: ThreadingHTTPServer, verifier: str) -> None:
         try:
             server.timeout = 300
             server.handle_request()
+            callback_event = getattr(server, "callback_event", None)
+            if callback_event is not None:
+                callback_event.wait(timeout=5)
             result = getattr(server, "result", None)
             if not result or not result.get("code"):
                 raise HusshIdentityError(
@@ -287,21 +308,29 @@ class HusshIdentityClient:
                 raise HusshIdentityError(
                     "The trusted-device exchange did not provide a verified account email."
                 )
-            refresh_token = str(session["refreshToken"]).encode("utf-8")
-            self.keychain.set(self._account("firebase-refresh-token"), refresh_token)
-            self._id_token = str(session["idToken"])
-            self._id_token_expires_at = (
-                time.time() + int(session.get("expiresIn") or 3600) - 60
-            )
-            _atomic_json(self.identity_path, state.to_json())
+            with self._pending_lock:
+                if self._pending is None or self._pending.get("server") is not server:
+                    return
+                refresh_token = str(session["refreshToken"]).encode("utf-8")
+                self.keychain.set(
+                    self._account("firebase-refresh-token"), refresh_token
+                )
+                self._id_token = str(session["idToken"])
+                self._id_token_expires_at = (
+                    time.time() + int(session.get("expiresIn") or 3600) - 60
+                )
+                _atomic_json(self.identity_path, state.to_json())
             vault_key: bytes | None = None
             try:
                 with self._pending_lock:
-                    pending_private_key = (
-                        self._pending.get("vault_handoff_private_key")
-                        if self._pending is not None
-                        else None
-                    )
+                    pending_private_key = None
+                    if (
+                        self._pending is not None
+                        and self._pending.get("server") is server
+                    ):
+                        pending_private_key = self._pending.get(
+                            "vault_handoff_private_key"
+                        )
                 if isinstance(pending_private_key, x25519.X25519PrivateKey):
                     recipient_public_key = base64.b64encode(
                         pending_private_key.public_key().public_bytes(
@@ -327,23 +356,41 @@ class HusshIdentityClient:
                 vault_key = None
             callback: Callable[[bytes | None], None] | None = None
             with self._pending_lock:
-                assert self._pending is not None
+                if self._pending is None or self._pending.get("server") is not server:
+                    return
                 self._pending["status"] = "connected"
                 callback = self._pending.get("on_connected")
+            server.completion_status = "connected"  # type: ignore[attr-defined]
+            completion_event = getattr(server, "completion_event", None)
+            if completion_event is not None:
+                completion_event.set()
             if callback is not None:
                 callback(vault_key)
         except Exception as exc:
             with self._pending_lock:
-                if self._pending is not None:
+                if (
+                    self._pending is not None
+                    and self._pending.get("server") is server
+                ):
                     self._pending["status"] = "error"
                     self._pending["error"] = str(exc)
+            server.completion_status = "error"  # type: ignore[attr-defined]
+            completion_event = getattr(server, "completion_event", None)
+            if completion_event is not None:
+                completion_event.set()
         finally:
             # The handoff key is an enrollment-only capability. Retain the
             # bounded status for /hussh-one status, but remove private key
             # material as soon as this authorization attempt terminates.
             with self._pending_lock:
-                if self._pending is not None:
+                if (
+                    self._pending is not None
+                    and self._pending.get("server") is server
+                ):
                     self._pending.pop("vault_handoff_private_key", None)
+            completion_event = getattr(server, "completion_event", None)
+            if completion_event is not None:
+                completion_event.set()
             server.server_close()
 
     def id_token(self) -> str:
@@ -410,6 +457,7 @@ class HusshIdentityClient:
         self._id_token_expires_at = 0.0
 
     def disconnect(self, *, remove_device_key: bool = False) -> None:
+        self.cancel_pending_authorization()
         self.lock_identity()
         self.keychain.delete(self._account("firebase-refresh-token"))
         if remove_device_key:
@@ -428,6 +476,9 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
         expected = str(getattr(self.server, "expected_state", ""))
         if parsed.path != "/callback" or not secrets.compare_digest(state, expected):
             self.server.result = {"error": "The authorization state did not match."}  # type: ignore[attr-defined]
+            callback_event = getattr(self.server, "callback_event", None)
+            if callback_event is not None:
+                callback_event.set()
             self.send_response(400)
             body = b"Authorization failed. Return to Hermes."
         else:
@@ -436,8 +487,29 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
                 "error": (query.get("error") or [""])[0],
                 "state": state,
             }
-            self.send_response(200)
-            body = b"Device connected. You can return to Hermes."
+            callback_event = getattr(self.server, "callback_event", None)
+            if callback_event is not None:
+                callback_event.set()
+            completion_event = getattr(self.server, "completion_event", None)
+            completed = bool(completion_event and completion_event.wait(timeout=65))
+            completion_status = str(
+                getattr(self.server, "completion_status", "pending")
+            )
+            if completed and completion_status == "connected":
+                self.send_response(200)
+                body = b"Hussh One connected to Hermes. You can close this window."
+            elif completed and completion_status == "error":
+                self.send_response(502)
+                body = (
+                    b"Approval was received, but Hermes could not complete the "
+                    b"connection. Return to Hermes, run /hussh-one status, and retry."
+                )
+            else:
+                self.send_response(202)
+                body = (
+                    b"Approval was received and Hermes is still finalizing the "
+                    b"connection. Return to Hermes and run /hussh-one status."
+                )
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

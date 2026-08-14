@@ -84,9 +84,15 @@ class HusshVaultBridge:
 
     def identity_status(self) -> dict[str, Any]:
         state = self.identity.read_state()
+        authorization = self.identity.authorization_status()
         connection_state = "not_connected"
         if state is not None:
             connection_state = "connected" if state.account_email else "reconnect_required"
+        onboarding_status = self._onboarding_status
+        if authorization.get("status") == "error":
+            onboarding_status = "connection_failed"
+        elif state is None and authorization.get("status") == "waiting":
+            onboarding_status = "waiting_for_browser_approval"
         return {
             "connected": state is not None,
             "connection_state": connection_state,
@@ -94,7 +100,7 @@ class HusshVaultBridge:
             "device_id": state.device_id if state else None,
             "account_email": state.account_email if state else None,
             "profile_id": self.identity.profile_id,
-            "onboarding_status": self._onboarding_status,
+            "onboarding_status": onboarding_status,
         }
 
     def begin_onboarding(self, *, device_name: str) -> dict[str, Any]:
@@ -721,16 +727,33 @@ class HusshVaultBridge:
 
     def revoke_and_disconnect(self) -> dict[str, Any]:
         state = self.identity.read_state()
+        remote_revocation = "not_connected"
         if state is not None:
-            response = self.http.delete(
-                f"{state.api_base}/api/account/trusted-devices/{state.device_id}",
-                headers=self.identity.auth_headers(),
-            )
-            if response.status_code not in {200, 404}:
-                response.raise_for_status()
+            try:
+                response = self.http.delete(
+                    f"{state.api_base}/api/account/trusted-devices/{state.device_id}",
+                    headers=self.identity.auth_headers(),
+                )
+                if response.status_code == 200:
+                    remote_revocation = "revoked"
+                elif response.status_code == 404:
+                    remote_revocation = "already_absent"
+                else:
+                    response.raise_for_status()
+            except Exception:
+                # Local account switching must remain possible while offline or
+                # after the refresh credential has expired. Removing the local
+                # device private key makes the surviving server row unusable from
+                # this installation; report the remote outcome honestly instead
+                # of claiming revocation succeeded.
+                remote_revocation = "unverified"
         self.remove_local_vault()
         self.identity.disconnect(remove_device_key=True)
-        return {"connected": False, "revoked": state is not None}
+        return {
+            "connected": False,
+            "local_disconnected": True,
+            "remote_revocation": remote_revocation,
+        }
 
 
 _PROFILE_BRIDGES: dict[str, HusshVaultBridge] = {}

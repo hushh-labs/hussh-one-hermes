@@ -6,10 +6,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -20,6 +22,7 @@ from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
 from hermes_cli.hussh_one_pkm.client import (
     HusshIdentityClient,
     VAULT_HANDOFF_ALGORITHM,
+    _LoopbackHandler,
     _decrypt_vault_handoff,
     _vault_handoff_aad,
 )
@@ -318,6 +321,108 @@ def test_failed_passkey_enrollment_falls_back_to_masked_passphrase(
     assert bridge._onboarding_status == "ready"
 
 
+def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified() -> None:
+    class FailedResponse:
+        status_code = 503
+
+        @staticmethod
+        def raise_for_status() -> None:
+            raise RuntimeError("remote unavailable")
+
+    class FakeHttp:
+        @staticmethod
+        def delete(_url: str, **_kwargs: object) -> FailedResponse:
+            return FailedResponse()
+
+    local_cleanup: list[str] = []
+    identity_cleanup: list[bool] = []
+    bridge = object.__new__(HusshVaultBridge)
+    bridge.http = FakeHttp()
+    bridge.identity = SimpleNamespace(
+        read_state=lambda: SimpleNamespace(
+            api_base="https://api.example.test",
+            device_id="device-test",
+        ),
+        auth_headers=lambda: {"Authorization": "Bearer redacted"},
+        disconnect=lambda *, remove_device_key: identity_cleanup.append(remove_device_key),
+    )
+    bridge.remove_local_vault = lambda: local_cleanup.append("removed")  # type: ignore[method-assign]
+
+    result = bridge.revoke_and_disconnect()
+
+    assert result == {
+        "connected": False,
+        "local_disconnected": True,
+        "remote_revocation": "unverified",
+    }
+    assert local_cleanup == ["removed"]
+    assert identity_cleanup == [True]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_remote_status"),
+    [(200, "revoked"), (404, "already_absent")],
+)
+def test_disconnect_records_verified_remote_outcome_before_local_cleanup(
+    status_code: int,
+    expected_remote_status: str,
+) -> None:
+    class Response:
+        def __init__(self) -> None:
+            self.status_code = status_code
+
+        @staticmethod
+        def raise_for_status() -> None:
+            raise AssertionError("200 and 404 must not raise")
+
+    bridge = object.__new__(HusshVaultBridge)
+    bridge.http = SimpleNamespace(delete=lambda *_args, **_kwargs: Response())
+    bridge.identity = SimpleNamespace(
+        read_state=lambda: SimpleNamespace(
+            api_base="https://api.example.test",
+            device_id="device-test",
+        ),
+        auth_headers=lambda: {"Authorization": "Bearer redacted"},
+        disconnect=lambda *, remove_device_key: None,
+    )
+    bridge.remove_local_vault = lambda: None  # type: ignore[method-assign]
+
+    result = bridge.revoke_and_disconnect()
+
+    assert result["remote_revocation"] == expected_remote_status
+    assert result["local_disconnected"] is True
+
+
+def test_identity_disconnect_cancels_pending_browser_authorization(tmp_path: Path) -> None:
+    class Keychain:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete(self, account: str) -> None:
+            self.deleted.append(account)
+
+    class PendingServer:
+        closed = False
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    keychain = Keychain()
+    pending_server = PendingServer()
+    identity = HusshIdentityClient(
+        profile_home=tmp_path / "profile",
+        keychain=keychain,  # type: ignore[arg-type]
+    )
+    identity._pending = {"server": pending_server, "status": "waiting"}
+
+    identity.disconnect(remove_device_key=True)
+
+    assert identity._pending is None
+    assert pending_server.closed is True
+    assert any(item.endswith(":firebase-refresh-token") for item in keychain.deleted)
+    assert any(item.endswith(":device-signing-key") for item in keychain.deleted)
+
+
 def test_authorization_discards_ephemeral_handoff_key_after_exchange(
     tmp_path: Path,
 ) -> None:
@@ -380,13 +485,14 @@ def test_authorization_discards_ephemeral_handoff_key_after_exchange(
         http=FakeHttp(),  # type: ignore[arg-type]
     )
     callback_values: list[bytes | None] = []
+    server = FakeServer()
     client._pending = {
+        "server": server,
         "status": "waiting",
         "error": None,
         "on_connected": callback_values.append,
         "vault_handoff_private_key": x25519.X25519PrivateKey.generate(),
     }
-    server = FakeServer()
 
     client._serve_authorization(server, "v" * 43)  # type: ignore[arg-type]
 
@@ -394,6 +500,53 @@ def test_authorization_discards_ephemeral_handoff_key_after_exchange(
     assert client._pending["status"] == "connected"
     assert "vault_handoff_private_key" not in client._pending
     assert server.closed is True
+
+
+@pytest.mark.parametrize(
+    ("completion_status", "expected_status", "expected_text"),
+    [
+        ("connected", 200, "connected to Hermes"),
+        ("error", 502, "could not complete"),
+    ],
+)
+def test_loopback_callback_waits_for_persisted_connection_outcome(
+    completion_status: str,
+    expected_status: int,
+    expected_text: str,
+) -> None:
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LoopbackHandler)
+    server.expected_state = "expected-state"  # type: ignore[attr-defined]
+    server.result = None  # type: ignore[attr-defined]
+    server.callback_event = threading.Event()  # type: ignore[attr-defined]
+    server.completion_event = threading.Event()  # type: ignore[attr-defined]
+    server.completion_status = "pending"  # type: ignore[attr-defined]
+    serving = threading.Thread(target=server.handle_request, daemon=True)
+    serving.start()
+    response: dict[str, object] = {}
+
+    def request_callback() -> None:
+        result = httpx.get(
+            f"http://127.0.0.1:{server.server_port}/callback",
+            params={"state": "expected-state", "code": "one-time-code"},
+            timeout=5,
+        )
+        response.update(status=result.status_code, text=result.text)
+
+    requesting = threading.Thread(target=request_callback, daemon=True)
+    requesting.start()
+    deadline = time.monotonic() + 2
+    while server.result is None and time.monotonic() < deadline:  # type: ignore[attr-defined]
+        time.sleep(0.01)
+    server.completion_status = completion_status  # type: ignore[attr-defined]
+    server.completion_event.set()  # type: ignore[attr-defined]
+    requesting.join(timeout=5)
+    serving.join(timeout=5)
+    server.server_close()
+
+    assert response["status"] == expected_status
+    assert expected_text in str(response["text"])
 
 
 def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(

@@ -18,6 +18,78 @@ from tools import async_delegation as ad
 from tui_gateway import server
 
 
+class _FakeHusshOneLifecycleBridge:
+    def __init__(self, *, connected: bool = True) -> None:
+        self.connected = connected
+        self.revocations = 0
+
+    def identity_status(self) -> dict:
+        return {
+            "connected": self.connected,
+            "account_email": "owner@example.test" if self.connected else None,
+            "onboarding_status": "idle",
+        }
+
+    def vault_status(self) -> dict:
+        return {"enrolled": True, "unlocked": True}
+
+    def revoke_and_disconnect(self) -> dict:
+        self.revocations += 1
+        self.connected = False
+        return {
+            "connected": False,
+            "local_disconnected": True,
+            "remote_revocation": "revoked",
+        }
+
+
+def test_hussh_one_disconnect_requires_explicit_second_command(monkeypatch):
+    bridge = _FakeHusshOneLifecycleBridge()
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: bridge)
+
+    preview = server._hussh_one_setup_output("disconnect")
+
+    assert "disconnect confirm" in preview
+    assert "remote encrypted vault" in preview
+    assert bridge.revocations == 0
+
+
+def test_hussh_one_confirmed_disconnect_revokes_then_offers_reconnect(monkeypatch):
+    bridge = _FakeHusshOneLifecycleBridge()
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: bridge)
+
+    result = server._hussh_one_setup_output("disconnect   confirm")
+
+    assert bridge.revocations == 1
+    assert "Use /hussh-one connect to choose an account" in result
+
+
+def test_hussh_one_confirmed_disconnect_is_idempotent_when_not_connected(monkeypatch):
+    bridge = _FakeHusshOneLifecycleBridge(connected=False)
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: bridge)
+
+    result = server._hussh_one_setup_output("disconnect confirm")
+
+    assert result == "This Hermes profile is not connected to Hussh One."
+    assert bridge.revocations == 0
+
+
+def test_hussh_one_confirmed_disconnect_reports_unverified_remote_revoke(monkeypatch):
+    bridge = _FakeHusshOneLifecycleBridge()
+    bridge.revoke_and_disconnect = lambda: {
+        "connected": False,
+        "local_disconnected": True,
+        "remote_revocation": "unverified",
+    }
+    monkeypatch.setattr(server, "_hussh_one_bridge", lambda: bridge)
+
+    result = server._hussh_one_setup_output("disconnect confirm")
+
+    assert "disconnected locally" in result
+    assert "could not be verified" in result
+    assert "/hussh-one connect" in result
+
+
 @pytest.fixture(autouse=True)
 def _neuter_agent_prewarm_timer(request, monkeypatch):
     """Stub the deferred agent pre-warm timer for every test in this module.
