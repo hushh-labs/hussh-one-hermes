@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isSelfChatJid, shouldRejectNonOwnerSelfChatEvent } from './self_chat_gate.js';
+import { isSelfChatJid, shouldRejectNonOwnerSelfChatEvent, shouldRejectFromMeEvent } from './self_chat_gate.js';
 
 test('accepts an incoming self-chat addressed to the account phone JID', () => {
   assert.equal(isSelfChatJid({
@@ -37,4 +37,31 @@ test('self-chat rejection preserves capsule-specific entry points', () => {
   assert.equal(shouldRejectNonOwnerSelfChatEvent({
     mode: 'self-chat', isAllowlisted: false, isSelfChat: false, isCapsuleGroup: true,
   }), false);
+});
+
+test('fromMe in self-chat mode strictly rejects 1:1 DMs with other people and unallowlisted groups', () => {
+  // 1:1 DM with another person: MUST BE REJECTED
+  assert.equal(shouldRejectFromMeEvent({
+    mode: 'self-chat', isGroup: false, isAllowlisted: false, isSelfChat: false,
+  }), true);
+
+  // Self-chat (Note to Self): MUST BE ACCEPTED
+  assert.equal(shouldRejectFromMeEvent({
+    mode: 'self-chat', isGroup: false, isAllowlisted: false, isSelfChat: true,
+  }), false);
+
+  // Allowlisted group: MUST BE ACCEPTED
+  assert.equal(shouldRejectFromMeEvent({
+    mode: 'self-chat', isGroup: true, isAllowlisted: true, isSelfChat: false,
+  }), false);
+
+  // Unallowlisted group: MUST BE REJECTED
+  assert.equal(shouldRejectFromMeEvent({
+    mode: 'self-chat', isGroup: true, isAllowlisted: false, isSelfChat: false,
+  }), true);
+
+  // Bot mode: ALL fromMe rejected (treated as echo-backs)
+  assert.equal(shouldRejectFromMeEvent({
+    mode: 'bot', isGroup: false, isAllowlisted: false, isSelfChat: false,
+  }), true);
 });

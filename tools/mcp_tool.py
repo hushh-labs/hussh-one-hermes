@@ -5213,6 +5213,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     res_text = getattr(getattr(block, "resource", None), "text", None)
                     if res_text:
                         error_text += str(res_text)
+                safe_consent_error = _safe_hussh_consent_connector_error(
+                    server_name,
+                    error_text,
+                )
+                if safe_consent_error is not None:
+                    return safe_consent_error
                 return tool_error(_sanitize_error(
                     error_text or "MCP tool returned an error"
                 ))

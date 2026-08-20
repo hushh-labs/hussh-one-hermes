@@ -409,6 +409,7 @@ configure_hussh_consent_connector() {
   # transport boundary owns the local X25519 identity and decrypts approved
   # envelopes into one-time leases; config contains neither token nor key.
   run_cmd "$hermes" mcp remove hushh_consent >/dev/null 2>&1 || true
+  run_cmd "$hermes" mcp remove hushh-consent >/dev/null 2>&1 || true
   run_cmd "$hermes" config set --force \
     mcp_servers.hushh_consent.url "https://api.uat.hushh.ai/mcp/"
   run_cmd "$hermes" config set --force \
@@ -417,6 +418,7 @@ configure_hussh_consent_connector() {
 
   if command -v codex >/dev/null 2>&1; then
     run_cmd codex mcp remove hushh_consent >/dev/null 2>&1 || true
+    run_cmd codex mcp remove hushh-consent >/dev/null 2>&1 || true
     run_cmd codex mcp add hushh_consent \
       --url "https://api.uat.hushh.ai/mcp/" \
       --bearer-token-env-var HUSHH_CONSENT_MCP_TOKEN
