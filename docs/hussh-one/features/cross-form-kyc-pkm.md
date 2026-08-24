@@ -82,6 +82,7 @@ Full technical details and API payloads are documented in `skills/mcp/hussh-one-
 | SUI / State Tax | `tax_requirements` | N/A | N/A | N/A |
 
 ## Authority Boundaries & Privacy
+- **Mandatory Storage Confirmation:** Whenever storing, populating, or mutating PKM records from external channels (Gmail, Cloud Storage, or APIs), the agent MUST provide a structured dry-run breakdown detailing the exact target domains, scope paths, masked PII values, source provenance, and downstream form mappings.
 - **No Unapproved Submissions:** All automated writes require explicit interactive approval.
 - **Local Decryption Only:** PKM attributes are decrypted in-process on the local trusted device. Raw keys and plaintext secrets never touch external logging infrastructure.
 - **Audit Logging:** Every generated payload and submission receipt is recorded with cryptographic timestamps in the local profile.

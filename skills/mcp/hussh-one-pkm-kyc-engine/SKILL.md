@@ -52,6 +52,13 @@ Run the deterministic mapper against local or decrypted PKM snapshots using `.ve
 5. **Execute Under Consent:**
    Upon user confirmation, submit the payload to the destination API or complete the form fields. Log the completed transaction in the local audit log.
 
+## Mandatory PKM Storage & Dry-Run Confirmation Mandate
+
+Whenever populating or mutating PKM records from external sources (such as Gmail, OneDrive, bank portals):
+1. **Confirmation Breakdown:** The agent MUST present a structured domain breakdown showing exact fields, masked credentials, source provenance, and target KYC payload mapping before committing.
+2. **Interactive Confirmation:** All external writes or local vault commits require explicit owner confirmation.
+3. **Auditability:** Every mapped payload carries timestamps and origin references for full traceability.
+
 ## Pitfalls
 - **Unchecked SSN/EIN formatting:** APIs reject dashes in FEIN and SSN. Always pass values through `normalize_digits()`.
 - **Missing SUI tax rates:** State unemployment registrations require the specific active employer contribution rate, not just the account ID.
