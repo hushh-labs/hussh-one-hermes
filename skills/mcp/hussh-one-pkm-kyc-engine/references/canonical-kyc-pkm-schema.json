@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HusshOnePkmKycDomains",
+  "description": "Canonical PKM domain schema definitions for identity, legal_entity, financial, and tax_record domains in Hussh One.",
+  "type": "object",
+  "properties": {
+    "identity": {
+      "type": "object",
+      "required": ["profile"],
+      "properties": {
+        "profile": {
+          "type": "object",
+          "required": ["first_name", "last_name", "date_of_birth", "ssn", "residential_address"],
+          "properties": {
+            "first_name": { "type": "string" },
+            "middle_name": { "type": "string" },
+            "last_name": { "type": "string" },
+            "suffix": { "type": "string" },
+            "date_of_birth": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+            "ssn": { "type": "string", "pattern": "^\\d{9}$" },
+            "citizenship": { "type": "string" },
+            "phone": { "type": "string" },
+            "email": { "type": "string", "format": "email" },
+            "residential_address": {
+              "type": "object",
+              "required": ["street_1", "city", "state", "zip"],
+              "properties": {
+                "street_1": { "type": "string" },
+                "street_2": { "type": "string" },
+                "city": { "type": "string" },
+                "state": { "type": "string" },
+                "zip": { "type": "string" },
+                "country": { "type": "string", "default": "US" }
+              }
+            }
+          }
+        },
+        "verified_credentials": {
+          "type": "object",
+          "properties": {
+            "passport": {
+              "type": "object",
+              "properties": {
+                "number": { "type": "string" },
+                "issuing_country": { "type": "string" },
+                "expiration_date": { "type": "string" },
+                "source_document_ref": { "type": "string" }
+              }
+            },
+            "drivers_license": {
+              "type": "object",
+              "properties": {
+                "number": { "type": "string" },
+                "issuing_state": { "type": "string" },
+                "expiration_date": { "type": "string" },
+                "source_document_ref": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "legal_entity": {
+      "type": "object",
+      "required": ["entity"],
+      "properties": {
+        "entity": {
+          "type": "object",
+          "required": ["legal_name", "entity_type", "formation_state", "fein", "registered_address"],
+          "properties": {
+            "legal_name": { "type": "string" },
+            "trade_name_dba": { "type": "string" },
+            "entity_type": { "type": "string", "enum": ["LLC", "C_CORP", "S_CORP", "PARTNERSHIP", "SOLE_PROPRIETORSHIP", "NON_PROFIT"] },
+            "tax_classification": { "type": "string" },
+            "formation_state": { "type": "string" },
+            "formation_date": { "type": "string" },
+            "fein": { "type": "string", "pattern": "^\\d{9}$" },
+            "naics_code": { "type": "string" },
+            "sic_code": { "type": "string" },
+            "industry_description": { "type": "string" },
+            "registered_address": {
+              "type": "object",
+              "required": ["street_1", "city", "state", "zip"],
+              "properties": {
+                "street_1": { "type": "string" },
+                "street_2": { "type": "string" },
+                "city": { "type": "string" },
+                "state": { "type": "string" },
+                "zip": { "type": "string" }
+              }
+            },
+            "principal_work_location": {
+              "type": "object",
+              "properties": {
+                "street_1": { "type": "string" },
+                "street_2": { "type": "string" },
+                "city": { "type": "string" },
+                "state": { "type": "string" },
+                "zip": { "type": "string" }
+              }
+            },
+            "website": { "type": "string" },
+            "corporate_phone": { "type": "string" }
+          }
+        },
+        "beneficial_ownership": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "ownership_percentage"],
+            "properties": {
+              "identity_ref": { "type": "string" },
+              "title": { "type": "string" },
+              "ownership_percentage": { "type": "number" },
+              "is_control_person": { "type": "boolean" },
+              "is_signatory": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "financial": {
+      "type": "object",
+      "required": ["operating_bank_account"],
+      "properties": {
+        "operating_bank_account": {
+          "type": "object",
+          "required": ["bank_name", "routing_number", "account_number", "account_type"],
+          "properties": {
+            "bank_name": { "type": "string" },
+            "account_holder_name": { "type": "string" },
+            "account_type": { "type": "string", "enum": ["checking", "savings"] },
+            "routing_number": { "type": "string", "pattern": "^\\d{9}$" },
+            "account_number": { "type": "string" },
+            "ach_sweep_authorized": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "tax_record": {
+      "type": "object",
+      "properties": {
+        "federal": {
+          "type": "object",
+          "properties": {
+            "ein": { "type": "string" },
+            "filing_form": { "type": "string", "enum": ["941", "944", "943"] },
+            "tax_payer_type": { "type": "string" },
+            "form_8655_signed": { "type": "boolean" }
+          }
+        },
+        "state_accounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "withholding_account_id": { "type": "string" },
+              "unemployment_account_id": { "type": "string" },
+              "sui_tax_rate": { "type": "number" },
+              "deposit_schedule": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

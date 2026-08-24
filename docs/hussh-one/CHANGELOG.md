@@ -14,6 +14,16 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## 📋 Cross-Form KYC/KYB & Onboarding Knowledge Base
+
+| Date | Commit | What shipped |
+|------|--------|---------------|
+| 2026-08-23 | `HEAD` | **Cross-form KYC/KYB knowledge base and deterministic PKM onboarding engine.** Documented the complete Gusto employer onboarding specification, IRS/FinCEN/Nacha document matrices, and canonical PKM schemas across `identity`, `legal_entity`, `financial`, and `tax_record` domains. Added the `hussh-one-pkm-kyc-engine` skill, cross-form mapping matrix (Gusto, Stripe, Mercury, FinCEN BOIR), deterministic payload mapper, dry-run consent preview, and hermetic pytest suite. |
+
+📄 Feature page: [cross-form-kyc-pkm.md](./features/cross-form-kyc-pkm.md)
+
+---
+
 ## 📚 Source Library Steward
 
 | Date | Commit | What shipped |

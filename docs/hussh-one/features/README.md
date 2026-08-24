@@ -29,6 +29,7 @@ template so the catalog stays modular, deterministic, and advertisable.
 | In-session model popover sync (TUI) | TUI | ✅ Shipped | [model-switching.md](./model-switching.md) |
 | Trusted-device PKM bridge | macOS/Desktop/MCP | 🧪 UAT | [trusted-device-pkm.md](./trusted-device-pkm.md) |
 | Source Library Steward | Local Hermes | 🧪 UAT | [source-library.md](./source-library.md) |
+| Cross-Form KYC/KYB & Onboarding | Local PKM / MCP | 🧪 UAT | [cross-form-kyc-pkm.md](./cross-form-kyc-pkm.md) |
 
 ## Planned features
 See the [roadmap](../roadmap/README.md).
