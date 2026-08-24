@@ -100,12 +100,44 @@ To ensure that other developers and automated agents (such as Salesforce or Mule
 *   **Authentication:** GCP OAuth 2.0 Bearer tokens generated dynamically via **Application Default Credentials (ADC)** or GCP Service Account JSON keys.
 *   **Best For:** Enterprise-grade security, production deployment pipelines, corporate auditing, VPC network constraints, and robust multi-agent platforms.
 
-### 3. Local / Offline Mode (Air-Gapped Edge Compute)
-When running in an air-gapped local environment (`DB_OFFLINE=1` or local-first configuration), the workload router replaces online APIs with highly optimized local open-weights models running over **Ollama** or a local **LM Studio** server:
-*   **General / Light Tasks (Low Complexity):** **`Gemma 4 26B`** (e.g., `gemma-4-26b-a4b-it`). Acting as the fast local baseline, it provides exceptional natural language capabilities and fast turnaround for non-technical queries.
-*   **Coding / Complex Tasks (High Complexity):** **`Qwen 3.6 35B`** (e.g., `qwen3.6-35b-instruct` / `qwen2.5-coder:32b`). Tunneling as the local "Claude Opus," it provides state-of-the-art code generation, precise file editing, system terminal capabilities, and robust local tool execution.
+### 3. Local / Offline Mode (LM Studio)
 
-*Note: By setting `GOOGLE_GENAI_USE_VERTEXAI=true` and configuring your active project ID, our system's built-in adapters dynamically map all internal requests to the Vertex AI enterprise API, ensuring other downstream agents can boot and authenticate seamlessly.*
+LM Studio is a first-class Hermes provider. It is an **opt-in per-profile**
+choice: Hussh One never assumes that another user's `localhost:1234` exists,
+and re-running bootstrap preserves an explicitly selected provider and model.
+
+Start LM Studio's local server, then use the native model picker:
+
+```bash
+hermes model
+# Select "LM Studio"
+# Keep http://127.0.0.1:1234/v1 (or enter the profile's remote endpoint)
+# Select one of the live-discovered chat models
+```
+
+The picker queries LM Studio's native `/api/v1/models` endpoint, so the
+dropdown always reflects the models actually available to that profile. No
+static Hussh model list or provider-specific core tool is required. Use a
+tool-trained model for agent work; Qwen, Llama, Mistral, and Hermes-family
+models generally provide the most reliable tool calling.
+
+For resilience, configure a credentialed cloud provider as a normal Hermes
+fallback rather than making a local endpoint global to every profile:
+
+```yaml
+model:
+  provider: lmstudio
+  default: qwen/qwen3.6-27b # replace with a model returned by your LM Studio server
+  base_url: http://127.0.0.1:1234/v1
+
+fallback_providers:
+  - provider: gemini
+    model: gemini-3.6-flash
+```
+
+`LM_API_KEY` is needed only when the LM Studio server enables bearer
+authentication. Keep it in the active profile's mode-`0600` `.env`; all model
+selection, endpoints, and fallback behavior belong in `config.yaml`.
 
 ---
 

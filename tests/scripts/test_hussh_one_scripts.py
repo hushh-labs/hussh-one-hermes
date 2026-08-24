@@ -119,6 +119,10 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "gcloud auth application-default print-access-token >/dev/null" in text
     assert "safe_suffix" in text
     assert "WhatsApp pairing is per-machine" in text
+    assert "config get model.provider" in text
+    assert "config get model.default" in text
+    assert "Preserving configured model provider" in text
+    assert "Gemini is the first-install default, not a bootstrap mandate" in text
     assert "model.provider gemini" in text
     assert "model.default gemini-3.6-flash" in text
     assert "configure_hussh_persona" in text
@@ -129,6 +133,23 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "web.search_backend ddgs" in text
     assert "hussh_one.source_library.enabled true" in text
     assert "WHATSAPP_REPLY_PREFIX" not in text
+
+
+def test_hussh_doctor_accepts_native_lmstudio_provider_choice():
+    text = (ROOT / "scripts" / "hussh-one-doctor.sh").read_text(encoding="utf-8")
+
+    assert 'provider not in ("gemini", "lmstudio")' in text
+    assert 'provider == "lmstudio" and not default_model' in text
+    assert "select a loaded LM Studio model with 'hermes model'" in text
+
+
+def test_hussh_local_inference_docs_use_live_discovery_and_profile_opt_in():
+    text = (ROOT / "docs" / "hussh-one-deployment.md").read_text(encoding="utf-8")
+
+    assert "opt-in per-profile" in text
+    assert "`/api/v1/models`" in text
+    assert "fallback_providers:" in text
+    assert "GOOGLE_GENAI_USE_VERTEXAI=true" not in text
 
 
 def test_bootstrap_packages_one_time_consent_credential_provisioning():

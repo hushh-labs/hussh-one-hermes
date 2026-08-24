@@ -53,8 +53,8 @@ configuration_schema_mutations:
   ~/.hermes/config.yaml:
     display.skin: "hussh-one"
     dashboard.theme: "hussh-one"
-    model.provider: "gemini"
-    model.default: "gemini-3.6-flash"
+    model.provider: "gemini" # first-install default; an explicit provider is preserved by bootstrap
+    model.default: "gemini-3.6-flash" # or a live-discovered LM Studio model for that profile
     cron.wrap_response: false
     whatsapp.require_mention_on_replies: true
     display.tool_progress: false
