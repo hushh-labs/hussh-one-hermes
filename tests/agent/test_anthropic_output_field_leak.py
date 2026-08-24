@@ -1,4 +1,16 @@
-"""Regression coverage for replaying Anthropic SDK response blocks."""
+"""Regression coverage for replaying Anthropic SDK response blocks.
+
+Reproduces HTTP 400 `messages.N.content.M.text.parsed_output: Extra inputs are
+not permitted`. Anthropic SDK response blocks carry output-only attributes
+(text blocks: `parsed_output`, `citations=None`; tool_use blocks: `caller`)
+that the Messages *input* schema forbids. normalize_response captured blocks
+verbatim via _to_plain_data and replayed them as input → 400.
+
+Fix: whitelist input-permitted fields per block type at three points —
+normalize_response capture, _sanitize_replay_block (ordered-blocks replay), and
+_convert_content_part_to_anthropic (content-list replay).
+"""
+import pytest
 
 from agent.anthropic_adapter import (
     _convert_assistant_message,

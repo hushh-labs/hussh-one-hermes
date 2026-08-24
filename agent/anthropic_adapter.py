@@ -27,6 +27,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 from agent.secret_scope import get_secret as _get_secret
 
+try:
+    import hermes_cli as _hermes_cli
+
+    _HERMES_VERSION = str(_hermes_cli.__version__)
+except Exception:
+    _HERMES_VERSION = "0.0.0"
+
 
 def _getenv(name: str, default: str = "") -> str:
     """Profile-scoped replacement for os.getenv on credential reads.
@@ -103,6 +110,17 @@ _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
 _NO_XHIGH_CLAUDE_SUBSTRINGS = (
     "claude-opus-4-6", "claude-opus-4.6",
     "claude-sonnet-4-6", "claude-sonnet-4.6",
+)
+
+# Adaptive Claude families that REJECT a thinking disable — thinking is
+# mandatory and ``thinking: {"type": "disabled"}`` answers HTTP 400. The Portal
+# catalog flags the same families with ``reasoning.mandatory``.
+#
+# Unlike the two lists above, the failure here is asymmetric: a missing entry
+# 400s the turn, while a spurious one only leaves thinking on. When in doubt,
+# add the family.
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = (
+    "claude-fable",
 )
 
 
@@ -266,6 +284,32 @@ def _supports_xhigh_effort(model: str) -> bool:
     if not _supports_adaptive_thinking(model):
         return False
     return not any(v in model.lower() for v in _NO_XHIGH_CLAUDE_SUBSTRINGS)
+
+
+def _accepts_thinking_disable(model: str) -> bool:
+    """Return True when *model* accepts an explicit thinking disable.
+
+    Adaptive Claude models default to thinking ON, so "thinking off" only
+    takes effect if we actively send ``thinking: {"type": "disabled"}`` —
+    omitting the parameter leaves the upstream default in place and the model
+    thinks anyway.  Reasoning-mandatory families reject the disable outright
+    with an HTTP 400, so they keep the omit-everything behavior.
+
+    Legacy manual-thinking Claude models are excluded because they need no
+    disable: thinking is opt-in there via ``budget_tokens``, so not sending
+    the block already means off.
+
+    Scoped to Claude deliberately.  Kimi/Moonshot endpoints also speak the
+    adaptive contract, but their documented disable behavior is omission
+    (#13848) and they are not part of this bug; sending them a new parameter
+    on the strength of Claude's contract would be a guess.
+    """
+    if not _is_claude_model(model):
+        return False
+    if not _supports_adaptive_thinking(model):
+        return False
+    m = model.lower()
+    return not any(v in m for v in _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
 
 
 def _forbids_sampling_params(model: str) -> bool:
@@ -440,6 +484,11 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_opencode_endpoint(base_url: str | None) -> bool:
+    """Return True for OpenCode's Zen/Go relay (opencode.ai)."""
+    return base_url_host_matches(base_url or "", "opencode.ai")
+
+
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
 # - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
@@ -586,6 +635,10 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
         # paths don't trigger Bearer auth.
         or base_url_host_matches(normalized, "palantirfoundry.com")
+        # CommandCode's /provider/v1/messages endpoint uses Bearer auth,
+        # not Anthropic's native x-api-key header. Hostname match for the
+        # same reason as above.
+        or base_url_host_matches(normalized, "api.commandcode.ai")
     )
 
 
@@ -830,12 +883,18 @@ def build_anthropic_client(
     )
 
     if _is_kimi_coding_endpoint(base_url):
-        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
-        # to be recognized as a valid Coding Agent. Without it, returns 403.
-        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        # Kimi's /coding endpoint requires a non-empty User-Agent to be
+        # recognized as a valid Coding Agent. Originally we sent
+        # ``claude-code/0.1.0`` (the minimum that avoided a 403), but the Kimi
+        # team asked us to identify ourselves properly so they can attribute
+        # traffic correctly. Send the same attribution header set we send to
+        # OpenRouter, Vercel AI Gateway, and Fireworks:
+        # HTTP-Referer + X-Title + HermesAgent User-Agent.
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
-            "User-Agent": "claude-code/0.1.0",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+            "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
     elif _requires_bearer_auth(normalized_base_url):
@@ -872,6 +931,18 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if _is_opencode_endpoint(base_url):
+        # OpenCode identifies clients by request headers, like OpenRouter does.
+        # The OpenAI-wire paths pick these up from profile.default_headers
+        # (plugins/model-providers/opencode-zen), but the Anthropic Messages
+        # route builds its client right here and never sees the profile. Merge
+        # the same set on top of whatever auth branch ran above.
+        headers = dict(kwargs.get("default_headers") or {})
+        headers.setdefault("HTTP-Referer", "https://hermes-agent.nousresearch.com")
+        headers.setdefault("X-Title", "Hermes Agent")
+        headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
+        kwargs["default_headers"] = headers
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
@@ -1145,45 +1216,66 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from ~/.claude/.credentials.json."""
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    if not cred_path.exists():
+        return None
+    try:
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+        oauth_data = data.get("claudeAiOauth")
+        if oauth_data and isinstance(oauth_data, dict):
+            access_token = oauth_data.get("accessToken", "")
+            if access_token:
+                return {
+                    "accessToken": access_token,
+                    "refreshToken": oauth_data.get("refreshToken", ""),
+                    "expiresAt": oauth_data.get("expiresAt", 0),
+                    "source": "claude_code_credentials_file",
+                }
+    except (json.JSONDecodeError, OSError, IOError) as e:
+        logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+    return None
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials.
 
-    Checks two sources:
-      1. ~/.claude/.credentials.json file, when present
-      2. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
+    Reads from two possible sources and reconciles them:
+      1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
+      2. ~/.claude/.credentials.json file
+
+    Selection rules when both are present:
+      - If exactly one is non-expired, prefer that one. (Handles the case
+        where Claude Code refreshes one source but not the other — observed
+        in the wild on Claude Code 2.1.x.)
+      - Otherwise, prefer the source with the later ``expiresAt`` so that
+        any subsequent refresh uses the most recent ``refreshToken``.
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
     and native direct Anthropic provider usage should follow that path rather
     than auto-detecting Claude's first-party managed key.
 
-    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    Returns dict with {accessToken, refreshToken?, expiresAt?, source} or None.
     """
-    # Prefer an explicit credential file when present. This keeps test and
-    # profile-isolated homes from accidentally reading the operator's global
-    # macOS Keychain entry.
-    cred_path = Path.home() / ".claude" / ".credentials.json"
-    if cred_path.exists():
-        try:
-            data = json.loads(cred_path.read_text(encoding="utf-8"))
-            oauth_data = data.get("claudeAiOauth")
-            if oauth_data and isinstance(oauth_data, dict):
-                access_token = oauth_data.get("accessToken", "")
-                if access_token:
-                    return {
-                        "accessToken": access_token,
-                        "refreshToken": oauth_data.get("refreshToken", ""),
-                        "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
-                    }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
-
     kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
-        return kc_creds
+    file_creds = _read_claude_code_credentials_from_file()
 
-    return None
+    if kc_creds and file_creds:
+        kc_valid = is_claude_code_token_valid(kc_creds)
+        file_valid = is_claude_code_token_valid(file_creds)
+        if kc_valid and not file_valid:
+            return kc_creds
+        if file_valid and not kc_valid:
+            return file_creds
+        # Both valid or both expired: prefer the later expiresAt so the
+        # downstream refresh path uses the freshest refresh_token.
+        kc_exp = kc_creds.get("expiresAt", 0) or 0
+        file_exp = file_creds.get("expiresAt", 0) or 0
+        return kc_creds if kc_exp >= file_exp else file_creds
+
+    return kc_creds or file_creds
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
@@ -1266,8 +1358,40 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
 
 
 def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
-    """Attempt to refresh an expired Claude Code OAuth token."""
-    refresh_token = creds.get("refreshToken", "")
+    """Attempt to refresh an expired Claude Code OAuth token.
+
+    Claude Code's OAuth refresh tokens are single-use: a successful refresh
+    rotates the pair and invalidates the old refresh token. Claude Code itself
+    also refreshes on its own schedule (IDE/CLI activity), so by the time
+    Hermes notices an expired token, Claude Code may have already rotated it.
+    POSTing our now-stale refresh token in that window races Claude Code and
+    fails with ``invalid_grant``.
+
+    So before refreshing, re-read the live credential sources. If Claude Code
+    has already produced a valid token, adopt it and skip the POST entirely.
+    Only fall back to refreshing ourselves when no fresh credential is found.
+    """
+    # Claude Code may have already refreshed — adopt its token rather than
+    # racing it with our (possibly already-rotated) refresh token. Only adopt
+    # when the live re-read produced a DIFFERENT token with a real future
+    # expiry: re-adopting the same credential we were just handed would be a
+    # no-op, and a 0/absent ``expiresAt`` means "managed key / unknown expiry"
+    # (see is_claude_code_token_valid) which must NOT be treated as a fresh
+    # refresh here.
+    current = read_claude_code_credentials()
+    if current:
+        current_token = current.get("accessToken", "")
+        current_exp = current.get("expiresAt", 0) or 0
+        if (
+            current_token
+            and current_token != creds.get("accessToken", "")
+            and current_exp > 0
+            and is_claude_code_token_valid(current)
+        ):
+            logger.debug("Adopted Claude Code's already-refreshed OAuth token")
+            return current_token
+
+    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
     if not refresh_token:
         logger.debug("No refresh token available — cannot refresh")
         return None
@@ -1936,7 +2060,16 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
 
     if hasattr(value, "model_dump"):
         _path.add(obj_id)
-        result = _to_plain_data(value.model_dump(), _depth=_depth + 1, _path=_path)
+        try:
+            # warnings=False: content blocks from the streaming accumulator
+            # (ParsedTextBlock et al.) trip pydantic's serializer-mismatch
+            # UserWarning against the generic Message union; the dump itself
+            # is correct, and the warning leaks to the user's terminal.
+            dumped = value.model_dump(warnings=False)
+        except TypeError:
+            # Duck-typed model_dump without pydantic's signature.
+            dumped = value.model_dump()
+        result = _to_plain_data(dumped, _depth=_depth + 1, _path=_path)
         _path.discard(obj_id)
         return result
     if isinstance(value, dict):
@@ -2814,7 +2947,26 @@ def convert_messages_to_anthropic(
                     p.get("cache_control") for p in content if isinstance(p, dict)
                 )
                 if has_cache:
-                    system = [p for p in content if isinstance(p, dict)]
+                    # Copy blocks before coercing so the caller's message
+                    # dicts are never mutated, then replace blank/whitespace
+                    # text with the shared non-whitespace placeholder —
+                    # Anthropic rejects a blank system text block with the
+                    # same HTTP 400 as message blocks ("text content blocks
+                    # must contain non-whitespace text"), and a blank block
+                    # carrying a cache_control breakpoint cannot simply be
+                    # dropped (#70909).
+                    system = []
+                    for p in content:
+                        if not isinstance(p, dict):
+                            continue
+                        if (
+                            p.get("type") == "text"
+                            and isinstance(p.get("text"), str)
+                            and not p["text"].strip()
+                        ):
+                            p = dict(p)
+                            p["text"] = _EMPTY_TEXT_PLACEHOLDER
+                        system.append(p)
                 else:
                     system = "\n".join(
                         p["text"] for p in content if p.get("type") == "text"
@@ -3009,7 +3161,15 @@ def build_anthropic_kwargs(
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is False:
+            # "Thinking off". Adaptive models think by DEFAULT, so omitting the
+            # parameter is not a disable — it silently leaves thinking on and
+            # the user keeps paying for it. Send the disable explicitly.
+            # Mandatory-thinking models reject it with a 400, so they keep the
+            # omission: a silently-ignored disable beats a dead turn.
+            if _accepts_thinking_disable(model):
+                kwargs["thinking"] = {"type": "disabled"}
+        elif "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

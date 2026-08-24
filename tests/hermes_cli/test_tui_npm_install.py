@@ -144,7 +144,8 @@ def test_make_tui_argv_uses_lock_preserving_install_without_workspace_for_standa
     tui_dir itself.  npm install --workspace ui-tui would fail in that case
     because npm cannot find a workspace named "ui-tui" inside ui-tui/.
     The fix omits --workspace and runs plain npm install from tui_dir.
-    See #42973.
+    See #42973. The npm child must also ignore an inherited esbuild binary
+    override: a version mismatch makes esbuild's postinstall abort (#87405).
     """
     tui_dir = tmp_path / "ui-tui"
     tui_dir.mkdir()
@@ -156,6 +157,7 @@ def test_make_tui_argv_uses_lock_preserving_install_without_workspace_for_standa
 
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("ESBUILD_BINARY_PATH", "/opt/esbuild-0.28.2")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls: list[tuple[str, Path, tuple[str, ...]]] = []
@@ -165,13 +167,13 @@ def test_make_tui_argv_uses_lock_preserving_install_without_workspace_for_standa
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(main_mod, "_run_npm_install_deterministic", fake_install)
-    monkeypatch.setattr(
-        main_mod.subprocess,
-        "run",
-        lambda *_args, **_kwargs: types.SimpleNamespace(
-            returncode=0, stdout="", stderr=""
-        ),
-    )
+    build_calls: list[tuple[tuple, dict]] = []
+
+    def fake_run(*args, **kwargs):
+        build_calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
 
     main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
@@ -183,3 +185,9 @@ def test_make_tui_argv_uses_lock_preserving_install_without_workspace_for_standa
     assert npm == "/bin/npm"
     # cwd must be tui_dir (standalone), not parent
     assert cwd == tui_dir
+
+    # Non-dev flow always runs the esbuild step after install; its env must
+    # also ignore an inherited esbuild binary override (#87405), the same
+    # scrub _npm_lifecycle_env applies to the install step above.
+    assert build_calls[0][0][0][1:] == ["run", "build"]
+    assert "ESBUILD_BINARY_PATH" not in build_calls[0][1]["env"]

@@ -11,7 +11,7 @@ spdx_expression = "Apache-2.0 AND MIT"
 # by this distribution update. A source path unchanged from that revision is
 # MIT; a path modified from it is the combined expression below; a Hussh-added
 # source path is Apache-2.0.
-upstream_base_commit = "e0e15436ee74ab6e90db138e9ca2a35c57b3dc08"
+upstream_base_commit = "91e867631e9d2eb9fbd69edd4459475d38070979"
 upstream_retained = "MIT"
 upstream_modified = "MIT AND Apache-2.0"
 hussh_added = "Apache-2.0"
@@ -40,4 +40,4 @@ required_files = ["LICENSE"]
 [[nested_component]]
 path = "skills/productivity/powerpoint"
 license = "LicenseRef-Anthropic-Commercial-Terms"
-required_files = ["LICENSE.txt"]
+required_files = ["LICENSE"]
