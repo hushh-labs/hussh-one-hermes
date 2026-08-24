@@ -233,3 +233,30 @@ def test_generate_dry_run_preview(sample_pkm_data):
     boir_preview = generate_dry_run_preview("fincen", sample_pkm_data)
     assert "FinCEN BOIR FILING DRY-RUN PREVIEW" in boir_preview
     assert "Hushh Technologies LLC" in boir_preview
+
+
+def test_extract_pkm_from_sources_helpers(tmp_path, monkeypatch):
+    extractor_script = SKILL_DIR / "scripts" / "extract_pkm_from_sources.py"
+    spec_ext = importlib.util.spec_from_file_location("extract_pkm_from_sources", extractor_script)
+    assert spec_ext is not None and spec_ext.loader is not None
+    extractor = importlib.util.module_from_spec(spec_ext)
+    spec_ext.loader.exec_module(extractor)
+
+    # Test model resolution
+    monkeypatch.setenv("AGENT_GEMINI_MODEL", "gemini-3.7-flash")
+    assert extractor.resolve_active_model() == "gemini-3.7-flash"
+
+    # Test JSON parsing
+    raw_json = '```json\n{"name": "Kushal Ketan Trivedi", "ssn": "270-81-4901"}\n```'
+    parsed = extractor.parse_extracted_json(raw_json)
+    assert parsed["name"] == "Kushal Ketan Trivedi"
+    assert parsed["ssn"] == "270-81-4901"
+
+    # Test PDF JPEG extraction mock
+    test_pdf = tmp_path / "test.pdf"
+    test_pdf.write_bytes(b"%PDF-1.4 header \xff\xd8\xff\xe0\x00\x10JFIF...\xff\xd9 trailing")
+    extracted_jpeg = extractor.extract_jpeg_from_pdf(test_pdf)
+    assert extracted_jpeg is not None
+    assert extracted_jpeg.startswith(b"\xff\xd8\xff")
+    assert extracted_jpeg.endswith(b"\xff\xd9")
+

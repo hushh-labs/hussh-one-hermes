@@ -82,6 +82,7 @@ Full technical details and API payloads are documented in `skills/mcp/hussh-one-
 | SUI / State Tax | `tax_requirements` | N/A | N/A | N/A |
 
 ## Authority Boundaries & Privacy
+- **Multimodal Active Model Ingestion:** Primary documents (IDs, passports, SSN cards, tax forms) are processed directly via the active multimodal model provider on full-resolution raw bytes, recording exact provenance and preventing heuristic guessing or thumbnail hallucination.
 - **Mandatory Storage Confirmation:** Whenever storing, populating, or mutating PKM records from external channels (Gmail, Cloud Storage, or APIs), the agent MUST provide a structured dry-run breakdown detailing the exact target domains, scope paths, masked PII values, source provenance, and downstream form mappings.
 - **No Unapproved Submissions:** All automated writes require explicit interactive approval.
 - **Local Decryption Only:** PKM attributes are decrypted in-process on the local trusted device. Raw keys and plaintext secrets never touch external logging infrastructure.
@@ -93,4 +94,5 @@ Full technical details and API payloads are documented in `skills/mcp/hussh-one-
 - **Gusto Spec:** `skills/mcp/hussh-one-pkm-kyc-engine/references/gusto-employer-onboarding-spec.md`
 - **Cross-Form Matrix:** `skills/mcp/hussh-one-pkm-kyc-engine/references/cross-form-mapping-matrix.md`
 - **Mapper Script:** `skills/mcp/hussh-one-pkm-kyc-engine/scripts/kyc_pkm_form_mapper.py`
+- **Source Extractor Script:** `skills/mcp/hussh-one-pkm-kyc-engine/scripts/extract_pkm_from_sources.py`
 - **Tests:** `tests/skills/test_hussh_one_pkm_kyc_engine_skill.py`

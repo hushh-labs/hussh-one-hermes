@@ -55,9 +55,10 @@ Run the deterministic mapper against local or decrypted PKM snapshots using `.ve
 ## Mandatory PKM Storage & Dry-Run Confirmation Mandate
 
 Whenever populating or mutating PKM records from external sources (such as Gmail, OneDrive, bank portals):
-1. **Confirmation Breakdown:** The agent MUST present a structured domain breakdown showing exact fields, masked credentials, source provenance, and target KYC payload mapping before committing.
-2. **Interactive Confirmation:** All external writes or local vault commits require explicit owner confirmation.
-3. **Auditability:** Every mapped payload carries timestamps and origin references for full traceability.
+1. **Multimodal Model Ingestion (No Heuristic Guessing):** Primary ID documents (passports, SSN cards, PAN cards, EAD cards, offer letters) MUST be processed directly with the active multimodal model provider (e.g., `gemini-3.7-flash` via `extract_pkm_from_sources.py`) on full-resolution raw images/PDF streams, avoiding downscaled thumbnails or synthetic defaults.
+2. **Confirmation Breakdown:** The agent MUST present a structured domain breakdown showing exact fields, source provenance, and target KYC payload mapping before committing.
+3. **Interactive Confirmation:** All external writes or local vault commits require explicit owner confirmation.
+4. **Auditability:** Every mapped payload carries timestamps and origin references for full traceability.
 
 ## Pitfalls
 - **Unchecked SSN/EIN formatting:** APIs reject dashes in FEIN and SSN. Always pass values through `normalize_digits()`.
