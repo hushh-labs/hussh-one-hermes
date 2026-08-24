@@ -302,6 +302,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-08-24 | `0e64a18f9` | **Post-merge triage fix-up for `e509d771b` below.** Repaired 8 more "swallowed line" spots the merge left behind despite zero conflict markers: a dropped `_bind_session_state(...)` call (was silently breaking proactive-prune runway persistence across restarts), `agent/anthropic_adapter.py`'s OAuth-file-path resolution, 4 separate `agent/auxiliary_client.py` gaps (missing `task` kwarg, missing `api_mode` override, `explicit_base_url` hardcoded to `None`, 2 calls bypassing `_create_openai_client`), `/profile`'s dropped executor wiring plus a missing Slack demotion-list entry, a raw `yaml.safe_load` that should have used `load_config_readonly()`, and several dropped `hermes_cli/models.py` catalog entries + the `#45006` plausibility gate + custom-provider extra-headers plumbing. 575/576 targeted tests green. Guard passes; full-suite re-verification after this commit was deliberately not re-run (diminishing returns after two prior full passes) — the compression-cooldown-rollback regression flagged in the entry below is **not** touched by this commit and is still open, and `web/`/`ui-tui/` were verified earlier in the same session but not against this exact final commit. |
 | 2026-08-24 | `e509d771b` | Reconciled 4,309 upstream commits (largest sync to date), resolved in an isolated worktree per the SOP so the production checkout was never touched mid-merge — see [operations/gateway-resilience.md](./operations/gateway-resilience.md) for why that matters. Restored 25 test files a prior sync (`04ad6642c2`) had bulk-deleted instead of reconciled. Guard passes; 18,674/18,749 tests passing pre-merge, full post-merge delta triage landed as follow-up commits rather than blocking the push — one confirmed regression (a compression-cooldown rollback test silently swallowing an error) identified and pending a fix at merge time. `web/`/`ui-tui/` build was not independently verified before this push; watch for the same partial-splice failure mode as `7018d306d` below. |
 | 2026-08-10 | `290ccd563` | Reconciled latest `origin/main` commits. |
 | 2026-08-04 | `7018d306d` | Reconciled `upstream/main` into `main`. The merge landed the upstream plugin/memory-provider work, but resolution left `web/` and `ui-tui/` partially spliced — newer upstream markup over older Hussh logic, with several declarations dropped while their usages survived. The dashboard build was broken until `f30349cd4`; treat this pair as one sync unit. |
@@ -325,16 +326,24 @@ git rev-list --left-right --count HEAD...upstream/main
 #   right = upstream commits we haven't merged yet
 ```
 
-**Open follow-up from the 2026-08-24 sync** (not yet landed as of this writing):
-- Full post-merge test-delta triage was still running when this merge was pushed
-  (landed on explicit instruction to push now and patch forward rather than block
-  the trunk on it). One confirmed regression is already known: a
-  compression-cooldown rollback-failure test now silently swallows an error it
-  used to raise. Expect one or more follow-up fix commits referencing this entry.
-- `web/`/`ui-tui/` were not independently build/typecheck-verified before the
-  push (no conflicts during merge, but that alone didn't prevent the `7018d306d`
-  partial-splice breakage below). Run an install + build there and fix anything
-  that surfaces.
+**Open follow-up from the 2026-08-24 sync** (updated after the `0e64a18f9` fix-up commit above):
+- **Still open:** a compression-cooldown rollback-failure test silently swallows
+  an error it used to raise (`agent/conversation_compression.py` area, not
+  touched by `0e64a18f9`). Needs its own follow-up fix.
+- **Still open, unverified against the final tree:** `web/`/`ui-tui/` build —
+  verified clean earlier in the same triage session (`npm install` + typecheck +
+  build + test suites all passed), but that was before `0e64a18f9` landed. Given
+  the `7018d306d` partial-splice history below, re-verify against the current
+  tree rather than trusting the earlier pass.
+- Two full-suite runs during triage surfaced ~165–193 failures each; the large
+  majority were confirmed pre-existing (Hussh-only code with tests written ahead
+  of implementation — Vertex Claude runtime auto-normalization,
+  `_restart_should_use_service_manager`, `selection_mode`, hussh_one_pkm vault
+  tests) or environment artifacts of a reduced-extras test venv (video
+  generation, voice mode, transcription, wake-word — optional deps not
+  installed), not merge regressions. `tests/tools/test_video_generation_tool_surface_matrix.py`
+  failed even in isolation and looked like a real, distinct, not-yet-diagnosed
+  bug — worth a dedicated look, separate from this merge.
 - `tests/cli/test_resume_model_restore.py` — during resolution it was discovered
   that the Vertex-Claude-resume-pinning behavior described in
   [operations/crash-resilience.md](./operations/crash-resilience.md) and
