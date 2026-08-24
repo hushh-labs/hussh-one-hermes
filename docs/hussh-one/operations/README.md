@@ -180,6 +180,7 @@ resuming work on one after a gap:
 
 ## See also
 - [Changelog — dated index of every Hussh-One capability](../CHANGELOG.md)
+- [Gateway resilience — launchd + doctor cron, incident SOP](./gateway-resilience.md)
 - [Crash resilience — dashboard OOM & session-model persistence](./crash-resilience.md)
 - [Upgrading from upstream](./upgrading.md)
 - [`docs/hussh-one-deployment.md`](../../hussh-one-deployment.md)
