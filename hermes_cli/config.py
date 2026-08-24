@@ -1999,6 +1999,7 @@ def check_config_version() -> Tuple[int, int]:
 # absent from DEFAULT_CONFIG (omitted when unused / alternate schema forms).
 _EXTRA_KNOWN_ROOT_KEYS = {
     "custom_providers",  # legacy list form; modern equivalent is providers: {}
+    "fallback_providers",  # canonical ordered fallback chain; written by `hermes fallback`
     "fallback_model",    # optional single dict or chain list; omitted when disabled
     "mcp_servers",       # MCP server definitions written by setup/tools flows
     # Roots read from the raw user YAML (or written by our own flows) that are
