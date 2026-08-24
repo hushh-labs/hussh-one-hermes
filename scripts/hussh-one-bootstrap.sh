@@ -222,6 +222,8 @@ configure_web_search() {
 
 set_config_defaults() {
   local hermes
+  local model_provider
+  local model_default
   hermes="$(hermes_bin)"
   if [[ "$DRY_RUN" != "1" && ! -x "$hermes" ]]; then
     warn "Hermes binary unavailable; config defaults were not written"
@@ -229,8 +231,25 @@ set_config_defaults() {
   fi
   run_cmd "$hermes" config set display.skin hussh-one
   run_cmd "$hermes" config set dashboard.theme hussh-one
-  run_cmd "$hermes" config set model.provider gemini
-  run_cmd "$hermes" config set model.default gemini-3.6-flash
+
+  # Gemini is the first-install default, not a bootstrap mandate. A profile
+  # may deliberately use a native LM Studio endpoint (or another configured
+  # provider); re-running bootstrap must never silently replace that choice.
+  if [[ "$DRY_RUN" == "1" ]]; then
+    model_provider=""
+    model_default=""
+  else
+    model_provider="$("$hermes" config get model.provider 2>/dev/null || true)"
+    model_default="$("$hermes" config get model.default 2>/dev/null || true)"
+    [[ "$model_provider" == "Config key not set:"* ]] && model_provider=""
+    [[ "$model_default" == "Config key not set:"* ]] && model_default=""
+  fi
+  if [[ -n "$model_provider" || -n "$model_default" ]]; then
+    log "Preserving configured model provider: ${model_provider:-unset} (${model_default:-unset})"
+  else
+    run_cmd "$hermes" config set model.provider gemini
+    run_cmd "$hermes" config set model.default gemini-3.6-flash
+  fi
   run_cmd "$hermes" config set agent.reasoning_effort high
   run_cmd "$hermes" config set display.show_reasoning true
   # Compact sessions well before the dashboard memory ceiling so a long Hussh

@@ -281,14 +281,16 @@ else:
     provider = ""
     default_model = str(model_cfg or "").strip()
 
-if provider and provider != "gemini":
-    warnings.append(f"model.provider is {provider}, expected gemini for global default")
-if default_model and default_model not in ("gemini-3.7-flash", "gemini-3.6-flash"):
+if provider and provider not in ("gemini", "lmstudio"):
+    warnings.append(f"model.provider is {provider}, expected gemini or lmstudio")
+if provider == "gemini" and default_model and default_model not in ("gemini-3.7-flash", "gemini-3.6-flash"):
     warnings.append(f"model.default is {default_model}, expected gemini-3.7-flash or gemini-3.6-flash")
+if provider == "lmstudio" and not default_model:
+    warnings.append("model.default is unset; select a loaded LM Studio model with 'hermes model'")
 if not provider:
-    warnings.append("model.provider is unset; bootstrap will set it to gemini")
-if not default_model:
-    warnings.append("model.default is unset; bootstrap will set it to gemini-3.6-flash")
+    warnings.append("model.provider is unset; bootstrap will set the first-install default to gemini")
+if not default_model and provider != "lmstudio":
+    warnings.append("model.default is unset; select a model before starting the gateway")
 
 reasoning_effort = cfg.get("agent", {}).get("reasoning_effort")
 if reasoning_effort not in ("high", "max"):
