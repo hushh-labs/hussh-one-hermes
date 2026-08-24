@@ -5567,10 +5567,15 @@ def set_config_value(key: str, value: str, force: bool = False):
     # (e.g. ``model: gpt-4o``).  Without this _set_nested replaces the
     # scalar with an empty dict, dropping the model id permanently.
     _model_key = key.strip().lower()
+    _previous_model_provider = ""
     if _model_key.startswith("model."):
         _model_val = user_config.get("model")
         if isinstance(_model_val, str) and _model_val:
             user_config["model"] = {"default": _model_val}
+        if _model_key == "model.provider" and isinstance(user_config.get("model"), dict):
+            _previous_model_provider = str(
+                user_config["model"].get("provider") or ""
+            ).strip().lower()
     # Guard against #74995: a single-segment key that names an existing
     # mapping would silently overwrite the entire section with a scalar
     # (e.g. ``hermes config set model gpt-5.6-sol`` when model already
@@ -5629,6 +5634,20 @@ def set_config_value(key: str, value: str, force: bool = False):
                 )
                 sys.exit(1)
     _set_nested(user_config, key, value)
+    # A provider and endpoint are a single route identity.  Retaining an
+    # LM Studio (or other provider's) endpoint after ``config set
+    # model.provider gemini`` makes the runtime send a valid Gemini model id
+    # to the old OpenAI-compatible server.  Picker/setup paths already clear
+    # these fields on a provider change; the direct config command must obey
+    # the same invariant.  Set the new provider first, then explicitly set
+    # model.base_url when a non-default endpoint is intentional.
+    if _model_key == "model.provider" and isinstance(user_config.get("model"), dict):
+        _new_model_provider = str(user_config["model"].get("provider") or "").strip().lower()
+        if _previous_model_provider and _new_model_provider != _previous_model_provider:
+            clear_model_endpoint_credentials(user_config["model"], clear_base_url=True)
+            print(
+                "  (cleared the previous provider's model endpoint and transport settings)"
+            )
     # Normalize the api_base → base_url alias at set-time too (issue #8919),
     # so a fresh `hermes config set model.api_base ...` lands on the canonical
     # key the runtime resolver actually reads, instead of being silently

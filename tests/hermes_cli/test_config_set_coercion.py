@@ -66,3 +66,23 @@ class TestStringTypedGuardPreserved:
         cfg.set_config_value("approvals.mode", "off")
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False
+
+
+class TestModelRouteIdentity:
+    def test_provider_change_clears_stale_endpoint_and_transport(self, tmp_path, monkeypatch):
+        """A cloud model must never inherit an old LM Studio endpoint."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg.set_config_value("model.provider", "lmstudio")
+        cfg.set_config_value("model.base_url", "http://127.0.0.1:1234/v1")
+        cfg.set_config_value("model.api_mode", "chat_completions")
+        cfg.set_config_value("model.api_key", "local-placeholder")
+
+        cfg.set_config_value("model.provider", "gemini")
+
+        import yaml
+
+        model = (yaml.safe_load((tmp_path / "config.yaml").read_text()) or {})["model"]
+        assert model["provider"] == "gemini"
+        assert "base_url" not in model
+        assert "api_mode" not in model
+        assert "api_key" not in model
