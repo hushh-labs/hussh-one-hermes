@@ -152,13 +152,16 @@ SOURCES = {
 # --- Hermes side ------------------------------------------------------------
 
 def hermes_existing_servers() -> dict[str, dict]:
-    """Read current mcp_servers from Hermes config via the CLI (JSON-safe)."""
-    cfg = HOME / ".hermes" / "config.yaml"
-    if not cfg.exists():
-        return {}
+    """Read current mcp_servers from Hermes config via the canonical loader.
+
+    Goes through ``hermes_cli.config.load_config_readonly()`` instead of a
+    raw ``yaml.safe_load`` so this respects ``HERMES_HOME``/profile overrides
+    the same way every other read-only config consumer does, rather than a
+    hardcoded ``~/.hermes/config.yaml`` path.
+    """
     try:
-        import yaml  # PyYAML ships with Hermes
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        from hermes_cli.config import load_config_readonly
+        data = load_config_readonly() or {}
         return dict(data.get("mcp_servers") or {})
     except Exception as exc:  # noqa: BLE001
         print(f"  ! could not read Hermes config: {exc}", file=sys.stderr)
