@@ -12,6 +12,7 @@ Coverage levels:
 
 import time
 
+import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 

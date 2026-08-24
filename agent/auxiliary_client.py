@@ -5917,7 +5917,7 @@ def _resolve_auto_route(
                 main_model = profile.default_aux_model
         except Exception:
             pass
-        explicit_base_url = None
+        explicit_base_url = runtime_base_url or None
         explicit_api_key = None
         if runtime_base_url and main_provider == "custom":
             # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
@@ -6614,7 +6614,7 @@ def resolve_provider_client(
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
-                        client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
+                        client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
@@ -6623,7 +6623,7 @@ def resolve_provider_client(
                     if async_mode:
                         return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
                     return sync_anthropic, final_model
-                client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = _create_openai_client(api_key=custom_key, base_url=_clean_base2, **_extra2)
                 # codex_responses or inherited auto-detect (via _wrap_if_needed).
                 # _wrap_if_needed reads the closed-over `api_mode` (the task-level
                 # override). Named-provider entry api_mode=codex_responses also
@@ -7953,6 +7953,7 @@ def _get_cached_client(
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
+        task=task,
     )
     if client is not None:
         # For async clients, remember which loop they were created on so we
@@ -9365,6 +9366,8 @@ def _call_llm_impl(
     main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if api_mode:
+        resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     effective_provider = resolved_provider

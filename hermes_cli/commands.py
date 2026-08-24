@@ -231,7 +231,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("ctx",), args_hint="[all]", subcommands=("all",),
                busy_policy="dispatch"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
-    CommandDef("profile", "Show active profile name and home directory", "Info"),
+    CommandDef("profile", "Show active profile name and home directory", "Info",
+               busy_policy="dispatch", execute="profile"),
     CommandDef(
         "hussh-one",
         "Connect or inspect this Hussh One trusted device",
@@ -1374,7 +1375,13 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform"})
+#   - hussh-one: fork-only trusted-device connector; reached via
+#     /hermes hussh-one on Slack. It is Hussh One's own addition on top of
+#     upstream's registry, not an upstream command Telegram parity depends
+#     on — without this entry it tips the registry past the 50-cap and
+#     silently clamps /insights, breaking Telegram parity for an upstream
+#     command instead.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "hussh-one"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

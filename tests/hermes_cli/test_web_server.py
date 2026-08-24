@@ -1,5 +1,6 @@
 """Tests for hermes_cli.web_server and related config utilities."""
 
+import asyncio
 import os
 import json
 import re
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     reload_env,
@@ -64,6 +66,24 @@ def _install_example_plugin(_isolate_hermes_home):
     if dst.exists():
         shutil.rmtree(dst)
     shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
+
+    # The dashboard now gates user-plugin asset serving + backend import
+    # behind the ``plugins.enabled`` allow-list (GHSA-mcfc-hp25-cjv7).
+    # An installed-but-not-enabled user plugin has its API mount skipped
+    # and its assets 404'd — which is the whole point of the gate. These
+    # fixtures exist to exercise the *serving* paths, so opt the example
+    # plugin in exactly as a real operator would with `hermes plugins
+    # enable example`.
+    from hermes_cli.config import load_config, save_config
+    _cfg = load_config()
+    _plugins_cfg = _cfg.setdefault("plugins", {})
+    _enabled = _plugins_cfg.get("enabled")
+    if not isinstance(_enabled, list):
+        _enabled = []
+    if "example" not in _enabled:
+        _enabled.append("example")
+    _plugins_cfg["enabled"] = _enabled
+    save_config(_cfg)
 
     # Snapshot the existing routes BEFORE mounting so we can:
     #   1. Identify the routes the mount call appends.
@@ -4313,7 +4333,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, profile=None: (["/bin/cat"], None, None),
         )
         with self.client.websocket_connect(self._url()) as conn:
             conn.send_bytes(b"before-ping\n")
@@ -4346,7 +4366,7 @@ class TestPtyWebSocket:
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+            lambda resume=None, sidecar_url=None, profile=None: (["/bin/cat"], None, None),
         )
         # Patch PtyBridge.spawn at the web_server module's binding.
         import hermes_cli.web_server as ws_mod
