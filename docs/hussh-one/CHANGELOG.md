@@ -302,6 +302,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 
 | Date | Commit | Notes |
 |------|--------|-------|
+| 2026-08-24 | `e509d771b` | Reconciled 4,309 upstream commits (largest sync to date), resolved in an isolated worktree per the SOP so the production checkout was never touched mid-merge — see [operations/gateway-resilience.md](./operations/gateway-resilience.md) for why that matters. Restored 25 test files a prior sync (`04ad6642c2`) had bulk-deleted instead of reconciled. Guard passes; 18,674/18,749 tests passing pre-merge, full post-merge delta triage landed as follow-up commits rather than blocking the push — one confirmed regression (a compression-cooldown rollback test silently swallowing an error) identified and pending a fix at merge time. `web/`/`ui-tui/` build was not independently verified before this push; watch for the same partial-splice failure mode as `7018d306d` below. |
 | 2026-08-10 | `290ccd563` | Reconciled latest `origin/main` commits. |
 | 2026-08-04 | `7018d306d` | Reconciled `upstream/main` into `main`. The merge landed the upstream plugin/memory-provider work, but resolution left `web/` and `ui-tui/` partially spliced — newer upstream markup over older Hussh logic, with several declarations dropped while their usages survived. The dashboard build was broken until `f30349cd4`; treat this pair as one sync unit. |
 | 2026-07-22 | `4df42f7d9` | Defined the upstream-first operating policy: official Hermes is authoritative for generic contracts, `upstream` is fetch-only, and reconciliation happens on a short-lived sync branch with a real Vertex smoke before merging into the runtime `main`. |
@@ -314,7 +315,7 @@ Full merges of `upstream/main` into `main`, preserving the overlay:
 ---
 
 ## Upstream Sync State
-Last full reconciliation: **2026-06-07** (merge-base `6459b3d99`).
+Last full reconciliation: **2026-08-24** (merged 4,309 upstream commits, commit `e509d771b`).
 
 ```bash
 # Check current drift (run anytime):
@@ -324,12 +325,26 @@ git rev-list --left-right --count HEAD...upstream/main
 #   right = upstream commits we haven't merged yet
 ```
 
-As of **2026-07-08**: upstream is **3,965 commits ahead** (last synced ~6 weeks ago).
-Notably, upstream **relocated `gateway/platforms/whatsapp.py` → `plugins/platforms/whatsapp/adapter.py`**
-as part of a plugin-migration refactor — the next merge must re-home our WhatsApp
-customizations (capsule triggering, brand floor, header composition) into the new location.
-See [`fork-upstream-merge-maintenance`](../../../docs/hussh-one-upstream-maintenance.md) for
-the conflict-resolution playbook before attempting this merge.
+**Open follow-up from the 2026-08-24 sync** (not yet landed as of this writing):
+- Full post-merge test-delta triage was still running when this merge was pushed
+  (landed on explicit instruction to push now and patch forward rather than block
+  the trunk on it). One confirmed regression is already known: a
+  compression-cooldown rollback-failure test now silently swallows an error it
+  used to raise. Expect one or more follow-up fix commits referencing this entry.
+- `web/`/`ui-tui/` were not independently build/typecheck-verified before the
+  push (no conflicts during merge, but that alone didn't prevent the `7018d306d`
+  partial-splice breakage below). Run an install + build there and fix anything
+  that surfaces.
+- `tests/cli/test_resume_model_restore.py` — during resolution it was discovered
+  that the Vertex-Claude-resume-pinning behavior described in
+  [operations/crash-resilience.md](./operations/crash-resilience.md) and
+  [features/session-model-resume.md](./features/session-model-resume.md)
+  (`_restore_session_model` re-pinning a resumed Claude session to GCP Vertex
+  ADC) does not exist anywhere in the current source — only in that test and in
+  docs. This merge took upstream's real, generic, working
+  `_restore_session_model` instead of inventing the documented Vertex-pinning
+  behavior mid-merge. Someone should decide whether to implement the documented
+  behavior against upstream's now-real implementation, or correct the docs.
 
 ---
 
