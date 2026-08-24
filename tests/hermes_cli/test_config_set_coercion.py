@@ -68,6 +68,22 @@ class TestStringTypedGuardPreserved:
         assert v == "off" and isinstance(v, str)  # not bool False
 
 
+class TestCanonicalFallbackProviderConfig:
+    def test_canonical_fallback_chain_is_recognized_and_parsed(self, tmp_path, monkeypatch, capsys):
+        """The chain written by ``hermes fallback`` must also be safe to script."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg.set_config_value(
+            "fallback_providers",
+            '[{"provider":"gemini","model":"gemini-3.5-flash"}]',
+        )
+
+        assert _read(tmp_path, "fallback_providers") == [
+            {"provider": "gemini", "model": "gemini-3.5-flash"},
+        ]
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+
 class TestModelRouteIdentity:
     def test_provider_change_clears_stale_endpoint_and_transport(self, tmp_path, monkeypatch):
         """A cloud model must never inherit an old LM Studio endpoint."""
