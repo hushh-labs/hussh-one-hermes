@@ -146,6 +146,40 @@ describe("ChatSidebar event socket", () => {
       reloadMocks.maybeReloadForLoopbackWsAuthFailure,
     ).toHaveBeenCalledWith(4401);
   });
+
+  it("shows a TUI session model switch as soon as its PTY event arrives", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    apiMocks.getModelInfo.mockResolvedValueOnce({
+      capabilities: { supports_reasoning: false },
+      model: "configured-default",
+    });
+
+    await render(<ChatSidebar channel="chat-1" />);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("configured-default"),
+    );
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("message", {
+        data: JSON.stringify({
+          method: "event",
+          params: {
+            type: "session.info",
+            payload: {
+              model: "google/gemma-4-31b@q4_k_m",
+              provider: "lmstudio",
+            },
+          },
+        }),
+      });
+    });
+
+    // The config fallback is `configured-default`; the active PTY session must win
+    // immediately after `/model`, even when its switch is still pending.
+    expect(container.textContent).toContain("gemma-4-31b@q4_k_m");
+    expect(container.textContent).not.toContain("configured-default");
+  });
 });
 
 describe("ChatSidebar event socket reconnect", () => {
