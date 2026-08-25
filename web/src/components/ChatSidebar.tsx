@@ -61,6 +61,33 @@ interface SessionInfo {
   title?: string;
 }
 
+/**
+ * Extract the fields this sidebar owns from an untrusted dispatcher payload.
+ *
+ * ``/api/events`` is tied to the PTY-backed TUI session, whereas the JSON-RPC
+ * sidecar has its own throwaway session. Keeping this conversion narrow makes
+ * it safe to merge the PTY's live route without allowing an unrelated event
+ * shape to replace sidebar state.
+ */
+function sessionInfoFromEventPayload(payload: unknown): SessionInfo | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const source = payload as Record<string, unknown>;
+  const info: SessionInfo = {};
+
+  if (typeof source.cwd === "string") info.cwd = source.cwd;
+  if (typeof source.model === "string") info.model = source.model;
+  if (typeof source.provider === "string") info.provider = source.provider;
+  if (typeof source.credential_warning === "string") {
+    info.credential_warning = source.credential_warning;
+  }
+  if (typeof source.title === "string") info.title = source.title;
+
+  return Object.keys(info).length > 0 ? info : null;
+}
+
 interface RpcEnvelope {
   method?: string;
   params?: { type?: string; payload?: unknown };
@@ -125,17 +152,21 @@ export function ChatSidebar({
   const gw = useMemo(() => new GatewayClient(), [version]);
 
   const [state, setState] = useState<ConnectionState>("idle");
-  const [info, setInfo] = useState<SessionInfo>({});
+  // The sidecar session exists only to surface connection state and generic
+  // credential warnings. Its route is not the route of the PTY chat.
+  const [sidecarInfo, setSidecarInfo] = useState<SessionInfo>({});
+  // The publisher behind `/api/events` is the actual PTY-backed TUI session.
+  // This is the authoritative active-chat route after a session-scoped
+  // `/model` switch, including a switch queued while the model is busy.
+  const [liveSessionInfo, setLiveSessionInfo] = useState<SessionInfo>({});
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The badge shows config.yaml's main model (`model.default`) via
-  // `/api/model/info` — the same value the Models page writes and a new chat
-  // session boots from. We deliberately don't use the sidecar's `session.info`
-  // model: that's a one-time snapshot of the throwaway sidecar agent taken when
-  // its session is created, and it never updates when the model is changed
-  // elsewhere, so the badge would go stale. Pass the chat profile explicitly so
-  // this card stays scoped to the PTY even if the global dashboard switcher
-  // changes while the chat is open.
+  // The configured default supplies the initial fallback before the PTY emits
+  // its first session.info. Once it does, `liveSessionInfo` takes precedence:
+  // a TUI `/model` is deliberately session-scoped and must appear here without
+  // waiting for a new chat or a dashboard reload. Pass the chat profile
+  // explicitly so this fallback remains scoped to the PTY even if the global
+  // dashboard switcher changes while chat is open.
   const [effectiveModel, setEffectiveModel] = useState("");
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
@@ -189,14 +220,15 @@ export function ChatSidebar({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setInfo({});
+      setSidecarInfo({});
+      setLiveSessionInfo({});
       setError(null);
     });
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
       if (ev.payload) {
-        setInfo((prev) => ({ ...prev, ...ev.payload }));
+        setSidecarInfo((prev) => ({ ...prev, ...ev.payload }));
       }
     });
 
@@ -407,6 +439,10 @@ export function ChatSidebar({
         const { type, payload } = frame.params;
 
         if (type === "session.info") {
+          const liveInfo = sessionInfoFromEventPayload(payload);
+          if (liveInfo) {
+            setLiveSessionInfo((prev) => ({ ...prev, ...liveInfo }));
+          }
           const title = titleFromSessionInfoPayload(payload);
           if (title !== undefined) {
             onSessionTitleChange?.(title);
@@ -446,9 +482,14 @@ export function ChatSidebar({
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
+  const modelName =
+    liveSessionInfo.model || effectiveModel || sidecarInfo.model || "—";
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  const banner =
+    error ??
+    liveSessionInfo.credential_warning ??
+    sidecarInfo.credential_warning ??
+    null;
 
   return (
     <aside

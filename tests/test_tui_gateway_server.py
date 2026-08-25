@@ -13237,12 +13237,25 @@ def test_config_set_model_defers_while_running(monkeypatch):
     """/model via config.set queues the pick during an in-flight turn instead
     of rejecting or racing the worker thread."""
     seen = {"called": False}
+    emitted = []
 
     def _fake_apply(sid, session, raw, **_kwargs):
         seen["called"] = True
         return {"value": raw, "warning": ""}
 
     monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, session: {
+            "model": session["pending_model_switch"]["display_model"]
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
 
     server._sessions["sid"] = _session(running=True)
     try:
@@ -13267,6 +13280,13 @@ def test_config_set_model_defers_while_running(monkeypatch):
         )
         pending = server._sessions["sid"].get("pending_model_switch")
         assert pending and pending["raw"] == "anthropic/claude-sonnet-4.6"
+        assert emitted == [
+            (
+                "session.info",
+                "sid",
+                {"model": "anthropic/claude-sonnet-4.6"},
+            )
+        ]
     finally:
         server._sessions.pop("sid", None)
 

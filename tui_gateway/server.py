@@ -12731,6 +12731,16 @@ def _(rid, params: dict) -> dict:
                             getattr(parsed, "explicit_provider", "") or ""
                         ).strip(),
                     }
+                    # The TUI updates its own status optimistically from this
+                    # RPC result, but dashboard subscribers are passive. Emit
+                    # the pending route immediately so the PTY's event
+                    # publisher updates every attached GUI without waiting for
+                    # the current turn to finish and consume the switch.
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(session.get("agent"), session),
+                    )
                     return _ok(
                         rid,
                         {
