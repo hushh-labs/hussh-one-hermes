@@ -1,212 +1,111 @@
-# 🏛️ HUSSH ONE 🤫 | Sovereign PKM Vault & Gusto KYC Specification
+# Hussh One — PKM-to-Gusto schema simulation
 
-**Status:** `SCHEMA_ONLY_SIMULATION`<br>
-**Model Route:** Resolve from the active Hermes session; do not persist a provider credential or assume a global default.<br>
-**Audit Reference:** `GUSTO-KYC-SPEC-2026.01`<br>
-**Target Operational Milestone:** September 30, 2026 (End of Q3 2026)
+**Status:** `SCHEMA_ONLY_SIMULATION`
+**Audit reference:** `GUSTO-KYC-SPEC-2026.01`
+**Contains vault values:** no
 
----
+This artifact documents field paths and mapping behavior only. It is not a PKM
+export, a decrypted vault preview, or evidence that any field exists for the
+active owner.
 
-## 🎯 1. Sovereign PKM Vision & Automated KYC Purpose
+## Representation contract
 
-The **Personal Knowledge Model (PKM)** is your local, encrypted, self-sovereign vault holding verified attributes across 4 decoupled domains:
-1. `attr.legal_entity` — Corporate KYB, FEIN, NAICS, physical operating addresses, and beneficial ownership.
-2. `attr.identity` — Signatory KYC profile, residential address, verified SSN, and officer credentials.
-3. `attr.financial` — Operating commercial bank accounts for payroll ACH direct debit origination.
-4. `attr.tax_record` — Federal Form 941 / 8655 and Washington State regulatory accounts (DOR, ESD, PFML, L&I).
+- Durable Hussh One PKM and the trusted-device replica contain AES-256-GCM
+  ciphertext envelopes only.
+- An authorized `read_my_pkm` call may return a narrow decrypted projection in
+  process memory for the current owner request.
+- Documentation never represents protected values with strings such as
+  `VAULT_ENCRYPTED` or `VAULT_REF`. A placeholder is not encryption and must
+  never be interpreted as a stored PKM value.
+- Passphrases, vault keys, recovery keys, and connector private keys never enter
+  chat, model prompts, logs, docs, or committed fixtures.
 
-> **Repository boundary:** This preview is deliberately reusable and contains
-> no real personal, financial, employer, or contact data. Concrete values stay
-> encrypted in the local vault and are represented here only by stable local
-> references or redacted placeholders.
+## Domain field inventory
 
-```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                        HUSSH ONE CROSS-FORM KYC ONBOARDING ENGINE                      │
-│                                                                                        │
-│   ┌───────────────────────────┐           ┌────────────────────────────────────────┐   │
-│   │    SOVEREIGN PKM VAULT    │  ───────► │       CROSS-FORM MAPPING ENGINE        │   │
-│   │  ~/.hermes/hussh-one/     │           │  (Zero Manual Re-entry / Local LLM)    │   │
-│   └───────────────────────────┘           └────────────────────────────────────────┘   │
-│                 │                                              │                       │
-│                 ▼                                              ▼                       │
-│   • attr.legal_entity (<operating-employer>)      • Gusto Embedded Payroll API         │
-│   • attr.identity (<authorized-signatory>)        • FinCEN Beneficial Ownership (BOIR) │
-│   • attr.financial (<payroll-bank-account>)       • Commercial banking                 │
-│   • attr.tax_record (WA DOR, ESD, L&I)            • WA State Master Business License   │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
+The cross-form engine may require these paths, subject to the active owner's
+actual PKM manifest and a narrow authorized read:
 
-> ℹ️ **Source Audit Provenance Note:** Approved local records may establish
-> employing-entity, DBA, location, and statutory-compliance fields. This
-> simulation retains only the field schema and provenance class; the source
-> artifacts and their values remain in the consented local vault.
-
----
-
-## 🏢 2. Dual-Entity Corporate Segregation & Jurisdictional Boundary
-
-```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                               HUSSH CORPORATE ARCHITECTURE                             │
-├───────────────────────────────────────────┬────────────────────────────────────────────┤
-│ 🏝️ ENTITY 1: IP & HOLDING CORP            │ 🌲 ENTITY 2: OPERATING & PAYROLL CORP      │
-│   <ip-holding-entity>                     │   <operating-employer>                     │
-│   • Status: <entity-status>               │   • Status: <entity-status>                │
-│   • Headquarters: <vault reference>       │   • Operating HQ: <vault reference>        │
-│   • Role: Technology Holding & IP         │   • Role: Gusto Employer & WA State Payroll│
-└───────────────────────────────────────────┴────────────────────────────────────────────┘
-```
-
-| Entity Attribute | Entity 1: Technology Holding Corp | Entity 2: Operating Employer Corp [**Gusto Target**] | Status |
-| :--- | :--- | :--- | :--- |
-| **Legal Entity Name** | `[VAULT_REF: holding.legal_name]` | `[VAULT_REF: employer.legal_name]` | `SCHEMA` |
-| **Trade Name (DBA)** | `[VAULT_REF: holding.dba]` | `[VAULT_REF: employer.dba]` | `SCHEMA` |
-| **Corporate Status** | `[VAULT_REF: holding.status]` | `[VAULT_REF: employer.status]` | `SCHEMA` |
-| **Principal Headquarters** | `[VAULT_REF: holding.address]` | `[VAULT_REF: employer.address]` | `SCHEMA` |
-| **Operating Facility** | `[VAULT_REF: holding.facility]` | `[VAULT_REF: employer.facility]` | `SCHEMA` |
-| **Gusto & Payroll Scope** | Non-employing parent / holding | Primary employer for payroll and state compliance | `SCHEMA` |
-| **Source Provenance** | `[LOCAL_SOURCE_REF]` | `[LOCAL_SOURCE_REF]` | `SCHEMA` |
-
----
-
-## 👤 3. Sovereign PKM Core-Profile Schema
-
-### A. Employer Entity Profile (`attr.legal_entity`)
-* **Legal Name:** `[VAULT_REF: employer.legal_name]`
-* **Trade Name / DBA:** `[VAULT_REF: employer.dba]`
-* **Corporate Status:** `[VAULT_REF: employer.status]`
-* **NAICS Code:** `[VAULT_REF: employer.naics]`
-* **Operating Headquarters:** `[VAULT_REF: employer.address]`
-* **Role in PKM:** The designated employing entity for payroll and state-tax accounts.
-
-### B. Executive Signatory Profile (`attr.identity`)
-* **Full Legal Name:** `[VAULT_REF: signatory.legal_name]`
-* **Executive Title:** `[VAULT_REF: signatory.title]`
-* **Ownership / Control:** `[VAULT_REF: signatory.control]`
-* **Email / Phone:** `[VAULT_REF: signatory.contact]`
-* **Signatory Address:** `[VAULT_REF: signatory.address]`
-* **Government identifier:** `[VAULT_ENCRYPTED]` (never rendered in source control)
-
----
-
-## 🏛️ 4. Washington State & Federal Payroll Regulatory Roadmap (Target: Sep 30, 2026)
-
-| Agency / Regulatory Body | Requirement / Account ID | Target Employing Entity | Status |
-| :--- | :--- | :--- | :--- |
-| **WA Dept. of Revenue (DOR)** | Unified Business Identifier (UBI) & City endorsement | `[VAULT_REF: employer.legal_name]` | `SCHEMA` |
-| **WA Employment Security Dept. (ESD)** | State Unemployment Insurance (SUI) account & experience tax rate | `[VAULT_REF: employer.legal_name]` | `SCHEMA` |
-| **WA Paid Family & Medical Leave (PFML)** | PFML & WA Cares employer ID | `[VAULT_REF: employer.legal_name]` | `SCHEMA` |
-| **WA Dept. of Labor & Industries (L&I)** | Workers' compensation policy & risk classification | `[VAULT_REF: employer.legal_name]` | `SCHEMA` |
-| **IRS Federal Payroll** | Federal filing & reporting-agent authorization | `[VAULT_REF: employer.legal_name]` | `SCHEMA` |
-
----
-
-## ⚡ 5. Sovereign PKM Vault Canonical JSON Schemas
-
-### 1. Legal Entity & Signatory KYC (`legal_entity` / `identity`)
 ```json
 {
-  "legal_entity": {
-    "entity": {
-      "legal_name": "[VAULT_REF: employer.legal_name]",
-      "trade_name_dba": "[VAULT_REF: employer.dba]",
-      "entity_type": "C_CORP",
-      "tax_classification": "C-Corporation (Form 1120)",
-      "formation_state": "DE",
-      "fein": "[VAULT_ENCRYPTED_EIN]",
-      "naics_code": "[VAULT_REF: employer.naics]",
-      "industry_description": "[VAULT_REF: employer.industry]",
-      "registered_address": {
-        "street_1": "[VAULT_ENCRYPTED_ADDRESS]",
-        "street_2": "[VAULT_ENCRYPTED_ADDRESS_LINE_2]",
-        "city": "[VAULT_ENCRYPTED_CITY]",
-        "state": "[VAULT_ENCRYPTED_REGION]",
-        "zip": "[VAULT_ENCRYPTED_POSTAL_CODE]"
-      },
-      "principal_work_location": {
-        "facility_name": "[VAULT_REF: employer.facility]",
-        "street_1": "[VAULT_ENCRYPTED_ADDRESS]",
-        "city": "[VAULT_ENCRYPTED_CITY]",
-        "state": "[VAULT_ENCRYPTED_REGION]",
-        "zip": "[VAULT_ENCRYPTED_POSTAL_CODE]"
-      },
-      "website": "[VAULT_REF: employer.website]",
-      "corporate_phone": "[VAULT_ENCRYPTED_PHONE]"
-    },
-    "beneficial_ownership": [
-      {
-        "identity_ref": "[VAULT_REF: signatory.id]",
-        "title": "[VAULT_REF: signatory.title]",
-        "ownership_percentage": "[VAULT_REF: signatory.ownership_percentage]",
-        "is_control_person": true,
-        "is_signatory": true
-      }
+  "artifact_kind": "pkm_field_inventory",
+  "storage_representation": "aes-256-gcm-ciphertext",
+  "decrypted_values_included": false,
+  "domains": {
+    "legal_entity": [
+      "entity.legal_name",
+      "entity.trade_name_dba",
+      "entity.entity_type",
+      "entity.tax_classification",
+      "entity.formation_state",
+      "entity.fein",
+      "entity.naics_code",
+      "entity.industry_description",
+      "entity.registered_address",
+      "entity.principal_work_location",
+      "entity.website",
+      "entity.corporate_phone",
+      "beneficial_ownership"
+    ],
+    "identity": [
+      "profile.first_name",
+      "profile.last_name",
+      "profile.date_of_birth",
+      "profile.ssn",
+      "profile.citizenship",
+      "profile.phone",
+      "profile.email",
+      "profile.residential_address"
+    ],
+    "financial": [
+      "operating_bank_account.bank_name",
+      "operating_bank_account.account_holder_name",
+      "operating_bank_account.account_type",
+      "operating_bank_account.routing_number",
+      "operating_bank_account.account_number",
+      "operating_bank_account.ach_sweep_authorized",
+      "operating_bank_account.purpose"
+    ],
+    "tax_record": [
+      "federal.ein",
+      "federal.filing_form",
+      "federal.tax_payer_type",
+      "federal.form_8655_signed",
+      "state_accounts"
     ]
-  },
-  "identity": {
-    "profile": {
-      "first_name": "[VAULT_ENCRYPTED_GIVEN_NAME]",
-      "last_name": "[VAULT_ENCRYPTED_FAMILY_NAME]",
-      "date_of_birth": "[VAULT_ENCRYPTED]",
-      "ssn": "[VAULT_ENCRYPTED_GOVERNMENT_ID]",
-      "citizenship": "[VAULT_ENCRYPTED_CITIZENSHIP]",
-      "phone": "[VAULT_ENCRYPTED_PHONE]",
-      "email": "[VAULT_ENCRYPTED_EMAIL]",
-      "residential_address": {
-        "street_1": "[VAULT_ENCRYPTED_ADDRESS]",
-        "city": "[VAULT_ENCRYPTED_CITY]",
-        "state": "[VAULT_ENCRYPTED_REGION]",
-        "zip": "[VAULT_ENCRYPTED_POSTAL_CODE]"
-      }
-    }
   }
 }
 ```
 
-### 2. Financial & Tax Record Domains (`financial` / `tax_record`)
-```json
-{
-  "financial": {
-    "operating_bank_account": {
-      "bank_name": "[VAULT_REF: payroll.bank_name]",
-      "account_holder_name": "[VAULT_REF: employer.legal_name]",
-      "account_type": "checking",
-      "routing_number": "[VAULT_ENCRYPTED_9_DIGIT]",
-      "account_number": "[VAULT_ENCRYPTED_ACCT_NUM]",
-      "ach_sweep_authorized": true,
-      "purpose": "Gusto Payroll ACH Direct Debit"
-    }
-  },
-  "tax_record": {
-    "federal": {
-      "ein": "[VAULT_ENCRYPTED_EIN]",
-      "filing_form": "941",
-      "tax_payer_type": "C-Corporation",
-      "form_8655_signed": true
-    },
-    "state_accounts": {
-      "WA": {
-        "business_license_ubi": {
-          "status": "IN_PROGRESS",
-          "authority": "WA Dept of Revenue"
-        },
-        "unemployment_account_id": {
-          "status": "PENDING",
-          "sui_tax_rate": 0.0270,
-          "authority": "WA Employment Security Dept"
-        },
-        "paid_family_medical_leave": {
-          "status": "PENDING",
-          "authority": "WA PFML & WA Cares Fund"
-        },
-        "workers_compensation": {
-          "status": "PENDING",
-          "risk_class": "541511",
-          "authority": "WA Dept of Labor & Industries"
-        }
-      }
-    }
-  }
-}
-```
+## Gusto mapping inventory
+
+| Gusto area | Candidate PKM paths | Handling |
+| --- | --- | --- |
+| Employer identity | `legal_entity.entity.*` | Read only the required fields; show a masked dry-run before any external write. |
+| Signatory | `identity.profile.*` | Treat government identifiers, birth date, contact details, and address as sensitive. |
+| Payroll bank | `financial.operating_bank_account.*` | Never show full routing or account numbers in previews or logs. |
+| Federal tax | `tax_record.federal.*` | Validate identifiers locally; transmit only after explicit approval. |
+| State registrations | `tax_record.state_accounts.*` | Resolve relevant jurisdiction and agency paths at runtime. |
+
+## 0-to-1 execution flow
+
+1. Run `/hussh-one status`; if needed, use `/hussh-one connect`,
+   `/hussh-one enroll`, or `/hussh-one unlock`. Secret collection stays in the
+   protected native UI.
+2. Use `read_my_pkm` to list domains, then read only the required scopes.
+3. Validate and map the in-memory values with the deterministic KYC mapper.
+4. Present a masked, field-by-field dry-run. Do not label it the stored vault
+   JSON.
+5. Obtain explicit owner approval before submitting any external form or API
+   request.
+6. If information must be saved or corrected, use `save_to_pkm`; after approval
+   it encrypts locally and persists ciphertext only.
+
+## Fail-closed conditions
+
+- Vault locked or not enrolled: stop and direct the owner to the native command.
+- Authorized read unavailable: do not substitute docs, simulations, source
+  files, conversation history, or guessed values.
+- Missing field: report it as absent from the authorized projection; do not
+  invent a placeholder value.
+- Read too broad: request narrower scopes; do not bypass the limit by decrypting
+  replica files directly.

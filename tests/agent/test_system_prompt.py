@@ -292,6 +292,18 @@ def test_source_library_routing_guidance_is_present_only_for_the_parent_tool():
     assert "# Hussh One Source Library" not in _stable_prompt(steward)
 
 
+def test_native_pkm_guidance_is_present_only_with_owner_read_tool():
+    owner = _make_agent(valid_tool_names=["read_my_pkm"])
+    owner_prompt = _stable_prompt(owner)
+    assert "# Hussh One private information boundary" in owner_prompt
+    assert "authorized decrypted projection" in owner_prompt
+    assert "Never ask the user to type a passphrase" in owner_prompt
+    assert "[VAULT_*]" in owner_prompt
+
+    ordinary = _make_agent(valid_tool_names=["read_file"])
+    assert "# Hussh One private information boundary" not in _stable_prompt(ordinary)
+
+
 def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     """The cache split must not reorder the stored coding prompt."""
     import agent.system_prompt as system_prompt

@@ -1618,6 +1618,9 @@ def spawn_background_review_thread(
     read once here and shared with the worker (aux routing) so a single
     turn does not re-parse the config file.
     """
+    from agent.sensitive_transcript import redact_messages_for_durable_boundary
+
+    messages_snapshot = redact_messages_for_durable_boundary(messages_snapshot)
     if task_cfg is None:
         task_cfg = _background_review_task_config()
     # Pick the right prompt based on which triggers fired.  Allow per-agent

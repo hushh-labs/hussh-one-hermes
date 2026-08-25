@@ -117,6 +117,98 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 
+def test_session_db_flush_redacts_owner_private_tool_turn(agent):
+    canary = "PKM_DB_CANARY_MUST_NOT_PERSIST"
+    messages = [
+        {"role": "user", "content": "Read my profile."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "pkm-call",
+                    "type": "function",
+                    "function": {
+                        "name": "read_my_pkm",
+                        "arguments": json.dumps(
+                            {"domain": "identity", "scope_path": canary}
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "read_my_pkm",
+            "tool_call_id": "pkm-call",
+            "content": json.dumps({"value": canary}),
+        },
+        {"role": "assistant", "content": f"The value is {canary}."},
+    ]
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent.session_id = "session-sensitive"
+    agent._last_flushed_db_idx = 0
+
+    agent._flush_messages_to_session_db(messages, [])
+
+    batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+    serialized = json.dumps(batch, default=str)
+    assert canary not in serialized
+    assert "owner_private_memory_only" in serialized
+    assert "Owner-private tool content omitted" in serialized
+    assert canary in json.dumps(messages)
+
+
+def test_real_state_db_never_receives_decrypted_pkm_canary(agent, tmp_path):
+    from hermes_state import SessionDB
+
+    canary = "PKM_REAL_DB_CANARY_MUST_STAY_MEMORY_ONLY"
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session(
+        session_id="session-sensitive-real",
+        source="test",
+        model="test-model",
+    )
+    agent._session_db = db
+    agent._session_db_created = True
+    agent.session_id = "session-sensitive-real"
+    agent._last_flushed_db_idx = 0
+    messages = [
+        {"role": "user", "content": "Read my profile."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "pkm-real",
+                    "type": "function",
+                    "function": {
+                        "name": "read_my_pkm",
+                        "arguments": json.dumps({"scope_path": canary}),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "read_my_pkm",
+            "tool_call_id": "pkm-real",
+            "content": json.dumps({"value": canary}),
+        },
+        {"role": "assistant", "content": f"Private answer: {canary}"},
+    ]
+
+    agent._flush_messages_to_session_db(messages, [])
+    stored = db.get_messages("session-sensitive-real")
+    assert canary not in json.dumps([dict(row) for row in stored], default=str)
+    db.close()
+
+    for path in tmp_path.glob("state.db*"):
+        assert canary.encode() not in path.read_bytes()
+
+
 def test_direct_session_db_flushes_share_marker_claim(agent):
     """A direct flush cannot interleave its marker check with `_persist_session`."""
     class _BarrierDB:

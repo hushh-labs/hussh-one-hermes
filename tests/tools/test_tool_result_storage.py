@@ -182,6 +182,21 @@ class TestMaybePersistToolResult:
         )
         assert result == content
 
+    def test_sensitive_result_never_spills_plaintext(self):
+        content = "owner-private-canary" * 5_000
+        with patch("tools.tool_result_storage._write_to_spillover") as writer:
+            result = maybe_persist_tool_result(
+                content=content,
+                tool_name="read_my_pkm",
+                tool_use_id="pkm-sensitive",
+                env=None,
+                threshold=1,
+                sensitive=True,
+            )
+
+        assert result == content
+        writer.assert_not_called()
+
     def test_above_threshold_with_env_persists(self):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}

@@ -2627,7 +2627,10 @@ def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, cap
         config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     )
 
-    assert server._load_enabled_toolsets() is None
+    enabled = server._load_enabled_toolsets("tui")
+    assert enabled is not None
+    assert "hussh_one" not in enabled
+    assert "hussh_one_sources" not in enabled
     assert "could not be loaded" in capsys.readouterr().err
 
 
@@ -2646,7 +2649,11 @@ def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):
 def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all")
 
-    assert server._load_enabled_toolsets() is None
+    enabled = server._load_enabled_toolsets("tui")
+    assert enabled is not None
+    assert "web" in enabled
+    assert "hussh_one" not in enabled
+    assert "hussh_one_sources" not in enabled
 
 
 def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(
@@ -2654,8 +2661,21 @@ def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(
 ):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all,nope")
 
-    assert server._load_enabled_toolsets() is None
+    enabled = server._load_enabled_toolsets("tui")
+    assert enabled is not None
+    assert "hussh_one" not in enabled
+    assert "hussh_one_sources" not in enabled
     assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
+def test_explicit_native_pkm_override_cannot_bypass_surface_gate(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "hussh_one,hussh_one_sources")
+
+    assert server._load_enabled_toolsets("tui") == []
+    assert server._load_enabled_toolsets("desktop") == ["hussh_one"]
+
+    monkeypatch.setenv("HERMES_TUI_DASHBOARD", "1")
+    assert server._load_enabled_toolsets("tui") == ["hussh_one"]
 
 
 def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):

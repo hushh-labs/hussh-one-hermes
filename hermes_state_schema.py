@@ -935,6 +935,121 @@ class SessionSchemaMixin:
         finally:
             cursor.execute("PRAGMA foreign_keys=ON")
 
+    @staticmethod
+    def _redact_owner_private_transcript_history(cursor) -> int:
+        """One-time v27 cleanup for plaintext copied from private tool turns."""
+        from agent.sensitive_transcript import (
+            SENSITIVE_CONTENT_SENTINEL,
+            redact_messages_for_durable_boundary,
+        )
+
+        # Zero overflow/free cells released by the replacements below. This
+        # does not require a VACUUM and is deliberately scoped to this
+        # security migration rather than changing the database-wide runtime
+        # performance contract.
+        cursor.execute("PRAGMA secure_delete=ON")
+
+        candidate_rows = cursor.execute(
+            """SELECT DISTINCT session_id FROM messages
+               WHERE tool_calls LIKE '%read_my_pkm%'
+                  OR tool_calls LIKE '%save_to_pkm%'
+                  OR tool_calls LIKE '%hussh_one_source_%'
+                  OR tool_calls LIKE '%ask_source_library_steward%'
+                  OR tool_calls LIKE '%ask_file_steward%'
+                  OR tool_calls LIKE '%hussh_consent_lease%consume%'
+                  OR tool_name = 'read_my_pkm'
+                  OR tool_name = 'save_to_pkm'
+                  OR tool_name LIKE 'hussh_one_source_%'"""
+        ).fetchall()
+        session_ids = [row[0] for row in candidate_rows]
+        updated = 0
+        for session_id in session_ids:
+            rows = cursor.execute(
+                """SELECT id, role, content, tool_name, tool_calls,
+                          tool_call_id, api_content, reasoning,
+                          reasoning_content, reasoning_details,
+                          codex_reasoning_items, codex_message_items
+                   FROM messages WHERE session_id = ? ORDER BY id""",
+                (session_id,),
+            ).fetchall()
+            messages = []
+            for row in rows:
+                item = dict(row)
+                raw_calls = item.get("tool_calls")
+                if isinstance(raw_calls, str) and raw_calls:
+                    try:
+                        item["tool_calls"] = json.loads(raw_calls)
+                    except (TypeError, ValueError):
+                        item["tool_calls"] = []
+                messages.append(item)
+            durable = redact_messages_for_durable_boundary(messages)
+            for original, safe in zip(messages, durable):
+                assignments = {
+                    "content": safe.get("content"),
+                    "api_content": safe.get("api_content"),
+                    "reasoning": safe.get("reasoning"),
+                    "reasoning_content": safe.get("reasoning_content"),
+                    "reasoning_details": safe.get("reasoning_details"),
+                    "codex_reasoning_items": safe.get("codex_reasoning_items"),
+                    "codex_message_items": safe.get("codex_message_items"),
+                }
+                safe_calls = safe.get("tool_calls")
+                assignments["tool_calls"] = (
+                    json.dumps(safe_calls, ensure_ascii=False, separators=(",", ":"))
+                    if safe_calls
+                    else None
+                )
+                comparable = {
+                    **{key: original.get(key) for key in assignments},
+                    "tool_calls": (
+                        json.dumps(
+                            original.get("tool_calls"),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        if original.get("tool_calls")
+                        else None
+                    ),
+                }
+                if assignments == comparable:
+                    continue
+                cursor.execute(
+                    """UPDATE messages
+                       SET content = ?, api_content = ?, reasoning = ?,
+                           reasoning_content = ?, reasoning_details = ?,
+                           codex_reasoning_items = ?, codex_message_items = ?,
+                           tool_calls = ?
+                       WHERE id = ?""",
+                    (
+                        assignments["content"],
+                        assignments["api_content"],
+                        assignments["reasoning"],
+                        assignments["reasoning_content"],
+                        assignments["reasoning_details"],
+                        assignments["codex_reasoning_items"],
+                        assignments["codex_message_items"],
+                        assignments["tool_calls"],
+                        original["id"],
+                    ),
+                )
+                updated += 1
+
+        # Remove the known value-shaped pseudo-vault output even when the
+        # model never invoked a native tool. Do not match generic password
+        # discussions: those are ordinary user transcript data and are not
+        # evidence that decrypted vault content crossed this boundary.
+        cursor.execute(
+            """UPDATE messages SET content = ?, api_content = NULL,
+                       reasoning = NULL, reasoning_content = NULL,
+                       reasoning_details = NULL, codex_reasoning_items = NULL,
+                       codex_message_items = NULL
+               WHERE role = 'assistant'
+                 AND content LIKE '%[VAULT_ENCRYPTED]%'""",
+            (SENSITIVE_CONTENT_SENTINEL,),
+        )
+        updated += max(0, cursor.rowcount)
+        return updated
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -1265,6 +1380,15 @@ class SessionSchemaMixin:
                 # rows, but clear migrated rows so future writes do not keep
                 # one large prompt copy per session.
                 self._dedupe_legacy_system_prompts(cursor)
+
+            if current_version < 27:
+                redacted = self._redact_owner_private_transcript_history(cursor)
+                if redacted:
+                    logger.warning(
+                        "Redacted %d legacy owner-private transcript row(s) "
+                        "during the v27 security migration",
+                        redacted,
+                    )
 
             # The FTS storage layout is versioned independently of the main
             # schema (see the v23 note above). Stamp the current layout so the

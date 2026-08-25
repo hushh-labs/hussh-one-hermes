@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.sensitive_transcript import is_sensitive_tool_call
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -1450,7 +1451,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             is_error, _ = _detect_tool_failure(function_name, result)
-            if is_error:
+            _sensitive_transcript = is_sensitive_tool_call(
+                function_name,
+                function_args,
+            )
+            if is_error and not _sensitive_transcript:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
@@ -1700,6 +1705,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         blocked = False
         is_error = True
         progress_function_name = name
+        _sensitive_transcript = is_sensitive_tool_call(name, args)
         # A worker can finish and write results[i] in the window between the
         # deadline snapshot (timed_out_indices, taken from not_done) and this
         # loop. Prefer that real result over a fabricated timeout message — the
@@ -1759,6 +1765,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             name = function_name
             args = function_args
             progress_function_name = function_name
+            _sensitive_transcript = is_sensitive_tool_call(
+                function_name,
+                function_args,
+            )
             if _parse_error is not None:
                 _emit_terminal_post_tool_call(
                     agent,
@@ -1802,8 +1812,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             if agent.verbose_logging:
                 logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
-                logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
+                if not _sensitive_transcript:
+                    logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
 
+        _sensitive_transcript = is_sensitive_tool_call(name, args)
         agent._current_tool = None
         _status_suffix = " (error)" if is_error else ""
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
@@ -1815,6 +1827,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call_id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            sensitive=_sensitive_transcript,
         ) if not _is_multimodal_tool_result(function_result) else function_result
         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
 
@@ -1842,6 +1855,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_call_id,
             effect_disposition=effect_disposition,
         )
+        if _sensitive_transcript:
+            tool_message["_sensitive_transcript"] = True
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(
@@ -2704,7 +2719,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
             )
-        if _is_error_result:
+        _sensitive_transcript = is_sensitive_tool_call(
+            function_name,
+            function_args,
+        )
+        if _is_error_result and not _sensitive_transcript:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
@@ -2727,8 +2746,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if agent.verbose_logging:
             logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
-            _log_result = _multimodal_text_summary(function_result)
-            logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
+            if not _sensitive_transcript:
+                _log_result = _multimodal_text_summary(function_result)
+                logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
         function_result = maybe_persist_tool_result(
@@ -2737,6 +2757,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call_id,
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            sensitive=_sensitive_transcript,
         ) if not _is_multimodal_tool_result(function_result) else function_result
         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
 
@@ -2757,6 +2778,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call_id,
             effect_disposition="unknown" if _execution_timed_out else None,
         )
+        if _sensitive_transcript:
+            tool_message["_sensitive_transcript"] = True
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

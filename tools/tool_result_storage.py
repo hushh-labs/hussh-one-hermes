@@ -150,8 +150,10 @@ def _write_to_spillover(content: str, filename: str):
     try:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(spill_dir, 0o700)
         path = spill_dir / filename
         path.write_text(content, encoding="utf-8", errors="replace")
+        os.chmod(path, 0o600)
     except OSError as exc:
         logger.warning("Spillover write failed for %s: %s", filename, exc)
         return None
@@ -318,6 +320,7 @@ def maybe_persist_tool_result(
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
+    sensitive: bool = False,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -336,6 +339,11 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
+    if sensitive:
+        # The active model may use this bounded result in memory, but no
+        # plaintext spill file may be created for an owner-private tool.
+        return content
+
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
     if effective_threshold == float("inf"):
@@ -409,13 +417,19 @@ def enforce_turn_budget(
 
     Mutates the list in-place and returns it.
     """
+    from agent.sensitive_transcript import is_sensitive_tool_name
+
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
         size = len(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
+        if (
+            PERSISTED_OUTPUT_TAG not in content
+            and not msg.get("_sensitive_transcript")
+            and not is_sensitive_tool_name(msg.get("tool_name"))
+        ):
             candidates.append((i, size))
 
     if total_size <= config.turn_budget:

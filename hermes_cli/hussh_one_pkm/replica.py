@@ -7,9 +7,45 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
+
+
+_DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_CIPHERTEXT_FIELDS = frozenset({"ciphertext", "iv", "tag", "algorithm"})
+_ENCRYPTED_BLOB_FIELDS = _CIPHERTEXT_FIELDS | {"segments"}
+
+
+def _validate_ciphertext_envelope(payload: Any, *, allow_segments: bool) -> None:
+    """Reject plaintext, placeholders, and mixed representations at rest."""
+    if not isinstance(payload, dict):
+        raise ValueError("PKM replica snapshots require a ciphertext envelope.")
+    allowed = _ENCRYPTED_BLOB_FIELDS if allow_segments else _CIPHERTEXT_FIELDS
+    unexpected = set(payload) - allowed
+    missing = _CIPHERTEXT_FIELDS - set(payload)
+    if unexpected or missing:
+        raise ValueError("PKM replica snapshots must contain ciphertext only.")
+    if payload.get("algorithm") != "aes-256-gcm":
+        raise ValueError("PKM replica snapshots require AES-256-GCM ciphertext.")
+    for field in ("ciphertext", "iv", "tag"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("PKM replica snapshots contain an invalid ciphertext envelope.")
+        if value.strip().startswith("[VAULT_"):
+            raise ValueError("PKM replica snapshots cannot persist placeholder values.")
+    if not allow_segments:
+        return
+    segments = payload.get("segments")
+    if segments is None:
+        return
+    if not isinstance(segments, dict) or not segments:
+        raise ValueError("PKM replica snapshot segments must be ciphertext envelopes.")
+    for segment_id, segment in segments.items():
+        if not isinstance(segment_id, str) or not segment_id:
+            raise ValueError("PKM replica snapshot segment identifiers are invalid.")
+        _validate_ciphertext_envelope(segment, allow_segments=False)
 
 
 class EncryptedPkmReplica:
@@ -48,9 +84,10 @@ class EncryptedPkmReplica:
         )
 
     def store_snapshot(self, domain: str, snapshot: dict[str, Any]) -> None:
+        if not _DOMAIN_RE.fullmatch(domain):
+            raise ValueError("PKM replica snapshots require a normalized domain.")
         encrypted_blob = snapshot.get("encrypted_blob")
-        if not isinstance(encrypted_blob, dict):
-            raise ValueError("PKM replica snapshots require ciphertext.")
+        _validate_ciphertext_envelope(encrypted_blob, allow_segments=True)
         safe_snapshot = {
             "schema_version": "hussh_one_encrypted_replica.v1",
             "domain": domain,
