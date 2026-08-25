@@ -4010,6 +4010,31 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
+def test_stored_session_runtime_overrides_selection_mode_is_make_agent_safe():
+    """A session last left in explicit-select ([S]) mode must resume without
+    crashing. ``_stored_session_runtime_overrides``'s return value is splatted
+    directly as **kwargs into ``_make_agent`` at both call sites (the eager
+    resume in methods_session.py, and the deferred resume in
+    _start_agent_build) — a stray top-level ``selection_mode`` key previously
+    landed here (1d1c6369cdf) and crashed every resume of such a session with
+    "_make_agent() got an unexpected keyword argument 'selection_mode'".
+    ``selection_mode`` must live only nested under ``model_override``, which
+    _make_agent's real ``model_override`` parameter accepts.
+    """
+    import inspect
+
+    overrides = server._stored_session_runtime_overrides(
+        {"model": "claude-opus-4-8", "model_config": {"selection_mode": "select"}}
+    )
+
+    accepted = set(inspect.signature(server._make_agent).parameters)
+    assert set(overrides).issubset(accepted), (
+        f"_stored_session_runtime_overrides returned keys _make_agent doesn't "
+        f"accept: {set(overrides) - accepted}"
+    )
+    assert overrides["model_override"]["selection_mode"] == "select"
+
+
 def test_stored_session_runtime_overrides_restores_explicit_normal_tier():
     overrides = server._stored_session_runtime_overrides(
         {

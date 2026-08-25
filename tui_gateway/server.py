@@ -2778,6 +2778,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     # overrides splat did, so a deferred build can't drop the
                     # provider and fail with "No LLM provider configured".
                     kw.update(resume_overrides)
+                    # Mirror the eager resume path (methods_session.py) so a
+                    # session last left in explicit-select mode still shows
+                    # [S] after a cold/deferred resume, not just after a warm
+                    # one. _make_agent doesn't persist model_override onto
+                    # the session dict itself — only _session_info reads it,
+                    # via session.get("model_override").
+                    if resume_overrides.get("model_override") is not None:
+                        current["model_override"] = resume_overrides["model_override"]
                 else:
                     # Model/effort/fast the desktop picked for a brand-new chat
                     # ride in as per-session overrides so the first build uses
@@ -4678,8 +4686,19 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "api_mode": api_mode or None,
         }
         if selection_mode == "select":
+            # Nested under model_override only — _make_agent has no
+            # ``selection_mode`` parameter, and this dict is splatted
+            # directly into it as **kwargs at both call sites (methods_
+            # session.py's eager resume, and _start_agent_build's deferred
+            # resume below). A prior fix (1d1c6369cdf) also set this at the
+            # top level of ``overrides`` to try to restore the [S] tag
+            # through resume, which crashed every resume of a session last
+            # left in explicit-select mode with "_make_agent() got an
+            # unexpected keyword argument 'selection_mode'". The tag itself
+            # is restored by each caller setting session["model_override"]
+            # after the agent builds (mirroring the live in-session /model
+            # switch path above); see the callers of this function.
             overrides["model_override"]["selection_mode"] = "select"
-            overrides["selection_mode"] = "select"
     if provider:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
