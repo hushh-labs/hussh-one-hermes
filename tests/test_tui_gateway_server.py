@@ -11466,6 +11466,52 @@ def test_session_info_reports_pending_model_switch(monkeypatch):
     assert server._session_info(agent, session)["model"] == "old/model"
 
 
+def test_session_info_prefers_live_agent_over_stale_metadata_mirror():
+    """A normal session's footer follows its in-process /model switch."""
+    agent = types.SimpleNamespace(
+        tools=[],
+        model="new/model",
+        provider="new-provider",
+        base_url="https://new.example/v1",
+    )
+    session = {
+        "history": [],
+        "_metadata_mirror": {
+            "model": "old/model",
+            "provider": "old-provider",
+            "base_url": "https://old.example/v1",
+        },
+    }
+
+    info = server._session_info(agent, session)
+
+    assert info["model"] == "new/model"
+    assert info["provider"] == "new-provider"
+
+
+def test_session_info_uses_selected_route_before_compute_host_next_turn():
+    """An isolated-session pick cannot be overwritten by its old host frame."""
+    session = {
+        "history": [],
+        "_compute_host_active": True,
+        "_metadata_mirror": {
+            "model": "old/model",
+            "provider": "old-provider",
+            "base_url": "https://old.example/v1",
+        },
+        "model_override": {
+            "model": "selected/model",
+            "provider": "selected-provider",
+            "base_url": "https://selected.example/v1",
+        },
+    }
+
+    info = server._session_info(None, session)
+
+    assert info["model"] == "selected/model"
+    assert info["provider"] == "selected-provider"
+
+
 def test_session_info_includes_turn_started_at():
     agent = types.SimpleNamespace(tools=[], model="", provider="")
     session = {
@@ -15008,6 +15054,41 @@ def test_model_options_hides_unconfigured_providers_by_default(monkeypatch):
     assert calls[-1]["include_unconfigured"] is True
 
 
+def test_model_picker_context_uses_selected_compute_host_route(monkeypatch):
+    """The picker opens on the same explicit route that session.info shows."""
+    from hermes_cli.inventory import ConfigContext
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        lambda: ConfigContext(
+            current_provider="old-provider",
+            current_model="old/model",
+            current_base_url="https://old.example/v1",
+            user_providers={},
+            custom_providers=[],
+        ),
+    )
+    session = {
+        "_compute_host_active": True,
+        "_metadata_mirror": {
+            "model": "old/model",
+            "provider": "old-provider",
+            "base_url": "https://old.example/v1",
+        },
+        "model_override": {
+            "model": "selected/model",
+            "provider": "selected-provider",
+            "base_url": "https://selected.example/v1",
+        },
+    }
+
+    context = server._model_picker_context(None, session)
+
+    assert context.current_model == "selected/model"
+    assert context.current_provider == "selected-provider"
+    assert context.current_base_url == "https://selected.example/v1"
+
+
 def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypatch):
     from hermes_cli.inventory import ConfigContext
 
@@ -15127,7 +15208,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     assert "result" in resp, resp
     assert resp["result"]["provider"] == {**provider, "authenticated": True}
     save_credential.assert_called_once_with(env_var, fake_key)
-    picker_context.assert_called_once_with(agent)
+    picker_context.assert_called_once_with(agent, server._sessions["save-key-session"])
     build_payload.assert_called_once_with(
         picker_ctx,
         picker_hints=True,

@@ -2149,6 +2149,55 @@ def _metadata_mirror(session: dict | None) -> dict:
     return mirror if isinstance(mirror, dict) else {}
 
 
+def _effective_session_model_route(agent, session: dict | None = None) -> dict[str, str]:
+    """Return the model route that the focused TUI session should display.
+
+    An in-process agent is authoritative for a normal session. Isolated
+    compute-host sessions do not have that agent in the serving process, so
+    their last host frame is authoritative instead. A model override is the
+    user's explicit, durable selection and must win for an isolated session:
+    it is installed before the next host turn builds, and otherwise the TUI
+    would briefly regress to the old mirrored model after a successful
+    ``/model`` command.
+
+    Keeping this precedence in one helper makes the status bar and
+    ``model.options`` describe the same route. In particular, a stale
+    metadata mirror must never overwrite a live in-process agent after an
+    in-place switch.
+    """
+    session = session or {}
+    mirror = _metadata_mirror(session)
+    override = session.get("model_override")
+    override = override if isinstance(override, dict) else {}
+
+    def _route(source: dict | None = None, *, live_agent=None) -> dict[str, str]:
+        if live_agent is not None:
+            return {
+                "model": str(getattr(live_agent, "model", "") or "").strip(),
+                "provider": str(getattr(live_agent, "provider", "") or "").strip(),
+                "base_url": str(getattr(live_agent, "base_url", "") or "").strip(),
+            }
+        source = source or {}
+        return {
+            "model": str(source.get("model") or "").strip(),
+            "provider": str(source.get("provider") or "").strip(),
+            "base_url": str(source.get("base_url") or "").strip(),
+        }
+
+    agent_route = _route(live_agent=agent)
+    override_route = _route(override)
+    mirror_route = _route(mirror)
+    routes = (
+        (override_route, mirror_route, agent_route)
+        if session.get("_compute_host_active")
+        else (agent_route, override_route, mirror_route)
+    )
+    return {
+        field: next((route[field] for route in routes if route[field]), "")
+        for field in ("model", "provider", "base_url")
+    }
+
+
 def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:
     """Mirror host-owned session metadata in the serving process.
 
@@ -6221,6 +6270,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
                 session = candidate
                 break
     mirror = _metadata_mirror(session)
+    model_route = _effective_session_model_route(agent, session)
     cwd = _display_session_cwd(session)
     session_key = str(
         (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
@@ -6239,6 +6289,22 @@ def _session_info(agent, session: dict | None = None) -> dict:
         else:
             reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or mirror.get("service_tier") or ""
+    # A model switch queued mid-turn (pending_model_switch) applies at the next
+    # turn start, so agent.model still reads the OLD model until then. Report the
+    # pending pick instead — it's the model the next turn will run, and it stops
+    # the end-of-turn settle from blipping the UI back to the old model before
+    # the switch lands. Cleared once _apply_pending_model_switch consumes it.
+    pending_switch = (session or {}).get("pending_model_switch") or {}
+    pending_model = str(pending_switch.get("display_model") or "").strip()
+    pending_provider = str(pending_switch.get("display_provider") or "").strip()
+    display_route = dict(model_route)
+    if pending_model:
+        display_route["model"] = pending_model
+        display_route["provider"] = pending_provider or display_route["provider"]
+        # A queued switch can cross providers, so never combine its displayed
+        # identity with the old provider's endpoint.
+        if pending_provider and pending_provider != model_route["provider"]:
+            display_route["base_url"] = ""
     try:
         from hermes_cli.hussh_one_identity import (
             normalize_selection_mode,
@@ -6252,9 +6318,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
             or selection_mode_from_override(override)
         )
         hussh_identity = resolve_runtime_identity(
-            getattr(agent, "model", ""),
-            provider=getattr(agent, "provider", ""),
-            base_url=getattr(agent, "base_url", ""),
+            display_route["model"],
+            provider=display_route["provider"],
+            base_url=display_route["base_url"],
             selection_mode=selection_mode,
         ).to_dict()
     except Exception:
@@ -6277,14 +6343,6 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
-    # A model switch queued mid-turn (pending_model_switch) applies at the next
-    # turn start, so agent.model still reads the OLD model until then. Report the
-    # pending pick instead — it's the model the next turn will run, and it stops
-    # the end-of-turn settle from blipping the UI back to the old model before
-    # the switch lands. Cleared once _apply_pending_model_switch consumes it.
-    pending_switch = (session or {}).get("pending_model_switch") or {}
-    pending_model = str(pending_switch.get("display_model") or "").strip()
-    pending_provider = str(pending_switch.get("display_provider") or "").strip()
     # Epoch seconds the current turn started, or None when idle. Lets the
     # desktop preserve the turn-elapsed timer across session switches (cold
     # resume path) instead of resetting it to 0:00.
@@ -6296,9 +6354,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     )
 
     info: dict = {
-        "model": pending_model or mirror.get("model", getattr(agent, "model", "")),
-        "provider": pending_provider
-        or mirror.get("provider", getattr(agent, "provider", "")),
+        "model": display_route["model"],
+        "provider": display_route["provider"],
         "reasoning_effort": reasoning_effort,
         "hussh_identity": hussh_identity,
         "service_tier": service_tier,
@@ -14487,13 +14544,14 @@ def _details_completions(text: str) -> list[dict] | None:
     return []
 
 
-def _model_picker_context(agent):
+def _model_picker_context(agent, session: dict | None = None):
     """Layer live session state onto config without losing custom identity."""
     from hermes_cli.inventory import load_picker_context
 
     ctx = load_picker_context()
-    provider = getattr(agent, "provider", "") if agent else ""
-    base_url = getattr(agent, "base_url", "") if agent else ""
+    model_route = _effective_session_model_route(agent, session)
+    provider = model_route["provider"]
+    base_url = model_route["base_url"]
     if str(provider or "").strip().lower() == "custom":
         try:
             from hermes_cli.runtime_provider import canonical_custom_identity
@@ -14502,8 +14560,7 @@ def _model_picker_context(agent):
                 canonical_custom_identity(
                     base_url=base_url or None,
                     config_provider=ctx.current_provider,
-                    model=(getattr(agent, "model", "") if agent else "")
-                    or None,
+                    model=model_route["model"] or None,
                 )
                 or provider
             )
@@ -14515,8 +14572,7 @@ def _model_picker_context(agent):
 
     return ctx.with_overrides(
         current_provider=provider,
-        current_model=(getattr(agent, "model", "") if agent else "")
-        or _resolve_model(),
+        current_model=model_route["model"] or _resolve_model(),
         current_base_url=base_url,
     )
 
