@@ -51,11 +51,28 @@ changing models.
 ## Interrupt-and-redirect behavior
 
 When a switch is submitted while a model turn is still running, the TUI first
-interrupts that turn and queues the switch. Seeing `interrupted` describes the
-superseded turn; it is not the model-switch result. Once the old stream has
-unwound, the queued request is intercepted before any new LLM call and the TUI
-emits the model/provider confirmation. This preserves one writer for the live
-agent while still supporting redirect-style input.
+queues the switch instead of mutating the agent that the streaming worker is
+reading. The selected route is emitted immediately in `session.info` as the
+pending next-turn route; the TUI status line and the dashboard therefore update
+without waiting for the current response to finish. The switch is applied at
+the next turn start, before any new LLM call. This preserves one writer for the
+live agent without making a successful selection look stale.
+
+## Dashboard live-model synchronization
+
+The dashboard has two distinct channels: a lightweight JSON-RPC sidecar and
+the event feed for the PTY-backed TUI session. The sidecar is not the active
+chat and must never determine its displayed model. The chat sidebar instead:
+
+- treats the PTY `session.info` event as the authoritative active-session
+  route, including a pending busy-turn `/model` choice;
+- uses the profile's configured default only until the PTY emits its first
+  session event; and
+- leaves the dashboard's standalone picker explicitly global. A TUI `/model`
+  remains a session override unless it carries `--global`.
+
+This keeps the dashboard's model label coherent with the embedded TUI while
+preserving session isolation across simultaneous chats.
 
 ## Vertex safeguard
 Vertex Claude switches run a live access check before mutating the session; stale Vertex
@@ -109,7 +126,9 @@ The model picker popover (opened by clicking/selecting the status-bar model) ope
 - `tests/hermes_cli/test_natural_model_switch.py`
 - `tests/gateway/test_natural_model_switch.py`
 - `tests/test_tui_gateway_server.py` — interception, persistence, resume, and
-  session isolation.
+  session isolation, including immediate pending-switch `session.info`.
+- `web/src/components/ChatSidebar.test.tsx` — PTY event model takes precedence
+  over the configured-default fallback.
 - `tests/tui_gateway/test_hussh_one_runtime_identity.py` — canonical `[A]/[S]`
   rendering.
 
