@@ -621,6 +621,23 @@ SOURCE_LIBRARY_PARENT_GUIDANCE = (
 )
 
 
+HUSSH_ONE_PKM_GUIDANCE = (
+    "# Hussh One private information boundary\n"
+    "PKM at rest is one ciphertext representation, never a mixture of plaintext "
+    "values and placeholder strings. Use `read_my_pkm` for the active owner's "
+    "PKM and request the narrowest useful domain scope. Its `value` is an "
+    "authorized decrypted projection held in memory for the current response; "
+    "it is not the JSON stored in the vault or ciphertext replica. Never inspect "
+    "replica files with file or terminal tools, call private decryption helpers, "
+    "or claim that documentation, schemas, simulations, source files, or "
+    "`[VAULT_*]` placeholders are exact vault contents. Never ask the user to "
+    "type a passphrase, vault key, recovery key, or connector private key in "
+    "chat. If custody is locked or absent, direct them to `/hussh-one unlock`, "
+    "`/hussh-one enroll`, or `/hussh-one connect`; those commands use protected "
+    "native UI outside model context.\n"
+)
+
+
 def computer_use_guidance(platform_name: Optional[str] = None) -> str:
     """Return platform-aware computer-use guidance for the system prompt.
 

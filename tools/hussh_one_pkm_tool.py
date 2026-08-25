@@ -73,7 +73,12 @@ registry.register(
             "recall, and native vault reads; no consent request is needed. Use "
             "the hosted Hussh Consent MCP only when another party or external "
             "agent requests shared information. Start with list_domains when "
-            "the domain is unknown, and request the narrowest useful scope."
+            "the domain is unknown, and request the narrowest useful scope. The "
+            "returned value is an authorized decrypted in-memory projection; at "
+            "rest the vault and local replica contain AES-256-GCM ciphertext, not "
+            "that JSON. Never treat [VAULT_*] placeholders, documentation, or "
+            "simulation files as stored PKM values, and never ask for a vault "
+            "passphrase, key, or recovery secret in chat."
         ),
         "parameters": {
             "type": "object",

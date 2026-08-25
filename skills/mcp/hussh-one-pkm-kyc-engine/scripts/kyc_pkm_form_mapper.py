@@ -20,6 +20,29 @@ def normalize_digits(value: Optional[str]) -> str:
     return re.sub(r"\D", "", str(value))
 
 
+def _mask_tail(value: Any, *, visible: int = 4) -> str:
+    text = str(value or "")
+    if not text:
+        return "N/A"
+    suffix = text[-visible:] if len(text) >= visible else "X" * visible
+    return f"{'*' * max(4, len(text) - visible)}{suffix}"
+
+
+def _mask_name(value: Any) -> str:
+    words = [word for word in str(value or "").split() if word]
+    if not words:
+        return "N/A"
+    return " ".join(
+        word[0] + ("*" * max(2, len(word) - 1))
+        for word in words
+    )
+
+
+def _mask_date(value: Any) -> str:
+    text = str(value or "")
+    return f"****-**-{text[-2:]}" if len(text) >= 2 else "****-**-**"
+
+
 def validate_pkm_kyc_data(pkm_data: Dict[str, Any]) -> List[str]:
     """Validate that essential PKM domain fields are present for KYC/KYB flows."""
     errors: List[str] = []
@@ -213,29 +236,33 @@ def generate_dry_run_preview(target: str, pkm_data: Dict[str, Any]) -> str:
             "===========================================================",
             "🤫 HUSSH ONE - GUSTO ONBOARDING DRY-RUN PREVIEW (CONSENT GATE)",
             "===========================================================",
-            f"Company Legal Name:   {payloads['company']['name']}",
-            f"Trade Name / DBA:     {payloads['company']['trade_name'] or 'N/A'}",
-            f"FEIN (EIN):           {payloads['federal_tax']['ein']}",
+            f"Company Legal Name:   {_mask_name(payloads['company']['name'])}",
+            f"Trade Name / DBA:     {_mask_name(payloads['company']['trade_name'])}",
+            f"FEIN (EIN):           {_mask_tail(payloads['federal_tax']['ein'])}",
             f"Federal Tax Form:     Form {payloads['federal_tax']['filing_form']}",
             f"Taxpayer Type:        {payloads['federal_tax']['tax_payer_type']}",
             f"NAICS Code:           {payloads['industry']['naics_code']}",
             "-----------------------------------------------------------",
             "PRIMARY SIGNATORY (KYC / IDENTITY):",
-            f"  Name:               {payloads['signatory']['first_name']} {payloads['signatory']['last_name']}",
+            f"  Name:               {_mask_name(payloads['signatory']['first_name'])} {_mask_name(payloads['signatory']['last_name'])}",
             f"  Title:              {payloads['signatory']['title']}",
-            f"  DOB:                {payloads['signatory']['birthday']}",
-            f"  SSN:                ***-**-{payloads['signatory']['ssn'][-4:] if len(payloads['signatory']['ssn']) >= 4 else 'XXXX'}",
-            f"  Home Address:       {payloads['signatory']['home_address']['street_1']}, {payloads['signatory']['home_address']['city']}, {payloads['signatory']['home_address']['state']} {payloads['signatory']['home_address']['zip']}",
+            f"  DOB:                {_mask_date(payloads['signatory']['birthday'])}",
+            f"  SSN:                {_mask_tail(payloads['signatory']['ssn'])}",
+            "  Home Address:       [masked owner-private address]",
             "-----------------------------------------------------------",
             "BANKING & ACH SWEEP:",
-            f"  Routing Number:     {payloads['bank_account']['routing_number']}",
-            f"  Account Number:     *****{payloads['bank_account']['account_number'][-4:] if len(payloads['bank_account']['account_number']) >= 4 else 'XXXX'}",
+            f"  Routing Number:     {_mask_tail(payloads['bank_account']['routing_number'])}",
+            f"  Account Number:     {_mask_tail(payloads['bank_account']['account_number'])}",
             f"  Account Type:       {payloads['bank_account']['account_type']}",
             "-----------------------------------------------------------",
             "STATE TAX JURISDICTIONS:",
         ]
         for st, st_data in payloads["state_taxes"].items():
-            lines.append(f"  [{st}] Withholding ID: {st_data['withholding_account_id']} | SUI ID: {st_data['unemployment_account_id']} | SUI Rate: {st_data['sui_tax_rate']*100:.2f}%")
+            lines.append(
+                f"  [{st}] Withholding ID: {_mask_tail(st_data['withholding_account_id'])} "
+                f"| SUI ID: {_mask_tail(st_data['unemployment_account_id'])} "
+                f"| SUI Rate: {st_data['sui_tax_rate']*100:.2f}%"
+            )
         lines.append("===========================================================")
         lines.append("Status: Ready for submission. Awaiting explicit user consent.")
         return "\n".join(lines)
@@ -246,16 +273,25 @@ def generate_dry_run_preview(target: str, pkm_data: Dict[str, Any]) -> str:
             "===========================================================",
             "🤫 HUSSH ONE - FinCEN BOIR FILING DRY-RUN PREVIEW",
             "===========================================================",
-            f"Reporting Company:    {payload['reporting_company']['legal_name']}",
-            f"EIN:                  {payload['reporting_company']['tax_id_number']}",
+            f"Reporting Company:    {_mask_name(payload['reporting_company']['legal_name'])}",
+            f"EIN:                  {_mask_tail(payload['reporting_company']['tax_id_number'])}",
             f"Formation State:      {payload['reporting_company']['formation_jurisdiction_state']}",
             "BENEFICIAL OWNERS:",
         ]
         for idx, owner in enumerate(payload["beneficial_owners"], 1):
-            name = f"{owner['legal_name']['first']} {owner['legal_name']['last']}"
-            lines.append(f"  Owner #{idx}:          {name} (DOB: {owner['date_of_birth']})")
-            lines.append(f"  ID Document:        {owner['identifying_document']['type'].upper()} #{owner['identifying_document']['number']}")
-            lines.append(f"  Residential Addr:   {owner['residential_address']['street_1']}, {owner['residential_address']['city']}, {owner['residential_address']['state']}")
+            name = _mask_name(
+                f"{owner['legal_name']['first']} {owner['legal_name']['last']}"
+            )
+            lines.append(
+                f"  Owner #{idx}:          {name} "
+                f"(DOB: {_mask_date(owner['date_of_birth'])})"
+            )
+            lines.append(
+                "  ID Document:        "
+                f"{owner['identifying_document']['type'].upper()} "
+                f"#{_mask_tail(owner['identifying_document']['number'])}"
+            )
+            lines.append("  Residential Addr:   [masked owner-private address]")
         lines.append("===========================================================")
         lines.append("Status: Ready for FinCEN filing submission.")
         return "\n".join(lines)

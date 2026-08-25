@@ -41,7 +41,10 @@ Run the deterministic mapper against local or decrypted PKM snapshots using `.ve
    Use `read_file` to check `~/.hermes/hussh-one/vault-lock-state.json` and ensure `locked: false`.
 
 2. **Scoped Attribute Retrieval:**
-   Decrypt the required domain snapshots (`identity.json`, `legal_entity.json`, `financial.json`, `tax_record.json`) from the PKM replica using the local vault key.
+   Use `read_my_pkm` for the narrowest required scopes in `identity`,
+   `legal_entity`, `financial`, and `tax_record`. Never open replica files or
+   invoke private decryption helpers. The returned values are authorized,
+   memory-only projections; the stored replica remains ciphertext.
 
 3. **Validate & Transform:**
    Invoke `validate_pkm_kyc_data()` and map the data to the target service payload (e.g., `map_to_gusto_payloads()` or `map_to_fincen_boir_payload()`).
@@ -59,6 +62,12 @@ Whenever populating or mutating PKM records from external sources (such as Gmail
 2. **Confirmation Breakdown:** The agent MUST present a structured domain breakdown showing exact fields, source provenance, and target KYC payload mapping before committing.
 3. **Interactive Confirmation:** All external writes or local vault commits require explicit owner confirmation.
 4. **Auditability:** Every mapped payload carries timestamps and origin references for full traceability.
+
+Never combine real plaintext with `[VAULT_ENCRYPTED]`, `[VAULT_REF:*]`, or
+similar sentinels and call the result vault JSON. Schema documents contain
+field paths only. Exact values come only from an authorized `read_my_pkm` call,
+and a passphrase, vault key, recovery key, or connector key must never be
+requested in chat.
 
 ## Pitfalls
 - **Unchecked SSN/EIN formatting:** APIs reject dashes in FEIN and SSN. Always pass values through `normalize_digits()`.

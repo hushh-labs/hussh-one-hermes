@@ -109,11 +109,24 @@ refresh.
 
 ## Read and write behavior
 
-Reads remain PCHP consent requests and scoped encrypted exports. This bridge
-does not return a decrypted PKM domain to the agent. Writes are two-step:
-proposal, then commit. Commit displays the affected domain/path, human-readable
-summary, and current sharing/export impact; it re-reads the source revision and
-fails closed if content or sharing changed.
+Owner reads and external sharing are separate lanes. A locally enrolled
+Desktop/dashboard session may use `read_my_pkm` to decrypt the narrowest
+requested owner scope in process memory. The tool labels that result
+`decrypted_in_memory_projection`; it is not the JSON stored by the vault.
+Standalone TUI and messaging sessions do not receive this native owner tool.
+External agents continue through PCHP consent and scoped encrypted exports.
+
+The durable vault, cloud PKM, and local replica contain ciphertext envelopes
+only. A response that mixes plaintext fields with `[VAULT_ENCRYPTED]`,
+`[VAULT_REF:*]`, or similar placeholders is invalid and must never be described
+as exact vault state. Documentation and simulations contain field inventories,
+not vault values. If an owner read is locked or unavailable, Hermes directs the
+person to the protected `/hussh-one` lifecycle instead of asking for a key or
+passphrase in chat or falling back to direct replica decryption.
+
+Writes are two-step: proposal, then commit. Commit displays the affected
+domain/path, human-readable summary, and current sharing/export impact; it
+re-reads the source revision and fails closed if content or sharing changed.
 
 Create, update, merge, path/scope delete, and whole-domain delete use the same
 confirmed mutation plan. Whole-domain deletion is compare-and-delete on the

@@ -5185,6 +5185,31 @@ def _strip_child_only_toolsets(names) -> set[str]:
     return set(names) - {"hussh_one_sources"}
 
 
+def _strip_untrusted_native_toolsets(names, platform: str) -> set[str]:
+    """Keep native custody tools confined to an authorized client surface."""
+    filtered = _strip_child_only_toolsets(names)
+    if "hussh_one" not in _hussh_one_surface_toolsets(platform):
+        filtered.discard("hussh_one")
+    return filtered
+
+
+def _filter_explicit_native_toolsets(names, platform: str) -> list[str]:
+    """Preserve operator order while enforcing the same native surface gate."""
+    native_allowed = "hussh_one" in _hussh_one_surface_toolsets(platform)
+    return [
+        name
+        for name in names
+        if name != "hussh_one_sources" and (name != "hussh_one" or native_allowed)
+    ]
+
+
+def _all_surface_safe_toolsets(platform: str) -> list[str]:
+    """Expand ``all`` without bypassing child-only/native surface gates."""
+    from toolsets import get_toolset_names
+
+    return sorted(_strip_untrusted_native_toolsets(get_toolset_names(), platform))
+
+
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
     explicit = [
@@ -5213,7 +5238,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
                 # loses its pane/project/custody tools exactly when sitting
                 # in a repo (see below).
                 return sorted(
-                    _strip_child_only_toolsets(selection)
+                    _strip_untrusted_native_toolsets(selection, session_platform)
                     | _gui_surface_toolsets(session_platform)
                     | _hussh_one_surface_toolsets(session_platform)
                 )
@@ -5251,7 +5276,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
                     file=sys.stderr,
                     flush=True,
                 )
-            return None
+            return _all_surface_safe_toolsets(session_platform)
 
         if not unresolved:
             # HERMES_TUI_TOOLSETS is an explicit operator override: it wins
@@ -5259,7 +5284,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             # this must NOT auto-add hussh_one/project — only strip the
             # child-only Source Library toolset that must never leak in via
             # an env override regardless of pin.
-            return [name for name in built_in if name != "hussh_one_sources"]
+            return _filter_explicit_native_toolsets(built_in, session_platform)
 
         mcp_names: set[str] = set()
         mcp_disabled: set[str] = set()
@@ -5311,7 +5336,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         if valid:
             # Same operator-override contract as the "not unresolved" branch
             # above: an explicit HERMES_TUI_TOOLSETS pin wins outright.
-            return [name for name in valid if name != "hussh_one_sources"]
+            return _filter_explicit_native_toolsets(valid, session_platform)
 
         fallback_notice = (
             "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
@@ -5342,7 +5367,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # here is the gate that exposes them: it is the only surface that can
         # follow a project move or hold the user-approved vault key.
         return sorted(
-            _strip_child_only_toolsets(enabled)
+            _strip_untrusted_native_toolsets(enabled, session_platform)
             | _gui_surface_toolsets(session_platform)
             | _hussh_one_surface_toolsets(session_platform)
         )
@@ -5353,7 +5378,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
                 file=sys.stderr,
                 flush=True,
             )
-        return None
+        return _all_surface_safe_toolsets(session_platform)
 
 
 def _session_tool_progress_mode(sid: str) -> str:

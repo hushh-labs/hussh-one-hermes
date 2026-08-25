@@ -714,7 +714,14 @@ class AIAgent:
 
         if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
             try:
-                engine.on_session_end(old_session_id, previous_messages)
+                from agent.sensitive_transcript import (
+                    redact_messages_for_durable_boundary,
+                )
+
+                engine.on_session_end(
+                    old_session_id,
+                    redact_messages_for_durable_boundary(previous_messages),
+                )
             except Exception as exc:
                 logger.debug("context engine on_session_end during transition: %s", exc)
 
@@ -2204,6 +2211,13 @@ class AIAgent:
                 id(item) for item in (conversation_history or [])
                 if isinstance(item, dict)
             }
+            # Keep the live model context intact while deriving one safe view
+            # for every durable sink row.
+            from agent.sensitive_transcript import (
+                redact_messages_for_durable_boundary,
+            )
+
+            _durable_messages = redact_messages_for_durable_boundary(messages)
 
             # Bounded scan: skip the longest identity-matched prefix of the
             # list snapshot taken at the end of the previous successful flush.
@@ -2232,6 +2246,9 @@ class AIAgent:
                 msg = messages[_msg_idx]
                 if not isinstance(msg, dict):
                     continue
+                persist_msg = _durable_messages[_msg_idx]
+                if not isinstance(persist_msg, dict):
+                    persist_msg = msg
                 # Never write ephemeral recovery scaffolding to the session
                 # store. The flush is append-only (it only advances
                 # _last_flushed_db_idx via identity tracking), so a synthetic
@@ -2251,16 +2268,16 @@ class AIAgent:
                 if id(msg) in history_ids or id(msg) in seed_ids:
                     msg[_DB_PERSISTED_MARKER] = True
                     continue
-                role = msg.get("role", "unknown")
-                content = msg.get("content")
+                role = persist_msg.get("role", "unknown")
+                content = persist_msg.get("content")
                 # api_content sidecar: the exact bytes sent to the API when
                 # they differ from the clean content (stamped by the turn
                 # prologue for prefetch/plugin injections). Written verbatim
                 # so replay can reproduce the sent prefix byte-for-byte.
-                _row_api_content = msg.get("api_content")
+                _row_api_content = persist_msg.get("api_content")
                 if not isinstance(_row_api_content, str):
                     _row_api_content = None
-                _row_timestamp = msg.get("timestamp")
+                _row_timestamp = persist_msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
                 # (never to the live dict). A multimodal override is a complete
                 # clean replacement for an API-local noted payload. Preserve the
@@ -2339,27 +2356,27 @@ class AIAgent:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
-                if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
+                if hasattr(persist_msg, "tool_calls") and isinstance(persist_msg.tool_calls, list) and persist_msg.tool_calls:
                     tool_calls_data = [
                         {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
+                        for tc in persist_msg.tool_calls
                     ]
-                elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
+                elif isinstance(persist_msg.get("tool_calls"), list):
+                    tool_calls_data = persist_msg["tool_calls"]
                 _batch_rows.append({
                     "role": role,
                     "content": content,
-                    "tool_name": msg.get("tool_name"),
+                    "tool_name": persist_msg.get("tool_name"),
                     "tool_calls": tool_calls_data,
-                    "tool_call_id": msg.get("tool_call_id"),
-                    "finish_reason": msg.get("finish_reason"),
+                    "tool_call_id": persist_msg.get("tool_call_id"),
+                    "finish_reason": persist_msg.get("finish_reason"),
                     # Reasoning/codex fields are role-gated (assistant-only)
                     # inside _insert_message_rows — pass through untouched.
-                    "reasoning": msg.get("reasoning"),
-                    "reasoning_content": msg.get("reasoning_content"),
-                    "reasoning_details": msg.get("reasoning_details"),
-                    "codex_reasoning_items": msg.get("codex_reasoning_items"),
-                    "codex_message_items": msg.get("codex_message_items"),
+                    "reasoning": persist_msg.get("reasoning"),
+                    "reasoning_content": persist_msg.get("reasoning_content"),
+                    "reasoning_details": persist_msg.get("reasoning_details"),
+                    "codex_reasoning_items": persist_msg.get("codex_reasoning_items"),
+                    "codex_message_items": persist_msg.get("codex_message_items"),
                     "timestamp": _row_timestamp,
                     "api_content": _row_api_content,
                     # Standalone reference handoffs are always hidden, even
@@ -2371,20 +2388,20 @@ class AIAgent:
                     "display_kind": (
                         "hidden"
                         if (
-                            msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                            persist_msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
                             and (
                                 ContextCompressor.classify_summary_content(
-                                    msg.get("content")
+                                    persist_msg.get("content")
                                 )
                                 == "standalone"
-                                or not msg.get(
+                                or not persist_msg.get(
                                     "_compressed_summary_has_user_turn"
                                 )
                             )
                         )
-                        else msg.get("display_kind")
+                        else persist_msg.get("display_kind")
                     ),
-                    "display_metadata": msg.get("display_metadata"),
+                    "display_metadata": persist_msg.get("display_metadata"),
                 })
                 _batch_msgs.append(msg)
             # One transaction for the whole turn's new rows (typically 3-8
@@ -2541,8 +2558,15 @@ class AIAgent:
         """
         if not self.save_trajectories:
             return
-        
-        trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
+
+        from agent.sensitive_transcript import redact_messages_for_durable_boundary
+
+        durable_messages = redact_messages_for_durable_boundary(messages)
+        trajectory = self._convert_to_trajectory_format(
+            durable_messages,
+            user_query,
+            completed,
+        )
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
@@ -3189,6 +3213,9 @@ class AIAgent:
         messages = messages or self._session_messages
         if not messages:
             return
+        from agent.sensitive_transcript import redact_messages_for_durable_boundary
+
+        messages = redact_messages_for_durable_boundary(messages)
 
         # Re-derive the target path each call so /branch and /compress
         # session-id changes land in the right file without any re-point
@@ -4422,9 +4449,12 @@ class AIAgent:
         if getattr(self, "_memory_provider_shutdown", False):
             return
         self._memory_provider_shutdown = True
+        from agent.sensitive_transcript import redact_messages_for_durable_boundary
+
+        durable_messages = redact_messages_for_durable_boundary(messages or [])
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                self._memory_manager.on_session_end(durable_messages)
             except Exception as e:
                 logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
@@ -4436,7 +4466,7 @@ class AIAgent:
             try:
                 self.context_compressor.on_session_end(
                     self.session_id or "",
-                    messages or [],
+                    durable_messages,
                 )
             except Exception:
                 pass
@@ -4446,9 +4476,12 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        from agent.sensitive_transcript import redact_messages_for_durable_boundary
+
+        durable_messages = redact_messages_for_durable_boundary(messages or [])
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                self._memory_manager.on_session_end(durable_messages)
             except Exception:
                 pass
         # Notify context engine of session end too — same lifecycle moment as
@@ -4461,7 +4494,7 @@ class AIAgent:
             try:
                 self.context_compressor.on_session_end(
                     self.session_id or "",
-                    messages or [],
+                    durable_messages,
                 )
             except Exception:
                 pass
@@ -4503,6 +4536,12 @@ class AIAgent:
         if interrupted:
             return
         if not (self._memory_manager and final_response and original_user_message):
+            return
+        from agent.sensitive_transcript import current_turn_uses_sensitive_tools
+
+        if current_turn_uses_sensitive_tools(messages or []):
+            # Owner-private reads/writes are never mirrored to an external
+            # memory provider, including the assistant's derived response.
             return
         # Multimodal turns carry content as a list of typed parts; providers
         # expect plain strings, so flatten to text first (newline-joined for

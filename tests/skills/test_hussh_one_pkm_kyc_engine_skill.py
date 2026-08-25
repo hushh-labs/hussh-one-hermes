@@ -16,6 +16,10 @@ SKILL_DIR = (
 )
 
 MAPPER_SCRIPT = SKILL_DIR / "scripts" / "kyc_pkm_form_mapper.py"
+VAULT_OPERATIONS_SKILL = (
+    SKILL_DIR.parent / "hussh-one-pkm-vault-operations" / "SKILL.md"
+)
+SCHEMA_SIMULATION = Path(__file__).parents[2] / "simulations" / "candidate_pkm_preview.md"
 
 # Dynamically import kyc_pkm_form_mapper
 spec = importlib.util.spec_from_file_location("kyc_pkm_form_mapper", MAPPER_SCRIPT)
@@ -30,24 +34,38 @@ map_to_fincen_boir_payload = mapper.map_to_fincen_boir_payload
 generate_dry_run_preview = mapper.generate_dry_run_preview
 
 
+def test_model_facing_pkm_docs_preserve_single_representation_boundary() -> None:
+    kyc_skill = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    operations_skill = VAULT_OPERATIONS_SKILL.read_text(encoding="utf-8")
+    simulation = SCHEMA_SIMULATION.read_text(encoding="utf-8")
+
+    assert "Use `read_my_pkm`" in kyc_skill
+    assert "Use the native `read_my_pkm` tool only" in operations_skill
+    assert "from hermes_cli.hussh_one_pkm.pkm import" not in operations_skill
+    assert "replica_path =" not in operations_skill
+    assert "decrypted_values_included\": false" in simulation
+    assert "[VAULT_ENCRYPTED" not in simulation
+    assert "[VAULT_REF:" not in simulation
+
+
 @pytest.fixture
 def sample_pkm_data():
     return {
         "identity": {
             "profile": {
-                "first_name": "Kushal",
-                "middle_name": "Kumar",
-                "last_name": "Trivedi",
+                "first_name": "Example",
+                "middle_name": "Test",
+                "last_name": "Owner",
                 "suffix": "",
                 "date_of_birth": "1990-01-15",
                 "ssn": "123-45-6789",
                 "citizenship": "US",
-                "phone": "+1 (201) 241-9368",
-                "email": "kushaltrivedi1711@gmail.com",
+                "phone": "+1 (202) 555-0142",
+                "email": "owner@example.invalid",
                 "residential_address": {
                     "street_1": "123 Main St",
                     "street_2": "Apt 4B",
-                    "city": "Jersey City",
+                    "city": "Example City",
                     "state": "NJ",
                     "zip": "07302",
                     "country": "US",
@@ -63,8 +81,8 @@ def sample_pkm_data():
         },
         "legal_entity": {
             "entity": {
-                "legal_name": "Hushh Technologies LLC",
-                "trade_name_dba": "Hussh",
+                "legal_name": "Example Payroll Company LLC",
+                "trade_name_dba": "Example Payroll",
                 "entity_type": "LLC",
                 "tax_classification": "C_CORP",
                 "formation_state": "DE",
@@ -74,7 +92,7 @@ def sample_pkm_data():
                 "sic_code": "7371",
                 "industry_description": "Custom Computer Programming Services",
                 "registered_address": {
-                    "street_1": "1209 Orange St",
+                    "street_1": "456 Example Ave",
                     "street_2": "",
                     "city": "Wilmington",
                     "state": "DE",
@@ -87,7 +105,7 @@ def sample_pkm_data():
                     "state": "NY",
                     "zip": "10001",
                 },
-                "corporate_phone": "2012419368",
+                "corporate_phone": "2025550142",
             },
             "beneficial_ownership": [
                 {
@@ -101,7 +119,7 @@ def sample_pkm_data():
         "financial": {
             "operating_bank_account": {
                 "bank_name": "Mercury (Choice Financial Group)",
-                "account_holder_name": "Hushh Technologies LLC",
+                "account_holder_name": "Example Payroll Company LLC",
                 "account_type": "checking",
                 "routing_number": "123456789",
                 "account_number": "9876543210",
@@ -160,7 +178,7 @@ def test_canonical_schema_is_valid_json():
 
 def test_normalize_digits():
     assert normalize_digits("12-3456789") == "123456789"
-    assert normalize_digits("+1 (201) 241-9368") == "12012419368"
+    assert normalize_digits("+1 (202) 555-0142") == "12025550142"
     assert normalize_digits(None) == ""
     assert normalize_digits(12345) == "12345"
 
@@ -181,8 +199,8 @@ def test_map_to_gusto_payloads(sample_pkm_data):
     payloads = map_to_gusto_payloads(sample_pkm_data)
 
     # Check company payload
-    assert payloads["company"]["name"] == "Hushh Technologies LLC"
-    assert payloads["company"]["trade_name"] == "Hussh"
+    assert payloads["company"]["name"] == "Example Payroll Company LLC"
+    assert payloads["company"]["trade_name"] == "Example Payroll"
 
     # Check federal tax payload
     assert payloads["federal_tax"]["ein"] == "123456789"
@@ -193,11 +211,11 @@ def test_map_to_gusto_payloads(sample_pkm_data):
     assert payloads["industry"]["sic_codes"] == ["7371"]
 
     # Check signatory
-    assert payloads["signatory"]["first_name"] == "Kushal"
-    assert payloads["signatory"]["last_name"] == "Trivedi"
+    assert payloads["signatory"]["first_name"] == "Example"
+    assert payloads["signatory"]["last_name"] == "Owner"
     assert payloads["signatory"]["ssn"] == "123456789"
     assert payloads["signatory"]["title"] == "Chief Executive Officer"
-    assert payloads["signatory"]["home_address"]["city"] == "Jersey City"
+    assert payloads["signatory"]["home_address"]["city"] == "Example City"
 
     # Check bank account
     assert payloads["bank_account"]["routing_number"] == "123456789"
@@ -212,13 +230,13 @@ def test_map_to_gusto_payloads(sample_pkm_data):
 
 def test_map_to_fincen_boir_payload(sample_pkm_data):
     boir = map_to_fincen_boir_payload(sample_pkm_data)
-    assert boir["reporting_company"]["legal_name"] == "Hushh Technologies LLC"
+    assert boir["reporting_company"]["legal_name"] == "Example Payroll Company LLC"
     assert boir["reporting_company"]["tax_id_number"] == "123456789"
     assert boir["reporting_company"]["formation_jurisdiction_state"] == "DE"
 
     assert len(boir["beneficial_owners"]) == 1
     owner = boir["beneficial_owners"][0]
-    assert owner["legal_name"]["first"] == "Kushal"
+    assert owner["legal_name"]["first"] == "Example"
     assert owner["identifying_document"]["type"] == "passport"
     assert owner["identifying_document"]["number"] == "A12345678"
 
@@ -226,13 +244,27 @@ def test_map_to_fincen_boir_payload(sample_pkm_data):
 def test_generate_dry_run_preview(sample_pkm_data):
     gusto_preview = generate_dry_run_preview("gusto", sample_pkm_data)
     assert "GUSTO ONBOARDING DRY-RUN PREVIEW" in gusto_preview
-    assert "Hushh Technologies LLC" in gusto_preview
-    assert "Kushal Trivedi" in gusto_preview
+    assert "E****** P****** C****** L**" in gusto_preview
     assert "Form 941" in gusto_preview
 
     boir_preview = generate_dry_run_preview("fincen", sample_pkm_data)
     assert "FinCEN BOIR FILING DRY-RUN PREVIEW" in boir_preview
-    assert "Hushh Technologies LLC" in boir_preview
+    assert "E****** P****** C****** L**" in boir_preview
+
+    sensitive_values = {
+        "Example Payroll Company LLC",
+        "Example Owner",
+        "1990-01-15",
+        "123456789",
+        "123 Main St",
+        "Example City",
+        "9876543210",
+        "A12345678",
+        "DE-WTH-100",
+        "DE-SUI-200",
+    }
+    for preview in (gusto_preview, boir_preview):
+        assert all(value not in preview for value in sensitive_values)
 
 
 def test_extract_pkm_from_sources_helpers(tmp_path, monkeypatch):
@@ -247,10 +279,10 @@ def test_extract_pkm_from_sources_helpers(tmp_path, monkeypatch):
     assert extractor.resolve_active_model() == "gemini-3.7-flash"
 
     # Test JSON parsing
-    raw_json = '```json\n{"name": "Kushal Ketan Trivedi", "ssn": "270-81-4901"}\n```'
+    raw_json = '```json\n{"name": "Synthetic Owner", "ssn": "000-00-0000"}\n```'
     parsed = extractor.parse_extracted_json(raw_json)
-    assert parsed["name"] == "Kushal Ketan Trivedi"
-    assert parsed["ssn"] == "270-81-4901"
+    assert parsed["name"] == "Synthetic Owner"
+    assert parsed["ssn"] == "000-00-0000"
 
     # Test PDF JPEG extraction mock
     test_pdf = tmp_path / "test.pdf"
@@ -259,4 +291,3 @@ def test_extract_pkm_from_sources_helpers(tmp_path, monkeypatch):
     assert extracted_jpeg is not None
     assert extracted_jpeg.startswith(b"\xff\xd8\xff")
     assert extracted_jpeg.endswith(b"\xff\xd9")
-

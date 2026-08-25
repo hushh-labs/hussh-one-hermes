@@ -31,3 +31,5 @@ def test_native_owner_read_tool_is_distinct_from_hosted_consent_mcp(monkeypatch)
     assert entry.toolset == "hussh_one"
     assert "no consent request is needed" in entry.schema["description"]
     assert "external agent" in entry.schema["description"]
+    assert "decrypted in-memory projection" in entry.schema["description"]
+    assert "never ask for a vault passphrase" in entry.schema["description"]

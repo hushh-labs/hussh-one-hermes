@@ -873,6 +873,8 @@ def test_native_owner_read_lists_domains_and_decrypts_only_requested_scope() -> 
         "success": True,
         "domain": "profile",
         "scope_path": "identity.name",
+        "representation": "decrypted_in_memory_projection",
+        "at_rest_representation": "aes-256-gcm-ciphertext",
         "content_revision": 7,
         "materialized_leaf_count": 1,
         "value": "Owner",
@@ -1354,6 +1356,68 @@ def test_encrypted_replica_persists_only_ciphertext_and_monotonic_cursor(
 
     replica.delete_domain("financial")
     assert not snapshot_path.exists()
+
+
+@pytest.mark.parametrize(
+    "encrypted_blob",
+    [
+        {
+            "ciphertext": "cipher",
+            "iv": "iv",
+            "tag": "tag",
+            "algorithm": "aes-256-gcm",
+            "plaintext": {"identity": {"name": "must-not-persist"}},
+        },
+        {
+            "ciphertext": "[VAULT_ENCRYPTED]",
+            "iv": "iv",
+            "tag": "tag",
+            "algorithm": "aes-256-gcm",
+        },
+        {
+            "ciphertext": "cipher",
+            "iv": "iv",
+            "tag": "tag",
+            "algorithm": "aes-256-gcm",
+            "segments": {
+                "identity": {
+                    "ciphertext": "cipher",
+                    "iv": "iv",
+                    "tag": "tag",
+                    "algorithm": "aes-256-gcm",
+                    "value": {"name": "must-not-persist"},
+                }
+            },
+        },
+    ],
+)
+def test_encrypted_replica_rejects_mixed_or_placeholder_representations(
+    tmp_path: Path,
+    encrypted_blob: dict,
+) -> None:
+    replica = EncryptedPkmReplica(tmp_path / "profile")
+
+    with pytest.raises(ValueError, match="ciphertext|placeholder"):
+        replica.store_snapshot("identity", {"encrypted_blob": encrypted_blob})
+
+    assert not (replica.domains / "identity.json").exists()
+
+
+def test_encrypted_replica_rejects_non_normalized_domain(tmp_path: Path) -> None:
+    replica = EncryptedPkmReplica(tmp_path / "profile")
+
+    with pytest.raises(ValueError, match="normalized domain"):
+        replica.store_snapshot(
+            "../identity",
+            {
+                "encrypted_blob": {
+                    "ciphertext": "cipher",
+                    "iv": "iv",
+                    "tag": "tag",
+                    "algorithm": "aes-256-gcm",
+                }
+            },
+        )
 
 
 def test_device_sync_applies_cloud_snapshot_then_tombstone(tmp_path: Path) -> None:

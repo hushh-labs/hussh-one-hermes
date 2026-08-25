@@ -414,6 +414,8 @@ class PkmClient:
             "success": True,
             "domain": normalized_domain,
             "scope_path": normalized_scope or None,
+            "representation": "decrypted_in_memory_projection",
+            "at_rest_representation": "aes-256-gcm-ciphertext",
             "content_revision": int(snapshot.get("content_revision") or 0),
             "materialized_leaf_count": materialized_leaves,
             "value": value,

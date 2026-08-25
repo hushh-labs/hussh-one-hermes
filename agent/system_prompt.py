@@ -36,6 +36,7 @@ from agent.prompt_builder import (
     EXECUTION_GUIDANCE_MODELS,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
+    HUSSH_ONE_PKM_GUIDANCE,
     KANBAN_GUIDANCE,
     MEMORY_GUIDANCE,
     USER_PROFILE_GUIDANCE,
@@ -436,6 +437,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in agent.valid_tool_names:
         tool_guidance.append(SKILLS_GUIDANCE)
+    if "read_my_pkm" in agent.valid_tool_names:
+        tool_guidance.append(HUSSH_ONE_PKM_GUIDANCE)
     # This parent-only delegation tool is absent from the File Steward leaf,
     # keeping the routing instruction out of its intentionally narrow prompt.
     if {"ask_file_steward", "ask_source_library_steward"} & set(agent.valid_tool_names):
