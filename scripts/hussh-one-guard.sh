@@ -23,6 +23,7 @@ require_file "hermes_cli/skins/hussh-one.yaml"
 require_file "hermes_cli/dashboard_themes/hussh-one.yaml"
 require_file "plugins/model-providers/google-vertex-claude/__init__.py"
 require_file "scripts/hussh-one-bootstrap.sh"
+require_file "scripts/hussh-one-consent-repair.sh"
 require_file "scripts/hussh-one-supervisor.sh"
 require_file "scripts/hussh-one-doctor.sh"
 require_file "scripts/hussh-one-restart.sh"
@@ -95,6 +96,7 @@ command -v node >/dev/null 2>&1 || {
 node --check scripts/whatsapp-bridge/bridge.js
 bash -n \
   scripts/hussh-one-bootstrap.sh \
+  scripts/hussh-one-consent-repair.sh \
   scripts/hussh-one-supervisor.sh \
   scripts/hussh-one-doctor.sh \
   scripts/hussh-one-restart.sh \

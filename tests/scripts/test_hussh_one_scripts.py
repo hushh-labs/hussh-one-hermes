@@ -191,6 +191,20 @@ def test_bootstrap_packages_one_time_consent_credential_provisioning():
     assert "Consent is not a reason to suppress approved information" in agents
 
 
+def test_consent_repair_is_explicit_atomic_and_never_leaks_the_token():
+    text = (ROOT / "scripts/hussh-one-consent-repair.sh").read_text(encoding="utf-8")
+
+    assert "HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN" in text
+    assert "HUSHH_CONSENT_MCP_TOKEN" in text
+    assert "google.auth.default" in text
+    assert "AuthorizedSession(credentials).get" in text
+    assert "os.chmod(temporary_name, 0o600)" in text
+    assert "os.replace(temporary_name, destination)" in text
+    assert "never place" in text
+    assert "print(token)" not in text
+    assert 'log "$token"' not in text
+
+
 def test_bootstrap_auto_provisions_companions_only_when_prerequisites_exist():
     text = (ROOT / "scripts/hussh-one-bootstrap.sh").read_text(encoding="utf-8")
 
