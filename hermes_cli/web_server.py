@@ -382,6 +382,11 @@ def _eager_reconcile_own_session_db() -> None:
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
+    # Last live-session metadata per dashboard channel. A sidebar may finish
+    # its WS upgrade after the PTY child already emitted session.info; replaying
+    # this tiny snapshot makes the model badge deterministic rather than
+    # depending on socket connection order.
+    app.state.event_latest_session_info = {}  # dict[str, str]
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}  # dict[str, Path]
     # Serializes chat-argv resolution so concurrent /api/pty connections
@@ -493,6 +498,15 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
+
+
+def _get_event_latest_session_info(app: "FastAPI") -> dict[str, str]:
+    """Return the bounded per-channel ``session.info`` replay cache."""
+    try:
+        return app.state.event_latest_session_info
+    except AttributeError:
+        app.state.event_latest_session_info = {}
+        return app.state.event_latest_session_info
 
 
 def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
@@ -16275,6 +16289,9 @@ else:
             pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
+# Browser chat sends this application-level heartbeat while a tab is hidden or
+# resumed. It is transport liveness only and must never become terminal input.
+_PING_RE = re.compile(rb"\x1b\[PING\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
 # Back-off delay between idle PTY reads so a quiet terminal does not spin
 # the event loop.  A positive sleep lets other coroutines run and keeps
@@ -16366,6 +16383,8 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
                 bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                continue
+            if _PING_RE.fullmatch(raw):
                 continue
             bridge.write(raw)
     except WebSocketDisconnect:
@@ -16945,9 +16964,32 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
-    """Fan out one publisher frame to every subscriber on `channel`."""
+    """Fan out one publisher frame and retain current session metadata."""
     event_channels, event_lock = _get_event_state(app)
+    latest_session_info = _get_event_latest_session_info(app)
+
+    # Only metadata is replayed. Replaying transcript/tool frames would make
+    # a reconnect look like a duplicate response; session.info is idempotent
+    # state and fixes the model/sidebar connection-order race.
+    is_session_info = False
+    if len(payload) <= 64 * 1024:
+        try:
+            frame = json.loads(payload)
+            params = frame.get("params") if isinstance(frame, dict) else None
+            is_session_info = (
+                isinstance(params, dict) and params.get("type") == "session.info"
+            )
+        except (TypeError, ValueError):
+            pass
+
     async with event_lock:
+        if is_session_info:
+            latest_session_info[channel] = payload
+            # Channels are random per browser chat and the cache only retains
+            # a compact JSON frame. Bound it anyway so abandoned tabs cannot
+            # grow a long-lived dashboard process without limit.
+            while len(latest_session_info) > 128:
+                latest_session_info.pop(next(iter(latest_session_info)))
         subs = list(event_channels.get(channel, ()))
 
     for sub in subs:
@@ -17738,6 +17780,11 @@ async def pty_ws(ws: WebSocket) -> None:
                 break
             if msg.get("type") == "websocket.disconnect":
                 break
+            # A reattached tab has become the sole PTY input owner. The
+            # superseded socket can still yield a buffered frame after close;
+            # discard it rather than writing duplicate characters to Ink.
+            if not session.is_attached_socket(ws):
+                break
             raw = msg.get("bytes")
             if raw is None:
                 text = msg.get("text")
@@ -17749,6 +17796,8 @@ async def pty_ws(ws: WebSocket) -> None:
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
                 session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                continue
+            if _PING_RE.fullmatch(raw):
                 continue
 
             session.bridge.write(raw)
@@ -17861,6 +17910,15 @@ async def events_ws(ws: WebSocket) -> None:
 
     event_channels, event_lock = _get_event_state(ws.app)
     async with event_lock:
+        # Send before registering the subscriber while the publisher shares
+        # this lock. That preserves ordering: a later session.info broadcast
+        # cannot overtake this snapshot and repaint the model badge stale.
+        snapshot = _get_event_latest_session_info(ws.app).get(channel)
+        if snapshot:
+            try:
+                await ws.send_text(snapshot)
+            except WebSocketDisconnect:
+                return
         event_channels.setdefault(channel, set()).add(ws)
 
     try:

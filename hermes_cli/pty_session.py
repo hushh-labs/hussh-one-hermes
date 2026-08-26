@@ -102,6 +102,15 @@ class PtySession:
         if force_redraw:
             self.bridge.write(TUI_FORCE_REDRAW)
 
+    def is_attached_socket(self, ws) -> bool:
+        """Whether *ws* is still the sole input owner for this PTY.
+
+        A reconnect closes the old socket before its receive loop necessarily
+        wakes. The old loop must never forward one final keystroke after a new
+        tab has attached, otherwise input can be doubled during that hand-off.
+        """
+        return self._ws is ws
+
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached.
         # A superseded socket's handler also calls detach on its way out

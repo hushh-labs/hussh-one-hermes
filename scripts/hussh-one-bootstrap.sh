@@ -17,6 +17,7 @@ LIVE_SMOKE=0
 CLEAN_CONFLICTS=0
 SETUP_COPILOT="${HUSSH_ONE_SETUP_COPILOT:-auto}"
 SETUP_OPEN_WEBUI="${HUSSH_ONE_SETUP_OPEN_WEBUI:-auto}"
+SETUP_DAILY_UPDATER="${HUSSH_ONE_SETUP_DAILY_UPDATER:-1}"
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 
@@ -35,6 +36,7 @@ Options:
   --no-copilot              Skip VS Code Copilot BYOK setup
   --open-webui              Force Open WebUI companion setup
   --no-open-webui           Skip Open WebUI companion setup
+  --no-daily-updater        Do not register the standard daily official-Hermes updater
   --dry-run                 Print actions without mutating the machine
   -h, --help                Show this help
 USAGE
@@ -80,6 +82,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-open-webui)
       SETUP_OPEN_WEBUI=0
+      shift
+      ;;
+    --no-daily-updater)
+      SETUP_DAILY_UPDATER=0
       shift
       ;;
     --dry-run)
@@ -177,14 +183,16 @@ build_node_project() {
   if [[ ! -f "$dir/package.json" ]]; then
     return 0
   fi
-  if ! command -v npm >/dev/null 2>&1; then
+  local -a npm=()
+  if command -v corepack >/dev/null 2>&1; then
+    npm=(corepack npm@11.17.0)
+  elif command -v npm >/dev/null 2>&1; then
+    npm=(npm)
+  else
     warn "npm is not installed; skipping $dir build"
     return 0
   fi
-  if [[ ! -d "$dir/node_modules" ]]; then
-    run_cmd npm --prefix "$dir" install
-  fi
-  run_cmd npm --prefix "$dir" run "$script"
+  run_cmd "${npm[@]}" --prefix "$dir" run "$script"
 }
 
 build_assets() {
@@ -192,6 +200,20 @@ build_assets() {
     log "Frontend build skipped."
     return 0
   fi
+  local -a npm=()
+  if command -v corepack >/dev/null 2>&1; then
+    npm=(corepack npm@11.17.0)
+  elif command -v npm >/dev/null 2>&1; then
+    npm=(npm)
+  else
+    warn "npm is not installed; skipping frontend dependency install and builds"
+    return 0
+  fi
+  # `npm ci` makes a second bootstrap and post-upstream restart converge on
+  # the current lockfile instead of treating a stale node_modules directory as
+  # proof that new dashboard/TUI packages are already installed.
+  run_cmd "${npm[@]}" ci
+  run_cmd "${npm[@]}" run build --workspace @hermes/ink
   build_node_project ui-tui build
   build_node_project web build
 }
@@ -606,6 +628,20 @@ install_managed_doctor() {
   fi
 }
 
+install_daily_updater() {
+  if [[ "$SETUP_DAILY_UPDATER" == "0" ]]; then
+    log "Daily Hussh One official-Hermes updater skipped by request."
+    return 0
+  fi
+  local args=("$SCRIPT_DIR/hussh-one-upstream-update.sh" --install-daily --manager "$MANAGER")
+  if [[ "$DRY_RUN" == "1" ]]; then
+    args+=(--dry-run)
+  fi
+  if ! run_cmd "${args[@]}"; then
+    warn "Daily Hussh One updater registration failed; rerun scripts/hussh-one-upstream-update.sh --install-daily after fixing the local scheduler."
+  fi
+}
+
 start_services() {
   local args=("$SCRIPT_DIR/hussh-one-supervisor.sh" restart --manager "$MANAGER")
   if [[ "$CLEAN_CONFLICTS" == "1" ]]; then
@@ -635,6 +671,7 @@ log "Bootstrapping Hussh One Hermes in $REPO_ROOT"
 mkdir -p "$HERMES_HOME"
 ensure_venv
 install_managed_doctor
+install_daily_updater
 build_assets
 set_config_defaults
 configure_hussh_persona

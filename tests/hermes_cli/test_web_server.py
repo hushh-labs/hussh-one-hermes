@@ -4502,6 +4502,45 @@ class TestPtyWebSocket:
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
 
+    def test_session_info_is_replayed_to_a_late_sidebar_subscriber(self):
+        """The right rail must not miss a /model event during WS startup."""
+        import asyncio
+        from hermes_cli import web_server as ws_mod
+
+        class _FakeSub:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        app = ws_mod.app
+
+        async def _run():
+            channel = "late-sidebar-model"
+            frame = (
+                '{"jsonrpc":"2.0","method":"event","params":'
+                '{"type":"session.info","payload":{"model":"google/gemini-3.7-flash"}}}'
+            )
+            await ws_mod._broadcast_event(app, channel, frame)
+            latest = ws_mod._get_event_latest_session_info(app)
+            sub = _FakeSub()
+            event_channels, event_lock = ws_mod._get_event_state(app)
+            async with event_lock:
+                snapshot = latest.get(channel)
+                assert snapshot == frame
+                await sub.send_text(snapshot)
+                event_channels.setdefault(channel, set()).add(sub)
+            try:
+                return sub, frame
+            finally:
+                async with event_lock:
+                    event_channels.pop(channel, None)
+                    latest.pop(channel, None)
+
+        sub, frame = asyncio.run(_run())
+        assert sub.sent == [frame]
+
 
 def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     import hermes_cli.main as cli_main
