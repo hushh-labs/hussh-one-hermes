@@ -30,9 +30,27 @@ const ERASE_LINE = /\x1b\[\d*K/g;
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
 const ERASE_CHAR = /\x1b\[\d*X/g;
 
-/** Still-incomplete trailing escape: "\x1b", "\x1b[", "\x1b[\d*". */
+/**
+ * Still-incomplete trailing escape: "\x1b", "\x1b[", or "\x1b[" followed by
+ * any run of CSI parameter bytes (0x30-0x3F: digits plus `:;<=>?`) and/or
+ * intermediate bytes (0x20-0x2F) with no final byte (0x40-0x7E) yet. See
+ * ui-tui's termio/csi.ts CSI_RANGE for the canonical byte ranges this
+ * mirrors (a separate package, not importable here).
+ *
+ * Matching only `\[\d*` (no `?`/`;`/etc.) missed every DEC private-mode
+ * sequence — `CSI ? Pn h/l`, used for focus reporting (1004), mouse
+ * tracking (1000-1006), bracketed paste (2004), and cursor visibility
+ * (25) — exactly the sequences the Ink server re-sends around a
+ * reconnect. A DEC sequence split right after the `?` (e.g. "\x1b[?100"
+ * | "4l") wasn't recognised as partial, so it shipped straight into
+ * `term.write()` instead of being held in `#pending`. If the socket then
+ * closed before the rest arrived, `flush()`'s partial-escape drop (see
+ * below) never triggered — the dangling sequence had already been
+ * written — leaving xterm's parser stuck "in-escape" across the
+ * reconnect and misinterpreting whatever real output arrived next.
+ */
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
-const PARTIAL_ESC = /^\x1b(?:\[\d*)?$/;
+const PARTIAL_ESC = /^\x1b(?:\[[0-9:;<=>?]*[\x20-\x2f]*)?$/;
 
 /**
  * A trailing run of newlines that may continue into the next frame. Held back

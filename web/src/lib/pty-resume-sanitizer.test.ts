@@ -144,6 +144,49 @@ describe("PtyResumeSanitizer — stateful frame handling", () => {
     expect(s.next("[")).toBe("");
     expect(s.next("2Kb")).toBe("b");
   });
+
+  it("buffers a DEC private-mode sequence split right after the '?' prefix, then emits it whole", () => {
+    // e.g. re-enabling focus reporting on reconnect: "\x1b[?1004h" split as
+    // "\x1b[?100" | "4h". Reproduces the reconnect-time corruption: before
+    // the PARTIAL_ESC fix, "\x1b[?100" wasn't recognised as incomplete and
+    // was emitted immediately instead of held in #pending. Fixed, the two
+    // fragments reassemble into one intact sequence delivered to xterm in a
+    // single write — not split, not dropped, not stripped (only ERASE_LINE/
+    // ERASE_CHAR are ever stripped; a real mode-toggle must reach xterm).
+    const s = new PtyResumeSanitizer();
+    expect(s.next("before\x1b[?100")).toBe("before");
+    expect(s.next("4hafter")).toBe("\x1b[?1004hafter");
+  });
+
+  it("buffers a DEC private-mode sequence split right after '['", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b[")).toBe("x");
+    expect(s.next("?1004ly")).toBe("\x1b[?1004ly");
+  });
+
+  it("drops a buffered DEC private-mode partial on flush instead of writing a dangling sequence", () => {
+    // The exact production failure mode: the socket closes mid-DEC-sequence
+    // (e.g. a backgrounded tab's connection is force-closed) before the
+    // terminating byte arrives. flush() must drop it, not emit it — an
+    // emitted dangling "\x1b[?100" would leave xterm's parser stuck
+    // in-escape across the reconnect, corrupting whatever renders next.
+    const s = new PtyResumeSanitizer();
+    s.next("before\x1b[?100");
+    expect(s.flush()).toBe("");
+  });
+
+  it("buffers intermediate bytes in a partial DEC locator sequence (e.g. \\x1b[0')", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("a\x1b[0'")).toBe("a");
+    expect(s.next("zb")).toBe("\x1b[0'zb");
+  });
+
+  it("does not treat a complete DEC sequence as partial", () => {
+    const s = new PtyResumeSanitizer();
+    // "\x1b[?1004h" arrives whole in one frame — must pass through, not be
+    // held back waiting for a final byte that already arrived.
+    expect(s.next("a\x1b[?1004hb")).toBe("a\x1b[?1004hb");
+  });
 });
 
 describe("PtyResumeSanitizer — cross-frame blank-line bursts", () => {
