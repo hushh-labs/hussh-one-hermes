@@ -152,6 +152,8 @@ def test_daily_updater_preserves_the_single_hussh_one_trunk_contract():
     assert "refresh_runtime_dependencies" in text
     assert 'pip install -e ".[all,dev]"' in text
     assert "npm@11.17.0" in text
+    assert 'scripts/hussh-one-doctor.sh --manager "$MANAGER"' in text
+    assert "--require-services" not in text
 
 
 def test_hussh_doctor_accepts_native_lmstudio_provider_choice():
