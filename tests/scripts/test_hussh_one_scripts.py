@@ -198,6 +198,9 @@ def test_consent_repair_is_explicit_atomic_and_never_leaks_the_token():
     assert "HUSHH_CONSENT_MCP_TOKEN" in text
     assert "google.auth.default" in text
     assert "AuthorizedSession(credentials).get" in text
+    assert '"MCP-Protocol-Version": "2025-03-26"' in text
+    assert "verification.status_code in {401, 403}" in text
+    assert "active profile was left unchanged" in text
     assert "os.chmod(temporary_name, 0o600)" in text
     assert "os.replace(temporary_name, destination)" in text
     assert "never place" in text
