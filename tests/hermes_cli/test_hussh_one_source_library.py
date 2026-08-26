@@ -101,6 +101,25 @@ def _bound_library(
     return library, source_root, bound["source_id"]
 
 
+def _mock_macos_trash_service(monkeypatch) -> None:
+    """Keep destructive-operation tests hermetic off macOS.
+
+    The adapter deliberately requires the macOS ``/usr/bin/trash`` service in
+    production. These tests replace the actual subprocess invocation, so they
+    only need the availability probe to model that service; never create a
+    host-level executable merely to satisfy a test runner.
+    """
+
+    original_is_file = Path.is_file
+
+    def is_file(path: Path) -> bool:
+        return path == Path("/usr/bin/trash") or original_is_file(path)
+
+    monkeypatch.setattr(
+        "hermes_cli.hussh_one_source_library.mounted_tree.Path.is_file", is_file
+    )
+
+
 def test_scan_is_deterministic_bounded_and_never_follows_symlinks(
     tmp_path: Path,
 ) -> None:
@@ -660,6 +679,7 @@ def test_observe_authority_and_destination_race_fail_closed(tmp_path: Path) -> N
 def test_hermetic_mirror_query_private_pkm_publish_list_and_trash_revoke(
     monkeypatch, tmp_path: Path
 ) -> None:
+    _mock_macos_trash_service(monkeypatch)
     library, root, source_id = _bound_library(tmp_path, access_mode="manage")
     share_folder = root / "team-share"
     share_folder.mkdir()
@@ -737,6 +757,7 @@ def test_hermetic_mirror_query_private_pkm_publish_list_and_trash_revoke(
 def test_approved_file_overwrite_move_and_trash_are_revision_pinned(
     monkeypatch, tmp_path: Path
 ) -> None:
+    _mock_macos_trash_service(monkeypatch)
     library, root, source_id = _bound_library(tmp_path, access_mode="manage")
     source = root / "mutable.md"
     source.write_text("v1", encoding="utf-8")
