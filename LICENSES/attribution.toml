@@ -11,7 +11,7 @@ spdx_expression = "Apache-2.0 AND MIT"
 # by this distribution update. A source path unchanged from that revision is
 # MIT; a path modified from it is the combined expression below; a Hussh-added
 # source path is Apache-2.0.
-upstream_base_commit = "bc943d56729c8f2fc6ae2653d4b92e689494c1b2"
+upstream_base_commit = "b04f8578eb686cb7db03d43d92d77a21bb7d6877"
 upstream_retained = "MIT"
 upstream_modified = "MIT AND Apache-2.0"
 hussh_added = "Apache-2.0"
