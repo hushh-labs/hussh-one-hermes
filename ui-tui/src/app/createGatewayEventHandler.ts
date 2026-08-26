@@ -761,10 +761,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               const [focused, ...background] = sessions
 
               patchUiState({
-                status:
-                  sessions.length === 1
-                    ? 'resuming most recent…'
-                    : `restoring ${sessions.length} sessions…`
+                status: sessions.length === 1 ? 'resuming most recent…' : `restoring ${sessions.length} sessions…`
               })
 
               for (const s of background) {

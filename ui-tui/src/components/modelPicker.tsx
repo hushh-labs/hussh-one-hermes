@@ -37,6 +37,7 @@ export function resolvePickerSelection(
     0,
     providers.findIndex(p => p.is_current)
   )
+
   const models = providers[providerIdx]?.models ?? []
   const found = currentModel ? models.indexOf(currentModel) : -1
 

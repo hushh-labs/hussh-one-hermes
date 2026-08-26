@@ -166,6 +166,33 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
 
 
+def test_session_interrupt_logs_client_request_origin(server, monkeypatch, caplog):
+    """A local stop is distinguishable from a disconnect reaper in diagnostics."""
+    session = {
+        "agent": types.SimpleNamespace(interrupt=lambda: None),
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "session-key",
+        "_run_thread": None,
+    }
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+
+    with caplog.at_level("INFO", logger="tui_gateway.server"):
+        response = server._methods["session.interrupt"](
+            "stop", {"session_id": "ui-session"}
+        )
+
+    assert response["result"]["status"] == "interrupted"
+    assert (
+        "tui_turn_interrupt sid=ui-session source=client_request "
+        "running=True turn_isolation=False request_id=interrupt-stop"
+    ) in caplog.text
+
+
 # ── write_json ────────────────────────────────────────────────
 
 

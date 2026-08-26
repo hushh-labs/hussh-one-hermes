@@ -1097,16 +1097,13 @@ describe('createGatewayEventHandler', () => {
 
       if (method === 'session.resumable_recent') {
         return {
-          sessions: [
-            { session_id: 'sess-new' },
-            { session_id: 'sess-mid' },
-            { session_id: 'sess-old' }
-          ]
+          sessions: [{ session_id: 'sess-new' }, { session_id: 'sess-mid' }, { session_id: 'sess-old' }]
         }
       }
 
       if (method === 'session.resume') {
         resumed.push(params.session_id)
+
         return { session_id: params.session_id }
       }
 
