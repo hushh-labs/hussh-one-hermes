@@ -369,6 +369,11 @@ def test_copilot_setup_writes_a_loopback_vertex_endpoint_to_a_temp_editor_profil
     hermes_home = tmp_path / "hermes"
     editor = home / "Library/Application Support/Code/User"
     editor.mkdir(parents=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text("#!/usr/bin/env bash\necho Darwin\n", encoding="utf-8")
+    uname.chmod(0o755)
     litellm = hermes_home / "litellm-venv/bin/litellm"
     litellm.parent.mkdir(parents=True)
     litellm.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -379,7 +384,11 @@ def test_copilot_setup_writes_a_loopback_vertex_endpoint_to_a_temp_editor_profil
         "scripts/hussh-one-copilot-setup.sh",
         "--project",
         "test-project",
-        env={"HOME": str(home), "HERMES_HOME": str(hermes_home)},
+        env={
+            "HOME": str(home),
+            "HERMES_HOME": str(hermes_home),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        },
     )
 
     assert result.returncode == 0, result.stderr
