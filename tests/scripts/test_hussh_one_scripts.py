@@ -174,6 +174,12 @@ def test_each_main_push_runs_the_fresh_hussh_one_sync_verification():
     assert 'scripts/hussh-one-upstream-update.sh --check' in workflow
     assert "scripts/hussh-one-guard.sh" in workflow
     assert "npm@11.17.0" in workflow
+    # The guard runs `rg` and delegates tests to scripts/run_tests.sh, which
+    # intentionally requires a project virtualenv with pytest. CI must create
+    # those prerequisites instead of relying on runner-global tools.
+    assert "apt-get install --yes ripgrep" in workflow
+    assert "python -m venv .venv" in workflow
+    assert '.venv/bin/python -m pip install -e ".[all,dev]"' in workflow
 
 
 def test_hussh_doctor_accepts_native_lmstudio_provider_choice():

@@ -50,8 +50,11 @@ jobs:
 
       - name: Build a clean runtime
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[all,dev]"
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e ".[all,dev]"
           corepack enable
           corepack npm@11.17.0 ci
           corepack npm@11.17.0 run build --workspace @hermes/ink
