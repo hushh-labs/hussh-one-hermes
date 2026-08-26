@@ -46,6 +46,19 @@ one-time provisioning step: subsequent updates reuse the local secret and do
 not query GCP again. The generic backend token is deliberately not used for
 this connector.
 
+If the hosted connector returns `401 Unauthorized`, the local credential has
+been rejected or revoked. Repair that provisioning failure deliberately (it is
+not part of the daily updater) with:
+
+```bash
+scripts/hussh-one-consent-repair.sh --restart
+```
+
+The repair requires already-authorized GCP Application Default Credentials,
+retrieves the dedicated secret once, atomically replaces only the active
+profile's mode-`0600` `.env` value, and never prints the credential. If GCP
+ADC cannot read the secret, the existing local credential is left untouched.
+
 Hermes' MCP transport boundary creates one persistent X25519 identity under
 that profile with mode-`0600`. For an `attr.*` consent request it adds the
 public binding after model argument validation. On an approved encrypted
