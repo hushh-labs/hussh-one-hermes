@@ -14829,6 +14829,7 @@ ipcMain.handle('hermes:hussh-one:enroll-vault', async (_event, profile: unknown)
   }
 
   const connection = await ensureBackend(profileName)
+
   return fetchJson(`${connection.baseUrl}/api/hussh-one/vault/enroll-native`, connection.token, {
     body: { ...(profileName ? { profile: profileName } : {}) },
     method: 'POST',

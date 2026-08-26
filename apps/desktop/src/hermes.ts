@@ -18,6 +18,7 @@ export {
 export type { ProfileScope } from './api/client'
 export * from './api/config'
 export * from './api/cron'
+export * from './api/hussh-one'
 export * from './api/mcp'
 export * from './api/messaging'
 export * from './api/models'
@@ -26,6 +27,7 @@ export * from './api/profiles'
 export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
+
 export * from './api/toolsets'
 
 export type {
@@ -128,5 +130,3 @@ export type {
   WebhookRoute,
   WebhooksResponse
 } from '@/types/hermes'
-
-export * from './api/hussh-one'
