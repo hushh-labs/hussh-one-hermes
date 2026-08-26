@@ -1100,18 +1100,34 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
 
 
 def _interrupt_session_turn(
-    sid: str, session: dict, *, request_id: str | None = None
+    sid: str,
+    session: dict,
+    *,
+    request_id: str | None = None,
+    source: str = "unspecified",
 ) -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session.
 
     Returns whether the interrupt used the compute-host control channel. The WS
     orphan reaper calls this same helper after its reconnect grace expires, so a
     dead client gets the same partial-history and queued-prompt semantics as an
-    explicit user interrupt.
+    explicit user interrupt. ``source`` is a fixed, non-user-content audit
+    label (for example ``client_request`` or ``client_gone``), which lets
+    operators distinguish an explicit stop from a transport reaper without
+    exposing a prompt or model output in logs.
     """
     use_compute_host = _session_uses_compute_host(session)
     should_interrupt = bool(session.get("running"))
     run_thread_alive = False
+
+    logger.info(
+        "tui_turn_interrupt sid=%s source=%s running=%s turn_isolation=%s request_id=%s",
+        sid,
+        source,
+        should_interrupt,
+        use_compute_host,
+        request_id or "-",
+    )
 
     if use_compute_host:
         if should_interrupt:
@@ -1321,6 +1337,7 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
                     sid,
                     interrupt_session,
                     request_id=f"client-gone-{sid}",
+                    source="client_gone",
                 )
                 logger.info(
                     "client_gone sid=%s action=interrupt turn_isolation=%s",
