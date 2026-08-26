@@ -187,6 +187,53 @@ describe("PtyResumeSanitizer — stateful frame handling", () => {
     // held back waiting for a final byte that already arrived.
     expect(s.next("a\x1b[?1004hb")).toBe("a\x1b[?1004hb");
   });
+
+  it("buffers an OSC window-title sequence split before the BEL terminator", () => {
+    // Real Ink output, e.g. "\x1b]0;Hermes\x07" — a live capture of a session
+    // resume replay found 53 of these per replay. Every possible split point
+    // inside one was verified to leak a dangling fragment under the old
+    // CSI-only PARTIAL_ESC regex; this is the exact fix.
+    const s = new PtyResumeSanitizer();
+    expect(s.next("hello \x1b]0;Herme")).toBe("hello ");
+    expect(s.next("s\x07world")).toBe("\x1b]0;Hermes\x07world");
+  });
+
+  it("buffers an OSC sequence split right after the ']' introducer", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b]")).toBe("x");
+    expect(s.next("2;title\x07y")).toBe("\x1b]2;title\x07y");
+  });
+
+  it("buffers an OSC sequence split right after the ';' with no payload yet", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b]0;")).toBe("x");
+    expect(s.next("Hermes\x07y")).toBe("\x1b]0;Hermes\x07y");
+  });
+
+  it("does not treat a complete OSC sequence as partial", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("a\x1b]0;Hermes\x07b")).toBe("a\x1b]0;Hermes\x07b");
+  });
+
+  it("drops a buffered OSC partial on flush instead of writing a dangling sequence", () => {
+    // Same failure mode as the DEC-CSI case: the socket closes mid-title
+    // before the BEL arrives. flush() must drop it, not emit a fragment
+    // that leaves xterm's parser stuck "in OSC string" across reconnect.
+    const s = new PtyResumeSanitizer();
+    s.next("before\x1b]0;Herme");
+    expect(s.flush()).toBe("");
+  });
+
+  it("recognizes an OSC terminated by ST (\\x1b\\\\) instead of BEL", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("a\x1b]0;Hermes\x1b\\b")).toBe("a\x1b]0;Hermes\x1b\\b");
+  });
+
+  it("buffers an OSC sequence split right at the start of its ST terminator", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b]0;Hermes\x1b")).toBe("x");
+    expect(s.next("\\y")).toBe("\x1b]0;Hermes\x1b\\y");
+  });
 });
 
 describe("PtyResumeSanitizer — cross-frame blank-line bursts", () => {
