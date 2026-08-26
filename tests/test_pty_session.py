@@ -115,6 +115,24 @@ async def test_detach_keeps_draining_into_buffer():
 
 
 @pytest.mark.asyncio
+async def test_superseded_socket_cannot_remain_the_pty_input_owner():
+    """A reconnect makes exactly one WebSocket eligible to write input."""
+    from hermes_cli.pty_session import PtySession
+
+    s = PtySession("k", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    first = FakeWS()
+    second = FakeWS()
+
+    await s.attach(first)
+    await s.attach(second)
+
+    assert not s.is_attached_socket(first)
+    assert s.is_attached_socket(second)
+    await s.close()
+
+
+@pytest.mark.asyncio
 async def test_eof_marks_dead_and_closes_socket_4410():
     from hermes_cli.pty_session import PtySession
     bridge = FakeBridge([b"bye", None])

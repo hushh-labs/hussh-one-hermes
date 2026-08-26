@@ -26,6 +26,7 @@ require_file "scripts/hussh-one-bootstrap.sh"
 require_file "scripts/hussh-one-supervisor.sh"
 require_file "scripts/hussh-one-doctor.sh"
 require_file "scripts/hussh-one-restart.sh"
+require_file "scripts/hussh-one-upstream-update.sh"
 require_file "scripts/hussh-one-license-audit.py"
 require_file "hermes_cli/hussh_one_source_library/service.py"
 require_file "hermes_cli/hussh_one_source_library/steward.py"
@@ -96,7 +97,8 @@ bash -n \
   scripts/hussh-one-bootstrap.sh \
   scripts/hussh-one-supervisor.sh \
   scripts/hussh-one-doctor.sh \
-  scripts/hussh-one-restart.sh
+  scripts/hussh-one-restart.sh \
+  scripts/hussh-one-upstream-update.sh
 
 dashboard_url="${HUSSH_ONE_DASHBOARD_URL:-http://127.0.0.1:9119}"
 if [[ "${HUSSH_ONE_SKIP_DASHBOARD_HEALTH:-0}" != "1" ]]; then

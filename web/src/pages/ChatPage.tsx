@@ -39,6 +39,7 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import { ptyAttachToken } from "@/lib/pty-attach-token";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -68,6 +69,7 @@ import {
 } from "@/lib/pty-keyboard-shortcuts";
 import {
   isViewportPinnedToBottom,
+  parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
 import {
@@ -79,34 +81,6 @@ import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
-
-// Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
-// Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
-// instead of spawning a fresh one. Per-localStorage, so other devices can't grab it.
-// ``rotate`` mints a new token — used when the user explicitly starts a fresh
-// session so the old keep-alive PTY is NOT reattached (the registry reaps it).
-const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
-function ptyAttachToken(rotate = false): string {
-  let t = "";
-  if (!rotate) {
-    try {
-      t = window.localStorage.getItem(PTY_ATTACH_TOKEN_KEY) ?? "";
-    } catch {
-      /* private mode / storage blocked */
-    }
-  }
-  if (!t) {
-    const a = new Uint8Array(16);
-    crypto.getRandomValues(a);
-    t = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
-    try {
-      window.localStorage.setItem(PTY_ATTACH_TOKEN_KEY, t);
-    } catch {
-      /* ignore */
-    }
-  }
-  return t;
-}
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
@@ -1064,6 +1038,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // ``return cleanup`` stays at the top level; handlers + disposables
     // are hoisted to ``let`` bindings the cleanup closes over.
     let unmounting = false;
+    // The implicit active-session fallback (no `?resume=` on the URL) only
+    // becomes known once the server's control frame arrives (see
+    // `ws.onmessage` below) — everything gated on "is this a resume replay"
+    // reads this instead of `resumeParam` directly (#93518).
+    let effectiveResume = resumeParam;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
     let onScrollDisposable: { dispose(): void } | null = null;
@@ -1088,7 +1067,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
     const noteResumePtyChunk = (chunkText: string) => {
-      if (!resumeParam || unmounting) {
+      if (!effectiveResume || unmounting) {
         return;
       }
       if (shouldFinishResumeHydrationOnChunk(chunkText)) {
@@ -1256,14 +1235,42 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // in-place redraws through untouched. See pty-resume-sanitizer.ts.
     const decoder = new TextDecoder();
     const sanitizer = new PtyResumeSanitizer();
+    const beginResumeReplay = () => {
+      stickToBottomRef.current = true;
+      if (!eraseSuppressionTimer) {
+        eraseSuppressionTimer = setTimeout(() => {
+          eraseSuppressionTimer = null;
+          sanitizer.endEraseSuppression();
+        }, PTY_RESUME_SANITIZE_WINDOW_MS);
+      }
+      if (!resumeMaxTimer) {
+        setResumeHydrating(true);
+        resumeMaxTimer = setTimeout(
+          finishResumeHydration,
+          PTY_RESUME_LOADING_MAX_MS,
+        );
+      }
+    };
     if (resumeParam) {
-      eraseSuppressionTimer = setTimeout(() => {
-        eraseSuppressionTimer = null;
-        sanitizer.endEraseSuppression();
-      }, PTY_RESUME_SANITIZE_WINDOW_MS);
+      beginResumeReplay();
     }
 
     ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        // The active-session fallback (no `?resume=` on the URL) tells us
+        // via a one-off JSON control frame that a replay is starting (#93518,
+        // see `pty_ws` in web_server.py). Real PTY output always arrives as
+        // binary frames, so any text frame is a candidate; anything that
+        // isn't this control shape (e.g. the ANSI "Chat unavailable" banners
+        // pty_ws sends as text on failure) falls through to the write path
+        // below unchanged.
+        const resumeId = parseResumeControlMessage(ev.data);
+        if (resumeId) {
+          effectiveResume = resumeId;
+          beginResumeReplay();
+          return;
+        }
+      }
       const text =
         typeof ev.data === "string"
           ? ev.data
@@ -1274,13 +1281,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // sanitizer can turn a nonempty erase-only / all-newline / partial-CSI
       // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
       // would hide the wait notice while the terminal is still blank.
-      const rendered = resumeParam ? sanitizer.next(text) : text;
+      const rendered = effectiveResume ? sanitizer.next(text) : text;
       // Resume replay lands over many write chunks; pin the viewport to the
       // bottom as each chunk COMMITS (xterm write callback) instead of
       // guessing with a fixed delay, and release the pin the moment the user
       // scrolls up to read the backlog (#59591).
       const followScroll = shouldFollowPtyOutput(
-        resumeParam,
+        effectiveResume,
         stickToBottomRef.current,
       )
         ? () => termRef.current?.scrollToBottom()
@@ -1293,7 +1300,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
-      if (resumeParam) {
+      if (effectiveResume) {
         clearEraseSuppressionTimer();
         try {
           term.write(sanitizer.flush());

@@ -18,6 +18,7 @@ Fork-owned data and identity should stay in these surfaces:
 - `scripts/hussh-one-bootstrap.sh`
 - `scripts/hussh-one-supervisor.sh`
 - `scripts/hussh-one-doctor.sh`
+- `scripts/hussh-one-upstream-update.sh`
 - Hussh One regression tests under `tests/`
 - `scripts/hussh-one-guard.sh`
 
@@ -141,6 +142,25 @@ scripts/hussh-one-restart.sh        # or: hermes gateway restart
 To abort a merge that has gone wrong before committing: `git merge --abort`.
 To roll back a bad merge that was already committed but not pushed:
 `git reset --hard safety/main-<TS>`.
+
+### Daily fleet synchronization
+
+`scripts/hussh-one-bootstrap.sh` registers
+`scripts/hussh-one-upstream-update.sh --apply --restart` as the standard
+per-machine daily upgrade. The updater verifies the remote and branch
+contract, writes a pushed safety tag, reconciles in a short-lived
+`sync/upstream-*` branch, updates the recorded attribution base, runs the
+guard, and only then pushes `origin/main` and restarts from clean `main`.
+
+It never force-pushes, never pushes upstream, and never changes `main` for a
+merge conflict, guard failure, or concurrent `origin/main` change. Inspect or
+manage it with:
+
+```bash
+scripts/hussh-one-upstream-update.sh --status
+scripts/hussh-one-upstream-update.sh --check
+scripts/hussh-one-upstream-update.sh --apply --restart
+```
 
 ## Conflict-Resolution Playbook
 

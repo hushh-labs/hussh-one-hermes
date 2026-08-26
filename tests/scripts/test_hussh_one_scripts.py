@@ -133,14 +133,33 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "web.search_backend ddgs" in text
     assert "hussh_one.source_library.enabled true" in text
     assert "WHATSAPP_REPLY_PREFIX" not in text
+    assert "install_daily_updater" in text
+    assert "hussh-one-upstream-update.sh" in text
+    assert "--no-daily-updater" in text
+
+
+def test_daily_updater_preserves_the_single_hussh_one_trunk_contract():
+    text = (ROOT / "scripts/hussh-one-upstream-update.sh").read_text(encoding="utf-8")
+
+    assert "sync/upstream-" in text
+    assert 'git switch -c "$sync_branch" main' in text
+    assert "scripts/hussh-one-guard.sh" in text
+    assert "git push origin main" in text
+    assert "upstream push URL must be DISABLED" in text
+    assert "Hussh One main updated and pushed" in text
+    assert "--install-daily" in text
+    assert "launchd" in text and "systemd" in text and "crontab" in text
+    assert "refresh_runtime_dependencies" in text
+    assert 'pip install -e ".[all,dev]"' in text
+    assert "npm@11.17.0" in text
 
 
 def test_hussh_doctor_accepts_native_lmstudio_provider_choice():
     text = (ROOT / "scripts" / "hussh-one-doctor.sh").read_text(encoding="utf-8")
 
-    assert 'provider not in ("gemini", "lmstudio")' in text
-    assert 'provider == "lmstudio" and not default_model' in text
-    assert "select a loaded LM Studio model with 'hermes model'" in text
+    assert 'provider == "lmstudio" or provider.startswith("custom:")' in text
+    assert "expected gemini, lmstudio, or a custom:<name> local provider" in text
+    assert "select a loaded local model with 'hermes model'" in text
 
 
 def test_hussh_local_inference_docs_use_live_discovery_and_profile_opt_in():
