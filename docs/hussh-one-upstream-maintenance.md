@@ -162,6 +162,18 @@ scripts/hussh-one-upstream-update.sh --check
 scripts/hussh-one-upstream-update.sh --apply --restart
 ```
 
+### Fresh remote-push verification
+
+Every push to `origin/main` also runs `.github/workflows/hussh-one-fresh-sync.yml`.
+It starts from a fresh checkout, re-establishes the read-only official Hermes
+remote, rebuilds the Python and locked Node dependencies, runs the Hussh guard,
+and reports whether an official update is available. This catches a machine
+whose installed dependencies or remotes happened to mask an integration issue.
+
+The remote workflow is verification-only: it never writes to `main` or to
+official Hermes. The guarded daily updater remains the sole automated path
+that can merge a stable official update and push the verified result.
+
 ## Conflict-Resolution Playbook
 
 Conflicts almost always land in the same files. Resolve by intent, not by
@@ -250,8 +262,19 @@ The guard checks:
 - the old Vertex provider name did not reappear
 - branding, WhatsApp prefix, model switching, provider discovery, runtime rebuild, and auxiliary-client tests pass
 - the WhatsApp bridge remains syntactically valid
+- Telegram MarkdownV2 header formatting and tool-loop circuit-breaker tests pass
 - if the dashboard is running, it was launched with embedded chat enabled
 - the bootstrap, supervisor, doctor, and restart shell entry points remain syntactically valid
+
+## Runaway local-model protection
+
+Hussh One bootstrap enables Hermes' existing per-turn tool-loop guardrail. It
+halts only after repeated failures in the same turn (three identical failed
+calls or five failures from the same tool path). A successful call resets the
+failure streak; distinct calls, normal pollers, and ongoing work are not
+stopped. Read-only no-progress detection remains deliberately higher at twelve
+identical results. The generic Hermes visible-output repetition detector stays
+upstream-owned and continues to protect truncated responses from repeated text.
 
 When credentials are available, also run the live smoke:
 
