@@ -58,6 +58,9 @@ The repair requires already-authorized GCP Application Default Credentials,
 retrieves the dedicated secret once, atomically replaces only the active
 profile's mode-`0600` `.env` value, and never prints the credential. If GCP
 ADC cannot read the secret, the existing local credential is left untouched.
+The repair verifies the secret against the same hosted streamable HTTP endpoint
+before writing it; if the endpoint still rejects the current UAT secret, a
+trusted connector administrator must repair server-side provisioning.
 
 Hermes' MCP transport boundary creates one persistent X25519 identity under
 that profile with mode-`0600`. For an `attr.*` consent request it adds the

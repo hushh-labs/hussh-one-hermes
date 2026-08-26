@@ -59,6 +59,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import httpx
+
 try:
     import google.auth
     from google.auth.transport.requests import AuthorizedSession
@@ -90,6 +92,44 @@ except Exception as exc:
 
 if not token or "\n" in token or "\r" in token:
     raise SystemExit("Secret Manager returned an invalid Hussh Consent MCP credential")
+
+# Verify the freshly retrieved credential before it can replace the active
+# profile's value. A 401/403 is a server-side connector-provisioning failure,
+# not a reason to overwrite the last locally known credential or retry on a
+# schedule. This is the same streamable HTTP endpoint Hermes uses at runtime.
+try:
+    verification = httpx.post(
+        "https://api.uat.hushh.ai/mcp/",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": "2025-03-26",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": "credential-verification",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "hussh-one-consent-repair", "version": "1"},
+            },
+        },
+        timeout=20,
+    )
+except httpx.HTTPError as exc:
+    raise SystemExit("could not verify the Hussh Consent MCP credential") from exc
+if verification.status_code in {401, 403}:
+    raise SystemExit(
+        "the Hussh Consent MCP rejected the current Secret Manager credential; "
+        "trusted connector provisioning must be repaired before retrying"
+    )
+if not 200 <= verification.status_code < 300:
+    raise SystemExit(
+        "the Hussh Consent MCP did not accept credential verification; "
+        "the active profile was left unchanged"
+    )
 
 lines = destination.read_text(encoding="utf-8").splitlines() if destination.exists() else []
 replacement = f"HUSHH_CONSENT_MCP_TOKEN={token}"
