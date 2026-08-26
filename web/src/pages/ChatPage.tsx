@@ -1759,6 +1759,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <div className="border-b border-current/10 px-1 py-2">
               <ChatSidebar
                 channel={channel}
+                resumeSessionId={resumeParam}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
@@ -1931,6 +1932,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <div className="shrink-0">
               <ChatSidebar
                 channel={channel}
+                resumeSessionId={resumeParam}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
