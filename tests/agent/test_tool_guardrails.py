@@ -107,6 +107,45 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_hard_stop_halts_distinct_failed_calls_only_after_the_configured_limit():
+    """A varied but failing path stops; successful work resets its streak."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_halt_after=5,
+        )
+    )
+
+    for i in range(4):
+        args = {"query": f"different-{i}"}
+        assert controller.before_call("tool_search", args).action == "allow"
+        assert controller.after_call(
+            "tool_search", args, '{"error":"query is required"}', failed=True
+        ).action != "halt"
+
+    # A successful call resets the failure streak, so unrelated productive
+    # work is never blocked by the earlier failures.
+    assert controller.after_call(
+        "tool_search", {"query": "useful"}, "results", failed=False
+    ).action == "allow"
+
+    for i in range(4):
+        args = {"query": f"fresh-{i}"}
+        assert controller.before_call("tool_search", args).action == "allow"
+        assert controller.after_call(
+            "tool_search", args, '{"error":"query is required"}', failed=True
+        ).action != "halt"
+
+    fifth_args = {"query": "fresh-4"}
+    assert controller.before_call("tool_search", fifth_args).action == "allow"
+    fifth = controller.after_call(
+        "tool_search", fifth_args, '{"error":"query is required"}', failed=True
+    )
+    assert fifth.action == "halt"
+    assert fifth.code == "same_tool_failure_halt"
+
+
 
 
 
@@ -167,10 +206,6 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
-
-
-
-
 
 
 

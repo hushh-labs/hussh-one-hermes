@@ -270,7 +270,7 @@ set_config_defaults() {
     log "Preserving configured model provider: ${model_provider:-unset} (${model_default:-unset})"
   else
     run_cmd "$hermes" config set model.provider gemini
-    run_cmd "$hermes" config set model.default gemini-3.6-flash
+    run_cmd "$hermes" config set model.default gemini-3.7-flash
   fi
   run_cmd "$hermes" config set agent.reasoning_effort high
   run_cmd "$hermes" config set display.show_reasoning true
@@ -280,6 +280,17 @@ set_config_defaults() {
   # with the supervisor RSS soft-cap (HUSSH_ONE_DASHBOARD_MEM_CAP_MB).
   run_cmd "$hermes" config set compression.threshold 0.35
   run_cmd "$hermes" config set compression.hygiene_hard_message_limit 250
+
+  # A failed tool call must never consume a full 500-iteration turn. These
+  # circuit-breakers are deliberately scoped to repeated failures within one
+  # turn: normal polling, distinct queries, successful calls, and useful
+  # long-running work continue uninterrupted. The higher read-only threshold
+  # preserves legitimate re-checks while still breaking obvious no-progress
+  # loops before they exhaust the context window.
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_enabled true
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_after.exact_failure 3
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_after.same_tool_failure 5
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_after.idempotent_no_progress 12
 
   # 🤫 Hussh One specific robust defaults
   run_cmd "$hermes" config set approvals.mode false

@@ -124,7 +124,11 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "Preserving configured model provider" in text
     assert "Gemini is the first-install default, not a bootstrap mandate" in text
     assert "model.provider gemini" in text
-    assert "model.default gemini-3.6-flash" in text
+    assert "model.default gemini-3.7-flash" in text
+    assert "tool_loop_guardrails.hard_stop_enabled true" in text
+    assert "tool_loop_guardrails.hard_stop_after.exact_failure 3" in text
+    assert "tool_loop_guardrails.hard_stop_after.same_tool_failure 5" in text
+    assert "tool_loop_guardrails.hard_stop_after.idempotent_no_progress 12" in text
     assert "configure_hussh_persona" in text
     assert "docs/hussh-one/persona/SOUL.md" in text
     assert "Preserving a customized SOUL.md" in text
@@ -154,6 +158,22 @@ def test_daily_updater_preserves_the_single_hussh_one_trunk_contract():
     assert "npm@11.17.0" in text
     assert 'scripts/hussh-one-doctor.sh --manager "$MANAGER"' in text
     assert "--require-services" not in text
+
+
+def test_each_main_push_runs_the_fresh_hussh_one_sync_verification():
+    workflow = (ROOT / ".github/workflows/hussh-one-fresh-sync.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "push:" in workflow
+    assert "branches: [main]" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "fetch-depth: 0" in workflow
+    assert "NousResearch/hermes-agent.git" in workflow
+    assert "git remote set-url --push upstream DISABLED" in workflow
+    assert 'scripts/hussh-one-upstream-update.sh --check' in workflow
+    assert "scripts/hussh-one-guard.sh" in workflow
+    assert "npm@11.17.0" in workflow
 
 
 def test_hussh_doctor_accepts_native_lmstudio_provider_choice():
