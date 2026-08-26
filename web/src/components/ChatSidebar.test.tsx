@@ -7,6 +7,9 @@ import { EVENTS_CONNECT_TIMEOUT_MS } from "@/lib/events-reconnect";
 
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/events?channel=chat-1"),
+  getSessionDetail: vi.fn(async (): Promise<{ model: string | null }> => ({
+    model: null,
+  })),
   getModelInfo: vi.fn(async () => ({
     capabilities: { supports_reasoning: false },
     model: "test/model",
@@ -36,7 +39,10 @@ const reloadMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  api: { getModelInfo: apiMocks.getModelInfo },
+  api: {
+    getModelInfo: apiMocks.getModelInfo,
+    getSessionDetail: apiMocks.getSessionDetail,
+  },
   buildWsUrl: apiMocks.buildWsUrl,
 }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({
@@ -119,6 +125,8 @@ beforeEach(() => {
   apiMocks.buildWsUrl.mockResolvedValue(
     "ws://localhost/api/events?channel=chat-1",
   );
+  apiMocks.getSessionDetail.mockReset();
+  apiMocks.getSessionDetail.mockResolvedValue({ model: null });
   reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(true);
   vi.stubGlobal("WebSocket", FakeWebSocket);
 });
@@ -179,6 +187,61 @@ describe("ChatSidebar event socket", () => {
     // immediately after `/model`, even when its switch is still pending.
     expect(container.textContent).toContain("gemma-4-31b@q4_k_m");
     expect(container.textContent).not.toContain("configured-default");
+  });
+
+  it("seeds a resumed chat from its durable session model before PTY events", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    apiMocks.getModelInfo.mockResolvedValueOnce({
+      capabilities: { supports_reasoning: false },
+      model: "configured-default",
+    });
+    apiMocks.getSessionDetail.mockResolvedValueOnce({
+      model: "google/gemma-4-26b-a4b-qat",
+    });
+
+    await render(
+      <ChatSidebar channel="chat-1" resumeSessionId="saved-session-1" />,
+    );
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("gemma-4-26b-a4b-qat"),
+    );
+    expect(apiMocks.getSessionDetail).toHaveBeenCalledWith(
+      "saved-session-1",
+      undefined,
+    );
+  });
+
+  it("does not let a delayed stored-model read overwrite a live /model event", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    let resolveStoredModel!: (value: { model: string | null }) => void;
+    apiMocks.getSessionDetail.mockImplementationOnce(
+      () =>
+        new Promise<{ model: string | null }>((resolve) => {
+          resolveStoredModel = resolve;
+        }),
+    );
+
+    await render(
+      <ChatSidebar channel="chat-1" resumeSessionId="saved-session-1" />,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("message", {
+        data: JSON.stringify({
+          method: "event",
+          params: {
+            type: "session.info",
+            payload: { model: "google/live-model" },
+          },
+        }),
+      });
+      resolveStoredModel({ model: "google/stored-model" });
+    });
+
+    expect(container.textContent).toContain("live-model");
+    expect(container.textContent).not.toContain("stored-model");
   });
 });
 

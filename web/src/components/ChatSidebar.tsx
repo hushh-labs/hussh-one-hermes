@@ -114,6 +114,12 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
+  /**
+   * Durable id of the chat the PTY is resuming, when this is a resumed chat.
+   * The REST detail read seeds the badge before the PTY publisher's first
+   * `session.info` frame reaches the events socket.
+   */
+  resumeSessionId?: string | null;
   /** Chat profile from the dashboard switcher / URL scope. */
   profile?: string;
   className?: string;
@@ -138,6 +144,7 @@ export function sidecarSessionCreateParams(profile?: string): Record<string, unk
 
 export function ChatSidebar({
   channel,
+  resumeSessionId,
   profile,
   className,
   onDashboardNewSessionRequest,
@@ -466,6 +473,39 @@ export function ChatSidebar({
       ws?.close();
     };
   }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+
+  // A resumed conversation has a durable, session-scoped model selection.
+  // The event feed remains authoritative after the PTY is running (including
+  // a live `/model` switch), but its initial frame can be delayed or lost when
+  // the dashboard restarts. Seed the badge from the same stored row ChatPage
+  // already reads for its title so it never falls back to the global default
+  // and mislabels a pinned resumed chat in that window.
+  useEffect(() => {
+    if (!resumeSessionId) {
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getSessionDetail(resumeSessionId, profile)
+      .then((session) => {
+        const model = session?.model;
+        if (cancelled || typeof model !== "string" || !model) {
+          return;
+        }
+        setLiveSessionInfo((current) =>
+          // Do not let a slower REST response overwrite an already-live
+          // session.info frame after a `/model` change.
+          current.model ? current : { ...current, model },
+        );
+      })
+      .catch(() => {
+        // Best-effort: the events feed will still update the badge once the
+        // PTY emits its authoritative session.info frame.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeSessionId, profile]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).
