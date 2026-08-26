@@ -10,6 +10,8 @@ Fresh Hussh One setup registers the guarded daily updater automatically. It
 fetches both remotes, creates and pushes a safety tag, reconciles official
 Hermes on a short-lived `sync/upstream-*` branch, runs the Hussh guard, merges
 only a clean result into `origin/main`, then restarts local services.
+The post-restart doctor reports an unpaired optional integration such as
+WhatsApp as a warning; it does not mark a verified core update as failed.
 
 ```bash
 # Inspect without changing anything.

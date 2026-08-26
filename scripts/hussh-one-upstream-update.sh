@@ -252,7 +252,10 @@ apply_update() {
   log "Hussh One main updated and pushed from official Hermes $upstream_sha"
   if [[ "$RESTART" == "1" ]]; then
     scripts/hussh-one-supervisor.sh restart --manager "$MANAGER" --clean-conflicts
-    scripts/hussh-one-doctor.sh --manager "$MANAGER" --require-services
+    # A fleet update must converge on every supported machine. WhatsApp is an
+    # optional per-device pairing, so its absence is diagnostic information,
+    # not a reason to report a clean source/runtime update as failed.
+    scripts/hussh-one-doctor.sh --manager "$MANAGER"
   fi
 }
 
