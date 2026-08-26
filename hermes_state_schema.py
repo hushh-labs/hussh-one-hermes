@@ -937,7 +937,7 @@ class SessionSchemaMixin:
 
     @staticmethod
     def _redact_owner_private_transcript_history(cursor) -> int:
-        """One-time v27 cleanup for plaintext copied from private tool turns."""
+        """v27/v28 cleanup for private turns and pseudo-vault tool output."""
         from agent.sensitive_transcript import (
             SENSITIVE_CONTENT_SENTINEL,
             redact_messages_for_durable_boundary,
@@ -1034,16 +1034,18 @@ class SessionSchemaMixin:
                 )
                 updated += 1
 
-        # Remove the known value-shaped pseudo-vault output even when the
-        # model never invoked a native tool. Do not match generic password
-        # discussions: those are ordinary user transcript data and are not
-        # evidence that decrypted vault content crossed this boundary.
+        # Remove known value-shaped pseudo-vault output even when the model
+        # never invoked a native tool. Historical terminal/file tool results
+        # carried the simulation markers and could be replayed into a resumed
+        # model context, recreating the misleading partial-vault behavior.
+        # Preserve user messages: a person discussing the marker is ordinary
+        # transcript input, not generated vault state.
         cursor.execute(
             """UPDATE messages SET content = ?, api_content = NULL,
                        reasoning = NULL, reasoning_content = NULL,
                        reasoning_details = NULL, codex_reasoning_items = NULL,
                        codex_message_items = NULL
-               WHERE role = 'assistant'
+               WHERE role != 'user'
                  AND content LIKE '%[VAULT_ENCRYPTED]%'""",
             (SENSITIVE_CONTENT_SENTINEL,),
         )
@@ -1381,12 +1383,12 @@ class SessionSchemaMixin:
                 # one large prompt copy per session.
                 self._dedupe_legacy_system_prompts(cursor)
 
-            if current_version < 27:
+            if current_version < 28:
                 redacted = self._redact_owner_private_transcript_history(cursor)
                 if redacted:
                     logger.warning(
                         "Redacted %d legacy owner-private transcript row(s) "
-                        "during the v27 security migration",
+                        "during the v28 security migration",
                         redacted,
                     )
 
