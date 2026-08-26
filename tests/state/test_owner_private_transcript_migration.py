@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """v28 removes legacy owner-private and pseudo-vault durable payloads."""
 
 import json
