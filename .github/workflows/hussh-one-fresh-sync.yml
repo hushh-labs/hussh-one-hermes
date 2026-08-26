@@ -38,6 +38,10 @@ jobs:
       - name: Re-establish the Hussh One remote contract
         run: |
           git switch main || git switch --track -c main origin/main
+          # actions/checkout retains an authenticated origin URL. Normalize it
+          # before asserting the product contract, so CI verifies the same
+          # public Hussh One remote local installs use.
+          git remote set-url origin https://github.com/hushh-labs/hussh-one-hermes.git
           test "$(git remote get-url origin)" = "https://github.com/hushh-labs/hussh-one-hermes.git"
           git remote add upstream https://github.com/NousResearch/hermes-agent.git 2>/dev/null || \
             git remote set-url upstream https://github.com/NousResearch/hermes-agent.git
