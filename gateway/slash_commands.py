@@ -1423,6 +1423,56 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
+    async def _handle_cron_status_command(self, event: MessageEvent) -> str:
+        """Handle /cron-status - read-only list of scheduled cron jobs.
+
+        A deterministic status read for the chat bridge: each enabled job's
+        name, schedule, next run, and last result.  It never creates, edits,
+        pauses, resumes, or runs a job — mutation stays on the CLI-only /cron
+        command.  Backs the "cron status" natural-language verb.
+        """
+        try:
+            from cron import list_jobs
+
+            jobs = await asyncio.to_thread(list_jobs)
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "cron-status: list_jobs failed", exc_info=True
+            )
+            return "⏰ Couldn't read the cron schedule right now — try again shortly."
+
+        if not jobs:
+            return "⏰ No scheduled cron jobs."
+
+        lines = [f"⏰ Cron jobs ({len(jobs)})", ""]
+        for idx, job in enumerate(jobs[:20], 1):
+            name = str(job.get("name") or job.get("id") or "?")
+            state = str(job.get("state") or "").strip()
+            schedule = str(
+                job.get("schedule_display") or job.get("schedule") or ""
+            ).strip()
+            next_run = str(job.get("next_run_at") or "").strip()
+            last_status = str(job.get("last_status") or "").strip()
+
+            head_parts = [f"{idx}. `{name}`"]
+            if state:
+                head_parts.append(state)
+            if schedule:
+                head_parts.append(schedule)
+            row = " · ".join(head_parts)
+
+            detail = []
+            if next_run:
+                detail.append(f"next {next_run}")
+            if last_status:
+                detail.append(f"last {last_status}")
+            if detail:
+                row += f"\n   {' · '.join(detail)}"
+            lines.append(row)
+        if len(jobs) > 20:
+            lines.append(f"…and {len(jobs) - 20} more.")
+        return "\n".join(lines)
+
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 

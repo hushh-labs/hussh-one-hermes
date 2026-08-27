@@ -16468,6 +16468,63 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             raw_args,
         )
         return await self._handle_model_command(synthetic_event)
+
+    async def _maybe_handle_natural_readonly_verb(
+        self, event: MessageEvent, session_key: str
+    ) -> Optional[str]:
+        """Dispatch a safe natural-language READ-ONLY status verb.
+
+        Mirrors ``_maybe_handle_natural_model_switch`` but for read-only verbs
+        ("cron status" -> ``/cron-status``, "what are you doing" -> ``/agents``).
+        The detector is deterministic and injection-guarded; non-matching text
+        returns None and falls through to the agent unchanged.  Read-only — it
+        never mutates runtime state.
+        """
+        try:
+            if getattr(event, "internal", False) or event.get_command():
+                return None
+            if getattr(event, "message_type", None) != MessageType.TEXT:
+                return None
+            source = getattr(event, "source", None)
+            if not source or getattr(source, "platform", None) != Platform.WHATSAPP:
+                return None
+
+            from hermes_cli.natural_readonly_verbs import parse_natural_readonly_verb
+
+            intent = parse_natural_readonly_verb(getattr(event, "text", "") or "")
+        except Exception:
+            logger.debug("Natural read-only verb detection failed", exc_info=True)
+            return None
+
+        if intent is None:
+            return None
+
+        verb_to_command = {
+            "cron_status": ("cron-status", self._handle_cron_status_command),
+            "on_device_compute": ("agents", self._handle_agents_command),
+        }
+        mapped = verb_to_command.get(intent.verb)
+        if mapped is None:
+            return None
+        command_name, handler = mapped
+
+        from hermes_cli.commands import resolve_command
+
+        cmd_def = resolve_command(command_name)
+        denied = self._check_slash_access(
+            event.source, cmd_def.name if cmd_def else command_name
+        )
+        if denied is not None:
+            return denied
+
+        synthetic_event = dataclasses.replace(event, text=f"/{command_name}")
+        logger.info(
+            "Natural read-only verb '%s' detected on WhatsApp for session %s",
+            intent.verb,
+            session_key,
+        )
+        return await handler(synthetic_event)
+
     async def _resolve_async_delegation_session(
         self,
         session_entry: SessionEntry,
@@ -17874,6 +17931,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
+        if canonical == "cron-status":
+            return await self._handle_cron_status_command(event)
+
         if canonical == "platform":
             return await self._handle_platform_command(event)
 
@@ -18436,6 +18496,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "accepting new turns right now. It'll be back in a moment — "
                 "please resend shortly."
             )
+
+        # ── Natural-language control verbs (pre-agent short-circuit) ──
+        # A short, direct owner utterance like "switch to opus 4.8", "cron
+        # status", or "what are you doing" is a control-plane request, not an
+        # agent turn.  Intercept it here — after explicit slash dispatch, before
+        # claiming a session — so it never spins up an LLM turn.  Both detectors
+        # are deterministic and injection-guarded (WhatsApp owner text only);
+        # non-matching text returns None and falls through unchanged.  This
+        # revives the natural model-switch wiring dropped in the v2026.7.20
+        # upstream reconcile (dd540f0075) and adds read-only cron/agent verbs.
+        if not is_internal:
+            _nat_switch = await self._maybe_handle_natural_model_switch(
+                event, _quick_key
+            )
+            if _nat_switch is not None:
+                return _nat_switch
+            _nat_verb = await self._maybe_handle_natural_readonly_verb(
+                event, _quick_key
+            )
+            if _nat_verb is not None:
+                return _nat_verb
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
