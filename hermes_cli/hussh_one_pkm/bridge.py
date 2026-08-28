@@ -793,8 +793,16 @@ class HusshVaultBridge:
         identity client's revocation path, which can trip at the same moment.
         """
         with self._lock:
-            if self._seal_state == "sealed":
+            # Claim the seal atomically, BEFORE any work. Posting the ack calls
+            # auth_headers(), which refreshes the Firebase token, which polls the
+            # device list, which sees this device is no longer active and invokes
+            # the revocation callback -- which is this method. Without claiming
+            # first, that path re-enters seal() and recurses until the stack
+            # blows. The same claim also collapses a concurrent seal from the
+            # monitor thread into one.
+            if self._seal_state in {"sealed", "sealing"}:
                 return {"sealed": True, "reason": reason, "already_sealed": True}
+            self._seal_state = "sealing"
         self.lock(reason=reason)
         ack_delivered = False
         try:
@@ -827,7 +835,7 @@ class HusshVaultBridge:
             # signal, not consent to delete: destroying here would turn a
             # server-side data problem into user data loss. Surface it instead.
             with self._lock:
-                if self._seal_state != "sealed":
+                if self._seal_state not in {"sealed", "sealing"}:
                     self._seal_state = "needs_reinit"
             return
         if status == "active":
@@ -857,12 +865,21 @@ class HusshVaultBridge:
                 # this installation; report the remote outcome honestly instead
                 # of claiming revocation succeeded.
                 remote_revocation = "unverified"
-        self.remove_local_vault()
-        self.identity.disconnect(remove_device_key=True)
+        # Seal rather than removing the vault directly. A disconnect can be
+        # started from either end, and both must leave the same state: the
+        # remote row revoked AND its seal confirmed. Going straight to
+        # remove_local_vault() destroyed the credentials without ever posting
+        # the seal ack, so a device that HAD sealed sat on the cloud as
+        # "revoked, awaiting device seal confirmation" forever. seal() posts
+        # the ack while credentials still exist and then destroys, so the
+        # device-initiated path converges on the same state as the
+        # cloud-initiated one.
+        seal_result = self.seal(reason="local_disconnect")
         return {
             "connected": False,
             "local_disconnected": True,
             "remote_revocation": remote_revocation,
+            "seal_ack_delivered": bool(seal_result.get("seal_ack_delivered")),
         }
 
 

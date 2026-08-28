@@ -321,7 +321,9 @@ def test_failed_passkey_enrollment_falls_back_to_masked_passphrase(
     assert bridge._onboarding_status == "ready"
 
 
-def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified() -> None:
+def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified(
+    tmp_path: Path,
+) -> None:
     class FailedResponse:
         status_code = 503
 
@@ -344,9 +346,17 @@ def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified() 
             device_id="device-test",
         ),
         auth_headers=lambda: {"Authorization": "Bearer redacted"},
+        post_seal_ack=lambda: False,
         disconnect=lambda *, remove_device_key: identity_cleanup.append(remove_device_key),
     )
     bridge.remove_local_vault = lambda: local_cleanup.append("removed")  # type: ignore[method-assign]
+    # A local disconnect now seals, so the cloud can confirm it instead of
+    # sitting on "revoked, awaiting device seal confirmation" forever.
+    bridge._lock = threading.RLock()
+    bridge._seal_state = None
+    bridge.profile_home = tmp_path
+    bridge.seal_state_path = tmp_path / "hussh-one" / "seal-state.json"
+    bridge.lock = lambda *, reason="explicit": None  # type: ignore[method-assign]
 
     result = bridge.revoke_and_disconnect()
 
@@ -354,6 +364,7 @@ def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified() 
         "connected": False,
         "local_disconnected": True,
         "remote_revocation": "unverified",
+        "seal_ack_delivered": False,
     }
     assert local_cleanup == ["removed"]
     assert identity_cleanup == [True]
@@ -366,6 +377,7 @@ def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified() 
 def test_disconnect_records_verified_remote_outcome_before_local_cleanup(
     status_code: int,
     expected_remote_status: str,
+    tmp_path: Path,
 ) -> None:
     class Response:
         def __init__(self) -> None:
@@ -383,9 +395,15 @@ def test_disconnect_records_verified_remote_outcome_before_local_cleanup(
             device_id="device-test",
         ),
         auth_headers=lambda: {"Authorization": "Bearer redacted"},
+        post_seal_ack=lambda: True,
         disconnect=lambda *, remove_device_key: None,
     )
     bridge.remove_local_vault = lambda: None  # type: ignore[method-assign]
+    bridge._lock = threading.RLock()
+    bridge._seal_state = None
+    bridge.profile_home = tmp_path
+    bridge.seal_state_path = tmp_path / "hussh-one" / "seal-state.json"
+    bridge.lock = lambda *, reason="explicit": None  # type: ignore[method-assign]
 
     result = bridge.revoke_and_disconnect()
 

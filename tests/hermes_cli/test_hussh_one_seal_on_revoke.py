@@ -16,6 +16,7 @@ import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -282,3 +283,79 @@ def test_identity_revocation_falls_back_when_seal_fails(tmp_path):
 
     # A failed seal must not strand the device holding a live login too.
     assert calls == ["disconnect:True"]
+
+
+# ---------------------------------------------------------------------------
+# A disconnect can start from EITHER end, and both must converge on the same
+# state: the remote row revoked AND its seal confirmed. The device-initiated
+# path used to destroy the credentials without ever posting the ack, leaving
+# the cloud stuck on "revoked, awaiting device seal confirmation".
+# ---------------------------------------------------------------------------
+
+
+def test_local_disconnect_posts_the_seal_ack(tmp_path):
+    order: list[str] = []
+
+    def _ack():
+        order.append("seal_ack")
+        return True
+
+    identity = SimpleNamespace(
+        read_state=lambda: SimpleNamespace(
+            api_base="https://api.example.test", device_id="tdv_local_disconnect"
+        ),
+        auth_headers=lambda: {"Authorization": "Bearer test"},
+        post_seal_ack=_ack,
+        disconnect=lambda *, remove_device_key: order.append("disconnect"),
+    )
+
+    class _Http:
+        def delete(self, url, **_kwargs):
+            order.append("remote_delete")
+            return SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+
+    bridge = _seal_bridge(tmp_path, identity, order)
+    bridge.http = _Http()
+
+    result = bridge.revoke_and_disconnect()
+
+    assert result["remote_revocation"] == "revoked"
+    assert result["seal_ack_delivered"] is True
+    # Revoke remotely first, then ack while credentials still exist, then
+    # destroy. Without the ack the cloud can never confirm the seal.
+    assert order == [
+        "remote_delete",
+        "lock",
+        "seal_ack",
+        "remove_local_vault",
+        "disconnect",
+    ]
+
+
+def test_seal_does_not_recurse_when_the_ack_triggers_revocation_detection(tmp_path):
+    # post_seal_ack -> auth_headers -> token refresh -> device-list poll -> sees
+    # this device is no longer active -> revocation callback -> seal(). The
+    # claim must be taken before any work or this recurses until the stack dies.
+    order: list[str] = []
+    calls: list[int] = []
+
+    bridge_ref: dict[str, Any] = {}
+
+    def _reentrant_ack():
+        calls.append(1)
+        # Simulate the revocation callback firing during the ack.
+        bridge_ref["bridge"].seal(reason="trusted_device_revoked")
+        return True
+
+    identity = SimpleNamespace(
+        post_seal_ack=_reentrant_ack,
+        disconnect=lambda *, remove_device_key: order.append("disconnect"),
+    )
+    bridge = _seal_bridge(tmp_path, identity, order)
+    bridge_ref["bridge"] = bridge
+
+    result = bridge.seal()
+
+    assert result["sealed"] is True
+    assert len(calls) == 1
+    assert order.count("remove_local_vault") == 1
