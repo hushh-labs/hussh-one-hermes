@@ -14,6 +14,22 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## 🐶 Puppy One — on-device edge compute
+
+| Date | Commit | What shipped |
+|------|--------|---------------|
+| 2026-08-28 | `679803f1` | **Fail-closed on-device gate.** Pinning the provider only ever covered the main turn; auxiliary tasks defaulted to `provider: auto` and fell through OpenRouter, Nous and Codex to a paid Gemini. With `hussh_one.on_device_only` set, any non-local provider resolution now refuses instead of reaching for the network. |
+| 2026-08-28 | `ce5db96d` | **LM Studio residency, eviction and real host hardware.** Hermes could load a model and had no unload path at all. Eviction only ever touches IDLE models, prefers the plan surrendering the least memory, and refuses to act when the fit is impossible. Adds brand/processor/cores/RAM, which stdlib cannot answer. |
+| 2026-08-28 | `bd9f3700` | **The PKM 0-to-1 benchmark.** Times model inference and the commit path separately and never sums them, and scores tool-call validity beside latency — a model that answers in prose is not a fast result. Loopback-only by parsed hostname, so a result measured off this machine cannot wear this one's name. |
+| 2026-08-28 | `71bd7cb5` | **Push-on-change presence.** Replaces a fixed poll with transition pushes plus a 600s keepalive, so an idle laptop stops costing anything. `post_heartbeat` deliberately never calls `auth_headers`, because that would run the revocation check and telemetry must not be able to seal the device. |
+| 2026-08-28 | `9a1d1eb1` | **Stronger-model judge for small-model output.** Grades what the local model actually saved, not just its shape. Refuses to run when judge and answerer are the same model, discards uncited failures, and voids the whole run when planted controls are missed. Caught a real hallucination on its first live run. |
+| 2026-08-28 | `58da4a2b` | **Battery state on connect.** A desktop reports absence rather than 0%, since those are the same number and opposite facts. `on_ac` and `charging` are separate, because a laptop held at an 80% limit is plugged in and not charging. |
+| 2026-08-28 | `1ce76a6d` | **Namespaced the edge modules for upstream safety.** `lmstudio_manager.py` and `host_metrics.py` moved under the `hussh_one_` prefix, which is this fork's mechanism for surviving a near-daily upstream sync rather than a naming preference. |
+
+📄 Feature page: [puppy-one-edge-compute.md](./features/puppy-one-edge-compute.md)
+
+---
+
 ## 📋 Cross-Form KYC/KYB & Onboarding Knowledge Base
 
 | Date | Commit | What shipped |
