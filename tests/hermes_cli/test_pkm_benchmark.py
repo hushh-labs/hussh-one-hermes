@@ -235,3 +235,90 @@ class TestSizeEstimate:
 
     def test_an_unreadable_identifier_falls_back_rather_than_raising(self):
         assert bench._estimated_size_gb("some/custom-model") == 8.0
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class TestTruncationIsNotAFailure:
+    """A model that ran out of budget is indeterminate, not bad.
+
+    Reasoning tokens come out of the same budget as the answer, and no model
+    metadata declares that a model reasons. So a capable model can think past
+    the limit and return a truncated answer that looks exactly like a bad one.
+    Scoring that as invalid reports a harness under-budget as a model result --
+    precisely the false negative this harness exists to prevent.
+    """
+
+    def test_a_truncated_turn_is_excluded_from_the_validity_rate(self):
+        results = [
+            bench.TurnResult(
+                model="m", case_id="a", rep=0, cold=False, ok=True,
+                t_model_ms=100.0, valid_tool_call=True, finish_reason="tool_calls",
+            ),
+            bench.TurnResult(
+                model="m", case_id="b", rep=0, cold=False, ok=True,
+                t_model_ms=100.0, valid_tool_call=False, finish_reason="length",
+                truncated=True, reasoning_tokens=411,
+            ),
+        ]
+        entry = bench.summarize(results)["models"][0]
+        # One scorable turn, and it was valid. The truncated one is reported
+        # beside the rate rather than dragging it to 50%.
+        assert entry["scored_turns"] == 1
+        assert entry["valid_tool_call_rate"] == 1.0
+        assert entry["truncated"] == 1
+
+    def test_an_all_truncated_model_reports_no_rate_at_all(self):
+        results = [
+            bench.TurnResult(
+                model="m", case_id=f"c{i}", rep=0, cold=False, ok=True,
+                t_model_ms=100.0, valid_tool_call=False, finish_reason="length",
+                truncated=True,
+            )
+            for i in range(3)
+        ]
+        entry = bench.summarize(results)["models"][0]
+        # Nothing was measurable. A 0.0 here would assert the model failed.
+        assert entry["valid_tool_call_rate"] is None
+        assert entry["truncated"] == 3
+
+    def test_finish_reason_and_reasoning_tokens_are_recorded(self):
+        payload = {
+            "choices": [{"finish_reason": "length", "message": {"content": ""}}],
+            "usage": {
+                "completion_tokens": 400,
+                "completion_tokens_details": {"reasoning_tokens": 377},
+            },
+        }
+        turn = bench.run_turn(
+            model="m", case={"id": "c", "utterance": "u"}, rep=0, cold=False,
+            opener=lambda *a, **k: _FakeResponse(payload),
+        )
+        assert turn.finish_reason == "length"
+        assert turn.reasoning_tokens == 377
+        assert turn.truncated is True
+        assert turn.invalid_reason == "truncated"
+
+    def test_a_normal_stop_is_not_truncated(self):
+        payload = {
+            "choices": [{"finish_reason": "stop", "message": {"content": "hi"}}],
+            "usage": {"completion_tokens": 10},
+        }
+        turn = bench.run_turn(
+            model="m", case={"id": "c", "utterance": "u"}, rep=0, cold=False,
+            opener=lambda *a, **k: _FakeResponse(payload),
+        )
+        assert turn.truncated is False
+        assert turn.finish_reason == "stop"

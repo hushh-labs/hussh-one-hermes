@@ -267,6 +267,12 @@ class TurnResult:
     # No ttft field: these turns are unstreamed, so a time-to-first-token would
     # be permanently null while implying it had been measured.
     completion_tokens: Optional[int] = None
+    # Why generation stopped, and how much of the budget reasoning consumed.
+    # Both are recorded because a model that ran out of room mid-answer must be
+    # distinguishable from one that answered badly -- see `truncated`.
+    finish_reason: str = ""
+    reasoning_tokens: Optional[int] = None
+    truncated: bool = False
     tokens_per_second: Optional[float] = None
     valid_tool_call: bool = False
     invalid_reason: str = ""
@@ -331,10 +337,29 @@ def run_turn(
 
     usage = payload.get("usage") if isinstance(payload, dict) else None
     completion_tokens = None
+    reasoning_tokens = None
     if isinstance(usage, dict):
         raw_tokens = usage.get("completion_tokens")
         if isinstance(raw_tokens, (int, float)) and raw_tokens > 0:
             completion_tokens = int(raw_tokens)
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            raw_reasoning = details.get("reasoning_tokens")
+            if isinstance(raw_reasoning, (int, float)) and raw_reasoning >= 0:
+                reasoning_tokens = int(raw_reasoning)
+
+    # Reasoning tokens are spent from the same budget as the answer, and no
+    # model metadata declares that it reasons. A model can therefore think its
+    # way past the limit and return a truncated, unusable answer -- which looks
+    # identical to a model that simply answered badly. Scoring that as invalid
+    # reports a harness under-budget as a model result, so it is recorded as
+    # truncated and excluded from the validity rate instead.
+    finish_reason = ""
+    if isinstance(payload, dict):
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            finish_reason = str(choices[0].get("finish_reason") or "")
+    truncated = finish_reason == "length"
 
     tokens_per_second = None
     if completion_tokens and elapsed_ms > 0:
@@ -351,8 +376,11 @@ def run_turn(
         completion_tokens=completion_tokens,
         tokens_per_second=tokens_per_second,
         valid_tool_call=bool(score["valid"]),
-        invalid_reason=str(score["reason"]),
+        invalid_reason="truncated" if truncated else str(score["reason"]),
         missing_fields=list(score["missing_fields"]),
+        finish_reason=finish_reason,
+        reasoning_tokens=reasoning_tokens,
+        truncated=truncated,
     )
 
 
@@ -375,18 +403,32 @@ def summarize(results: Sequence[TurnResult]) -> dict[str, Any]:
         throughput = [
             turn.tokens_per_second for turn in ok if turn.tokens_per_second is not None
         ]
-        valid = [turn for turn in ok if turn.valid_tool_call]
+        # A truncated turn is indeterminate, not a failure: the model ran out of
+        # budget, which is the harness's fault and not a fact about the model.
+        # Counting it against validity would report a capable model as broken.
+        truncated = [turn for turn in ok if turn.truncated]
+        scorable = [turn for turn in ok if not turn.truncated]
+        valid = [turn for turn in scorable if turn.valid_tool_call]
+        reasoning = [
+            turn.reasoning_tokens for turn in ok if turn.reasoning_tokens is not None
+        ]
         models.append(
             {
                 "model": model,
                 "turns": len(turns),
                 "errors": sum(1 for turn in turns if not turn.ok),
-                # Validity is reported over turns that actually answered, and
-                # the error count sits beside it so a model that mostly failed
-                # to respond cannot post a flattering rate on its survivors.
+                # Validity is reported over turns that actually answered and
+                # were not truncated. The error and truncation counts sit beside
+                # it, so a model that mostly failed to respond cannot post a
+                # flattering rate on its survivors.
                 "valid_tool_call_rate": (
-                    round(len(valid) / len(ok), 4) if ok else None
+                    round(len(valid) / len(scorable), 4) if scorable else None
                 ),
+                "scored_turns": len(scorable),
+                # Non-zero means the budget was too small, not that the model is
+                # bad. Investigate the harness before reporting the model.
+                "truncated": len(truncated),
+                "reasoning_tokens_p50": pct(reasoning, 0.50),
                 "invalid_reasons": sorted(
                     {turn.invalid_reason for turn in ok if turn.invalid_reason}
                 ),
