@@ -81,7 +81,13 @@ class HusshIdentityClient:
         profile_home: Path,
         keychain: MacOSKeychain | None = None,
         http: httpx.Client | None = None,
+        on_revoked: Callable[[], None] | None = None,
     ) -> None:
+        # Owner-supplied full seal. The identity client can only destroy its own
+        # credentials; the vault envelope, wrapping key, PKM replica and Source
+        # Library live on the bridge. When the bridge wires itself in here, a
+        # revoked device seals everything instead of only unlinking its login.
+        self.on_revoked = on_revoked
         self.profile_home = profile_home
         self.profile_id = _profile_id(profile_home)
         self.state_dir = profile_home / "hussh-one"
@@ -439,12 +445,84 @@ class HusshIdentityClient:
             item.get("device_id") == state.device_id and item.get("status") == "active"
             for item in (devices.json().get("devices") or [])
         ):
-            self.disconnect(remove_device_key=True)
+            self._handle_revoked()
             raise HusshIdentityError("This Hussh trusted device was revoked.")
         return self._id_token
 
+    def _handle_revoked(self) -> None:
+        """Seal on revocation, falling back to a credential-only disconnect.
+
+        ``disconnect`` alone is NOT a seal: it drops this device's login while
+        leaving the vault envelope, the device-wrapping key, the encrypted PKM
+        replica and the Source Library on disk -- everything a revoked device
+        needs to keep reading the local copy. The bridge injects the real seal
+        via ``on_revoked``; the fallback preserves the old behaviour for a bare
+        identity client constructed without one.
+        """
+        if self.on_revoked is not None:
+            try:
+                self.on_revoked()
+                return
+            except Exception:
+                # A failed seal must never strand the device holding a live
+                # login as well; fall through to the credential teardown.
+                pass
+        self.disconnect(remove_device_key=True)
+
     def auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.id_token()}"}
+
+    def device_status(self) -> str:
+        """Read this device's own trust status from Hussh One.
+
+        Returns exactly one of ``active`` | ``revoked`` | ``unknown_device`` |
+        ``indeterminate``. Never raises: the caller destroys user data on
+        ``revoked``, so every ambiguous outcome -- 503, timeout, transport
+        error, unparseable body -- must be indistinguishable from "don't act".
+        Fail-closed here means failing to NOT sealing.
+
+        The endpoint is Firebase-authed rather than device-token-authed on
+        purpose: a revoked device keeps its user-level Firebase session, so a
+        device-token gate would be unreachable exactly when the answer matters.
+        """
+        state = self.read_state()
+        if state is None:
+            return "indeterminate"
+        try:
+            response = self.http.get(
+                f"{state.api_base}/api/account/trusted-devices/{state.device_id}/status",
+                headers=self.auth_headers(),
+            )
+        except Exception:
+            return "indeterminate"
+        if response.status_code == 404:
+            return "unknown_device"
+        if response.status_code != 200:
+            return "indeterminate"
+        try:
+            payload = response.json() or {}
+        except Exception:
+            return "indeterminate"
+        return "revoked" if str(payload.get("status")) == "revoked" else "active"
+
+    def post_seal_ack(self) -> bool:
+        """Best-effort advisory ack that this device sealed its local copy.
+
+        Must run BEFORE the destroy step: it needs the Firebase credentials the
+        seal is about to delete. Advisory and idempotent server-side, so a retry
+        after a crash is safe, and a failure here never blocks the seal.
+        """
+        state = self.read_state()
+        if state is None:
+            return False
+        try:
+            response = self.http.post(
+                f"{state.api_base}/api/account/trusted-devices/{state.device_id}/seal-ack",
+                headers=self.auth_headers(),
+            )
+        except Exception:
+            return False
+        return 200 <= int(getattr(response, "status_code", 0)) < 300
 
     def sign(self, payload: str) -> str:
         signature = self._device_private_key().sign(
