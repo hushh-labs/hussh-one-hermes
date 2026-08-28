@@ -418,3 +418,11 @@ class MacOSKeychain:
                 )
         finally:
             self._release_all(retained)
+        # Also drop the plain-Keychain fallback copy. When SecItemAdd/Update
+        # returns -34018 (no Data Protection entitlement -- the normal case for
+        # a non-codesigned Python) the custody key is written under an ``up_``
+        # account instead, and it is read back from there. Deleting only the
+        # protected item left that copy behind on every disconnect, seal and
+        # remove_local_vault, so the Source Library key outlived the data it
+        # was meant to seal.
+        self.delete(f"up_{account}")

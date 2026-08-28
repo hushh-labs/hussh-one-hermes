@@ -41,6 +41,13 @@ class HusshVaultBridge:
 
     DEVICE_SYNC_INTERVAL_SECONDS = 30
     WORKSTATION_LOCK_CHECK_SECONDS = 5
+    REVOCATION_POLL_INTERVAL_SECONDS = 300
+    # Never poll on the construction tick. Every process that touches Hussh One
+    # builds a bridge, so a zero delay means a network round trip inside
+    # __init__ -- a startup storm in production, and an unexpected request in
+    # any caller that has not finished wiring its HTTP client yet. A revoked
+    # device is still discovered within this delay of the agent starting.
+    REVOCATION_POLL_STARTUP_DELAY_SECONDS = 30
 
     def __init__(
         self,
@@ -56,9 +63,11 @@ class HusshVaultBridge:
             profile_home=self.profile_home,
             keychain=self.keychain,
             http=self.http,
+            on_revoked=self.seal,
         )
         self.envelope_path = self.profile_home / "hussh-one" / "vault-envelope.json"
         self.lock_state_path = self.profile_home / "hussh-one" / "vault-lock-state.json"
+        self.seal_state_path = self.profile_home / "hussh-one" / "seal-state.json"
         self.replica = EncryptedPkmReplica(self.profile_home)
         self._vault_key: bytearray | None = None
         self._source_library_custody_key: bytearray | None = None
@@ -67,6 +76,10 @@ class HusshVaultBridge:
         self._owner_token: bytearray | None = None
         self._owner_token_expires_at_ms = 0
         self._next_device_sync_at = 0.0
+        self._next_revocation_check_at = (
+            time.monotonic() + self.REVOCATION_POLL_STARTUP_DELAY_SECONDS
+        )
+        self._seal_state: str | None = None
         self._next_workstation_lock_check_at = 0.0
         self._last_device_sync_at_ms = 0
         self._device_sync_status = "idle"
@@ -216,6 +229,9 @@ class HusshVaultBridge:
             "encrypted_replica_cursor": self.replica.cursor(),
             "device_sync_status": self._device_sync_status,
             "last_device_sync_at_ms": self._last_device_sync_at_ms or None,
+            # "active" | "needs_reinit" | "sealed" -- so status surfaces can say
+            # why a profile is empty instead of looking merely disconnected.
+            "seal_state": self._seal_state or "active",
         }
 
     def vault_preflight(self) -> dict[str, Any]:
@@ -446,6 +462,22 @@ class HusshVaultBridge:
 
     def _monitor_shared_lock_state(self) -> None:
         while True:
+            # Unconditional, and ahead of the lock/sync chain below on purpose.
+            # Those branches are an if/elif ladder, so a locked profile or a
+            # locked console short-circuits everything after it. As an `elif`
+            # this poll would never run on a locked device -- exactly the device
+            # that must still discover it was revoked, instead of re-opening the
+            # vault the moment the owner unlocks.
+            if time.monotonic() >= self._next_revocation_check_at:
+                self._next_revocation_check_at = (
+                    time.monotonic() + self.REVOCATION_POLL_INTERVAL_SECONDS
+                )
+                try:
+                    self._revocation_tick()
+                except Exception:
+                    # Never let a poll failure kill the monitor thread; the next
+                    # tick retries, and an ambiguous status never seals.
+                    pass
             if self._profile_is_locked():
                 with self._lock:
                     self._clear_vault_key_locked()
@@ -724,6 +756,84 @@ class HusshVaultBridge:
         source_library_root = self.profile_home / "hussh-one" / "source-library"
         if source_library_root.exists():
             shutil.rmtree(source_library_root)
+
+    def _write_seal_state(self, *, reason: str, ack_delivered: bool) -> None:
+        payload = {
+            "schema_version": 1,
+            "sealed": True,
+            "reason": reason,
+            "sealed_at_ms": int(time.time() * 1000),
+            "seal_ack_delivered": ack_delivered,
+        }
+        self.seal_state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = self.seal_state_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, separators=(",", ":")), encoding="utf-8"
+        )
+        os.chmod(temporary, 0o600)
+        temporary.replace(self.seal_state_path)
+
+    def seal(self, *, reason: str = "trusted_device_revoked") -> dict[str, Any]:
+        """Destroy every local copy of the vault after remote untrust.
+
+        This is what "unlink this device" must mean on the device. A credential
+        disconnect alone leaves the envelope, the wrapping key, the encrypted
+        PKM replica and the Source Library in place -- a revoked device could
+        still open its local copy. Ordering is deliberate:
+
+        1. lock first, so a concurrent reader cannot re-open the envelope
+           mid-seal;
+        2. ack while credentials still exist -- the destroy step deletes the
+           token the ack needs;
+        3. write the seal marker before the deletes, so a crash mid-seal still
+           explains why the profile is empty;
+        4. destroy local data, then the credentials.
+
+        Idempotent and never raises: it runs from a daemon thread and from the
+        identity client's revocation path, which can trip at the same moment.
+        """
+        with self._lock:
+            if self._seal_state == "sealed":
+                return {"sealed": True, "reason": reason, "already_sealed": True}
+        self.lock(reason=reason)
+        ack_delivered = False
+        try:
+            ack_delivered = self.identity.post_seal_ack()
+        except Exception:
+            ack_delivered = False
+        try:
+            self._write_seal_state(reason=reason, ack_delivered=ack_delivered)
+        except Exception:
+            pass
+        try:
+            self.remove_local_vault()
+        finally:
+            try:
+                self.identity.disconnect(remove_device_key=True)
+            except Exception:
+                pass
+            with self._lock:
+                self._seal_state = "sealed"
+        return {"sealed": True, "reason": reason, "seal_ack_delivered": ack_delivered}
+
+    def _revocation_tick(self) -> None:
+        """One revocation poll. Only an explicit ``revoked`` destroys anything."""
+        status = self.identity.device_status()
+        if status == "revoked":
+            self.seal()
+            return
+        if status == "unknown_device":
+            # The server has no row for this device. That is a re-enrollment
+            # signal, not consent to delete: destroying here would turn a
+            # server-side data problem into user data loss. Surface it instead.
+            with self._lock:
+                if self._seal_state != "sealed":
+                    self._seal_state = "needs_reinit"
+            return
+        if status == "active":
+            with self._lock:
+                if self._seal_state == "needs_reinit":
+                    self._seal_state = None
 
     def revoke_and_disconnect(self) -> dict[str, Any]:
         state = self.identity.read_state()
