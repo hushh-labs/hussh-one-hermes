@@ -308,6 +308,86 @@ def probe_changelog_freshness() -> None:
         add(harness, "changelog", WARN, f"could not run checker: {e}")
 
 
+def probe_puppy_one() -> None:
+    """Report the on-device edge tier: model host, gate, hardware, power.
+
+    Read-only and cheap. It never loads or evicts a model: a health probe that
+    changed what is resident would make the machine it describes different from
+    the one the owner has, and a load can take minutes.
+
+    The gate reading is the one that matters. ``hussh_one.on_device_only`` off
+    is not a failure, it is the default, but it IS the difference between "the
+    work stays here" and "the work may quietly reach a vendor", so it is
+    reported rather than assumed in either direction.
+    """
+    harness = "puppy-one"
+
+    # Model host. Not-running is INFO: LM Studio is the owner's app to start.
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:1234/api/v0/models", timeout=3
+        ) as resp:
+            models = (json.loads(resp.read()) or {}).get("data") or []
+        resident = [m.get("id") for m in models if m.get("state") == "loaded"]
+        if resident:
+            add(harness, "model-host", OK, f"LM Studio: {', '.join(resident)}")
+        else:
+            add(
+                harness,
+                "model-host",
+                WARN,
+                f"LM Studio up, no model resident ({len(models)} available)",
+            )
+    except Exception:
+        add(harness, "model-host", INFO, "LM Studio not reachable on 127.0.0.1:1234")
+
+    # The on-device gate.
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        gated = bool(cfg_get(load_config_readonly(), "hussh_one", "on_device_only"))
+        add(
+            harness,
+            "on-device-gate",
+            OK if gated else INFO,
+            "enforced: non-local providers refuse"
+            if gated
+            else "off: auxiliary tasks may route to a cloud provider",
+        )
+    except Exception as e:  # noqa: BLE001
+        add(harness, "on-device-gate", WARN, f"config unreadable: {e}")
+
+    # The machine the agent runs on, including power state on a laptop.
+    try:
+        from hermes_cli.hussh_one_host_metrics import host_battery, host_hardware
+
+        hw = host_hardware()
+        parts = [str(hw[k]) for k in ("brand", "processor", "ram_total_gb") if hw.get(k)]
+        battery = host_battery()
+        if battery.get("present"):
+            pct = battery.get("percent")
+            state = str(battery.get("state") or "")
+            # Discharging under a fifth is worth a WARN: a long eval or a large
+            # model load will not survive it, and that failure presents as a
+            # crash rather than as a flat battery.
+            low = (
+                isinstance(pct, (int, float))
+                and pct < 20
+                and not battery.get("on_ac")
+            )
+            parts.append(f"battery {pct}% {state}".strip())
+            add(
+                harness,
+                "host",
+                WARN if low else OK,
+                " / ".join(parts) + (" -- too low for a long run" if low else ""),
+            )
+        else:
+            add(harness, "host", OK, " / ".join(parts) or "hardware unreadable")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "host", WARN, f"host probe failed: {e}")
+
+
 def probe_source_library() -> None:
     """Report Source Library harness readiness without opening vault custody.
 
@@ -531,6 +611,7 @@ def main() -> int:
         probe_session_bloat,
         probe_changelog_freshness,
         probe_source_library,
+        probe_puppy_one,
     ]
     for p in probes:
         try:
