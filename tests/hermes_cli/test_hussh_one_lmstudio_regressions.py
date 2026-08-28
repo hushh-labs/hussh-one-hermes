@@ -9,7 +9,7 @@ so an eviction that buys nothing is not a cosmetic bug.
 
 from __future__ import annotations
 
-import hermes_cli.lmstudio_manager as lm
+import hermes_cli.hussh_one_lmstudio as lm
 
 
 def test_ensure_capacity_never_evicts_when_the_fit_is_impossible(monkeypatch):

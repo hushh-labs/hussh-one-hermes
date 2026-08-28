@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.host_metrics — real hardware/memory on non-/proc hosts.
+"""Tests for hermes_cli.hussh_one_host_metrics — real hardware/memory on non-/proc hosts.
 
 The host these run on is irrelevant: every probe is mocked, so the macOS
 path is exercised on Linux CI and the Linux path is exercised on a macOS
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import host_metrics
+from hermes_cli import hussh_one_host_metrics as host_metrics
 
 # Verbatim output from a Mac16,5 (M4 Max, 128 GB).
 _SYSCTL = {

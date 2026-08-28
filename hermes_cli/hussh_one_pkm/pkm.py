@@ -121,8 +121,6 @@ def _encrypt_domain(value: dict[str, Any], key: bytes) -> dict[str, Any]:
 
 
 def _decrypt_domain(blob: dict[str, Any], key: bytes) -> dict[str, Any]:
-    if isinstance(blob, dict) and "ciphertext" in blob:
-        blob = blob["ciphertext"]
     segments = blob.get("segments") if isinstance(blob, dict) else {}
     if not segments:
         value = _decrypt_blob(blob, key) if isinstance(blob, dict) else {}

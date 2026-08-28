@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_cli.host_metrics as hm
+import hermes_cli.hussh_one_host_metrics as hm
 
 LAPTOP_DISCHARGING = (
     "Now drawing from 'Battery Power'\n"

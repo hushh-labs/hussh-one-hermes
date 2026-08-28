@@ -33,7 +33,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Optional, Sequence
 
-from hermes_cli.lmstudio_manager import (
+from hermes_cli.hussh_one_lmstudio import (
     DEFAULT_SERVER_ROOT,
     ensure_capacity,
     host_memory,
@@ -521,7 +521,7 @@ def _estimated_size_gb(model: str) -> float:
 def _host_context() -> dict[str, Any]:
     context: dict[str, Any] = {}
     try:
-        from hermes_cli.host_metrics import host_hardware
+        from hermes_cli.hussh_one_host_metrics import host_hardware
 
         context.update(host_hardware())
     except Exception:

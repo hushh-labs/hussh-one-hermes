@@ -4184,7 +4184,7 @@ async def get_system_stats():
     # Max and an M1 Air render identically. Additive and optional: a host
     # that cannot answer simply omits the keys.
     try:
-        from hermes_cli.host_metrics import host_hardware
+        from hermes_cli.hussh_one_host_metrics import host_hardware
 
         hardware = host_hardware()
         for key in ("brand", "processor"):

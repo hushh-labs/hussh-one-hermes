@@ -197,7 +197,7 @@ class TestSnapshot:
             assert key not in {"hostname", "serial", "serial_number", "mac", "uuid"}
 
     def test_ram_used_pct_stays_in_range(self, monkeypatch):
-        import hermes_cli.lmstudio_manager as lm
+        import hermes_cli.hussh_one_lmstudio as lm
 
         monkeypatch.setattr(
             lm, "host_memory", lambda: {"total_gb": 128.0, "available_gb": 32.0}
@@ -206,7 +206,7 @@ class TestSnapshot:
         assert snapshot["ram_used_pct"] == 75.0
 
     def test_an_unreadable_host_does_not_break_the_snapshot(self, monkeypatch):
-        import hermes_cli.lmstudio_manager as lm
+        import hermes_cli.hussh_one_lmstudio as lm
 
         def _explode():
             raise OSError("no sysctl here")

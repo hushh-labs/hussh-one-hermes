@@ -185,7 +185,7 @@ def build_snapshot(
         snapshot["agent_version"] = agent_version
 
     try:
-        from hermes_cli.host_metrics import host_hardware
+        from hermes_cli.hussh_one_host_metrics import host_hardware
 
         hardware = host_hardware()
         for key in ("brand", "processor"):
@@ -199,7 +199,7 @@ def build_snapshot(
         logger.debug("host hardware unavailable", exc_info=True)
 
     try:
-        from hermes_cli.host_metrics import host_battery
+        from hermes_cli.hussh_one_host_metrics import host_battery
 
         battery = host_battery()
         # A desktop reports present: False and no percentage. Only a machine
@@ -217,7 +217,7 @@ def build_snapshot(
         logger.debug("battery unavailable", exc_info=True)
 
     try:
-        from hermes_cli.lmstudio_manager import host_memory
+        from hermes_cli.hussh_one_lmstudio import host_memory
 
         memory = host_memory()
         total = memory.get("total_gb")

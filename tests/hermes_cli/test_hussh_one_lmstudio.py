@@ -16,7 +16,7 @@ import urllib.error
 
 import pytest
 
-from hermes_cli import lmstudio_manager
+from hermes_cli import hussh_one_lmstudio as lmstudio_manager
 
 
 # ---------------------------------------------------------------------------
