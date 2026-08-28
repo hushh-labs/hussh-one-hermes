@@ -197,6 +197,35 @@ from utils import (
 logger = logging.getLogger(__name__)
 
 
+# Providers that run inference on this machine. Deliberately an allow-list:
+# a provider we do not recognise is treated as remote, so a new hosted
+# provider can never be admitted by default. "custom" is excluded because it
+# points wherever OPENAI_BASE_URL says, which is frequently a hosted endpoint.
+_LOCAL_AUX_PROVIDERS = frozenset({"lmstudio", "lm-studio", "lm_studio", "ollama"})
+
+
+def _is_local_aux_provider(provider: str | None) -> bool:
+    return str(provider or "").strip().lower() in _LOCAL_AUX_PROVIDERS
+
+
+def _on_device_only_enabled() -> bool:
+    """True when the owner has asked for an on-device-only agent.
+
+    Read live rather than cached: an owner who turns this on mid-session
+    expects the very next side task to respect it, not the next restart.
+    Any failure to read the config returns False so a config problem can
+    never masquerade as a policy that silently disables auxiliary work.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        return is_truthy_value(
+            cfg_get(load_config_readonly(), "hussh_one", "on_device_only")
+        )
+    except Exception:
+        return False
+
+
 # ── resolve_provider_client fall-through dedup ───────────────────────────
 # Both fall-through warning sites in resolve_provider_client (the "unknown
 # provider" and "unhandled auth_type" branches) fire on every retry of a
@@ -6023,6 +6052,25 @@ def _resolve_auto_route(
                             main_provider, resolved or main_model)
                 return client, resolved or main_model, resolved_provider
 
+    # ── On-device gate ───────────────────────────────────────────────────
+    # Everything below this point reaches for a NETWORK provider: the
+    # configured fallback chain, then OpenRouter / Nous / Codex discovery.
+    # When the owner has asked for an on-device-only agent, silently taking
+    # one of those is the exact failure they are trying to prevent -- their
+    # words leave the machine for a side task they never saw. Fail closed
+    # instead: report no auxiliary provider, which callers already handle by
+    # skipping the side task (compression, titling, vision) and continuing the
+    # turn on the local model. A missing side task is recoverable; an
+    # unnoticed cloud call is not.
+    if _on_device_only_enabled():
+        logger.warning(
+            "Auxiliary auto-detect: refusing network fallback for task %r "
+            "because hussh_one.on_device_only is set. The main on-device "
+            "provider could not serve it, so this side task is skipped.",
+            task or "unknown",
+        )
+        return None, None, ""
+
     # ── Step 2: user-configured fallback policy ─────────────────────────
     # In auto mode, respect the task-specific fallback chain first, then the
     # main agent's top-level fallback_providers/fallback_model chain. The
@@ -6244,6 +6292,25 @@ def resolve_provider_client(
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     _validate_proxy_env_urls()
+    # An explicitly configured auxiliary provider bypasses the auto-route
+    # entirely, so the on-device gate has to be enforced here too. This is the
+    # path that actually leaks in practice: a config carrying
+    # `auxiliary.compression.provider: gemini` ships transcript text to a cloud
+    # model during a long session, and no side task announces itself, so the
+    # owner never sees it. Refuse and let the caller skip the side task.
+    if (
+        provider
+        and str(provider).strip().lower() not in {"auto", ""}
+        and not _is_local_aux_provider(provider)
+        and _on_device_only_enabled()
+    ):
+        logger.warning(
+            "Auxiliary provider %r refused for task %r: hussh_one.on_device_only "
+            "is set and that provider is not local. Skipping the side task.",
+            provider,
+            task or "unknown",
+        )
+        return None, None
     # Preserve the original provider name before alias normalization so a
     # user-declared ``custom_providers`` entry whose name coincidentally
     # matches a built-in alias (e.g. user names their custom provider "kimi"
