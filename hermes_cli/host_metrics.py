@@ -231,3 +231,118 @@ def host_memory_sample() -> Dict[str, Any]:
     except Exception:
         logger.debug("host_memory_sample probe failed", exc_info=True)
         return {}
+
+
+# `pmset -g batt` prints one row per battery:
+#   -InternalBattery-0 (id=7602275)	27%; discharging; 1:35 remaining present: true
+_BATT_PERCENT_RE = re.compile(r"(\d{1,3})%")
+_BATT_TIME_RE = re.compile(r"(\d+):(\d{2})\s+remaining")
+# "AC attached" shows while plugged in but not taking a charge (already full, or
+# held at a charge limit). That is not "charging", and reporting it as charging
+# would tell the owner power is coming in when it is not.
+_BATT_STATES = ("finishing charge", "discharging", "charging", "charged", "AC attached")
+_BATT_CHARGING_STATES = frozenset({"charging", "finishing charge"})
+
+
+def host_battery() -> Dict[str, Any]:
+    """Battery state, or an explicit "no battery" for a desktop.
+
+    A Mac Studio has no battery. Reporting ``0%`` for one would be a false
+    reading rather than a missing one, and nothing downstream could tell those
+    apart afterwards. So absence is ``{"present": False}`` with no percentage at
+    all, and callers must handle that rather than defaulting it to a number.
+
+    This is more than a nicety for an edge tier. A 31B model on a laptop at 27%
+    and discharging is a materially different machine from the same laptop on
+    mains, and the difference surfaces as thermal throttling and a dead session
+    rather than as any error a reader could trace back.
+    """
+    try:
+        if sys.platform == "darwin":
+            darwin = _darwin_battery()
+            if darwin:
+                return darwin
+        return _psutil_battery()
+    except Exception:
+        logger.debug("battery probe failed", exc_info=True)
+        return {}
+
+
+def _darwin_battery() -> Dict[str, Any]:
+    output = _run(["pmset", "-g", "batt"])
+    if not output:
+        return {}
+    # A desktop prints the AC line and no battery row at all.
+    if "InternalBattery" not in output and "present: true" not in output:
+        return {"present": False}
+
+    battery: Dict[str, Any] = {"present": True}
+    percent_match = _BATT_PERCENT_RE.search(output)
+    if percent_match:
+        percent = int(percent_match.group(1))
+        if 0 <= percent <= 100:
+            battery["percent"] = percent
+
+    # Parse the state as a field, never as a substring of the whole output.
+    # `pmset` prints `80%; AC attached; not charging`, and searching for
+    # "charging" anywhere finds it inside "not charging" -- reporting a machine
+    # held at a charge limit as actively charging.
+    state = ""
+    for line in output.splitlines():
+        if "%" not in line:
+            continue
+        fields = [part.strip() for part in line.split(";")]
+        if len(fields) >= 2 and fields[1]:
+            candidate = fields[1].casefold()
+            for known in _BATT_STATES:
+                if candidate == known.casefold():
+                    state = known
+                    break
+            if not state:
+                state = fields[1]
+        break
+    if state:
+        battery["state"] = state
+    # Both flags derive from the one state string, so a single snapshot can
+    # never report itself as charging and discharging at once.
+    battery["charging"] = state in _BATT_CHARGING_STATES
+    battery["on_ac"] = bool(state) and state != "discharging"
+
+    time_match = _BATT_TIME_RE.search(output)
+    if time_match:
+        minutes = int(time_match.group(1)) * 60 + int(time_match.group(2))
+        # macOS prints 0:00 while still calculating an estimate. Reporting
+        # "0 minutes remaining" would read as an imminent shutdown.
+        if minutes > 0:
+            battery["minutes_remaining"] = minutes
+    return battery
+
+
+def _psutil_battery() -> Dict[str, Any]:
+    try:
+        import psutil
+    except Exception:
+        return {}
+    sensors = getattr(psutil, "sensors_battery", None)
+    if sensors is None:
+        return {}
+    reading = sensors()
+    if reading is None:
+        # psutil returns None for a machine with no battery.
+        return {"present": False}
+
+    plugged = bool(getattr(reading, "power_plugged", False))
+    battery: Dict[str, Any] = {
+        "present": True,
+        "charging": plugged,
+        "on_ac": plugged,
+        "state": "charging" if plugged else "discharging",
+    }
+    percent = getattr(reading, "percent", None)
+    if isinstance(percent, (int, float)) and 0 <= percent <= 100:
+        battery["percent"] = round(float(percent))
+    seconds = getattr(reading, "secsleft", None)
+    # psutil uses negative sentinels for "unlimited" and "unknown".
+    if isinstance(seconds, int) and seconds > 0:
+        battery["minutes_remaining"] = seconds // 60
+    return battery

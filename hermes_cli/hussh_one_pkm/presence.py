@@ -199,6 +199,24 @@ def build_snapshot(
         logger.debug("host hardware unavailable", exc_info=True)
 
     try:
+        from hermes_cli.host_metrics import host_battery
+
+        battery = host_battery()
+        # A desktop reports present: False and no percentage. Only a machine
+        # with a battery gets battery fields, so a Mac Studio never shows 0%.
+        if battery.get("present"):
+            percent = battery.get("percent")
+            if isinstance(percent, (int, float)):
+                snapshot["battery_pct"] = round(float(percent))
+            snapshot["battery_charging"] = bool(battery.get("charging"))
+            snapshot["on_ac"] = bool(battery.get("on_ac"))
+            minutes = battery.get("minutes_remaining")
+            if isinstance(minutes, int) and minutes > 0:
+                snapshot["battery_minutes_remaining"] = minutes
+    except Exception:
+        logger.debug("battery unavailable", exc_info=True)
+
+    try:
         from hermes_cli.lmstudio_manager import host_memory
 
         memory = host_memory()
