@@ -121,13 +121,21 @@ class QueuedRun:
             "You may open the repo to check whether a save was right: the tool "
             "schema is in tools/hussh_one_pkm_tool.py and the grading rules are in "
             "hermes_cli/hussh_one_pkm/judge.py.\n\n"
-            f"Write one JSON object per row to {self.queue_path.parent / VERDICTS_FILENAME}, "
-            'each: {"id": "<row id>", "verdict": "correct"|"wrong"|"unsure", '
-            '"rule": "<rule id>", "citation": "<exact substring of the output>", '
-            '"note": "<one sentence>"}\n\n'
-            "A `wrong` verdict REQUIRES a citation quoting the offending value "
-            "verbatim from that row's output. If you cannot quote it, the verdict "
-            "is `unsure` -- an uncited failure is discarded, not counted."
+            "Record each verdict with the sanctioned writer, one row at a time:\n\n"
+            "  python3 -m hermes_cli.hussh_one_pkm.verdict_cli \\\n"
+            f"    --run-dir {self.queue_path.parent} record \\\n"
+            '    --id <row id> --verdict correct|wrong|unsure \\\n'
+            '    --rule <rule id> --citation "<exact quote>" --note "<one sentence>"\n\n'
+            "It appends, validates, and cannot touch the queue or the manifest. A "
+            "rejection exits non-zero and explains itself; do not treat a "
+            "rejected row as graded.\n\n"
+            "A `wrong` verdict REQUIRES a rule and a citation quoting the offending "
+            "value verbatim from that row's output, or the utterance span that went "
+            "unrecorded when the failure is an omission. If you cannot quote it, the "
+            "verdict is `unsure` -- an uncited failure is discarded, not counted.\n\n"
+            "Check you are done with:\n"
+            f"  python3 -m hermes_cli.hussh_one_pkm.verdict_cli --run-dir "
+            f"{self.queue_path.parent} progress"
         )
 
 

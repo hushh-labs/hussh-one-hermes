@@ -283,8 +283,19 @@ class TestInstructions:
             assert control["must_catch"] not in text
             assert control["utterance"] not in text
 
-    def test_they_require_a_citation(self, tmp_path):
-        assert "REQUIRES a citation" in _write(tmp_path).instructions()
+    def test_they_require_a_rule_and_a_citation(self, tmp_path):
+        text = _write(tmp_path).instructions()
+        assert "REQUIRES a rule and a citation" in text
+
+    def test_they_point_at_the_sanctioned_writer_not_a_shell_redirect(self, tmp_path):
+        # The judge lane has no Write tool. A raw redirect would be an
+        # unvalidated write laundered past a read-only declaration.
+        text = _write(tmp_path).instructions()
+        assert "verdict_cli" in text
+        # No redirect into the verdicts file anywhere in the instructions.
+        assert f"> {Q.VERDICTS_FILENAME}" not in text
+        assert f">{Q.VERDICTS_FILENAME}" not in text
+        assert "Write one JSON object per row to" not in text
 
 
 class TestFalsePositivesAreCaught:
