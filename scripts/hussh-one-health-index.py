@@ -374,6 +374,30 @@ def probe_puppy_one() -> None:
     except Exception as e:  # noqa: BLE001
         add(harness, "on-device-gate", WARN, f"egress unreadable: {e}")
 
+    # Which agents this machine is running, and at what version. Reported
+    # because "up to date" is not a claim a machine can make if it cannot name
+    # the ref it applied.
+    try:
+        from hermes_cli.hussh_one_agent_sync import STATE_FILENAME, read_state
+
+        state = read_state(HERMES_HOME / "health" / STATE_FILENAME)
+        agents = state.get("agents") or {}
+        if agents:
+            unpinned = [n for n, a in agents.items() if not a.get("applied_ref")]
+            detail = ", ".join(
+                f"{n}@{(a.get('applied_ref') or '?')[:8]}" for n, a in sorted(agents.items())
+            )
+            add(
+                harness,
+                "agent-sync",
+                WARN if unpinned else OK,
+                detail + (f"; unpinned: {', '.join(unpinned)}" if unpinned else ""),
+            )
+        else:
+            add(harness, "agent-sync", INFO, "no synced agents recorded yet")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "agent-sync", WARN, f"sync state unreadable: {e}")
+
     # A restart in progress. Surfaced because a drain is a deliberate wait, and
     # a silent thirty-second pause is indistinguishable from a hang -- someone
     # will kill it, which is exactly the interrupted turn the drain prevents.
