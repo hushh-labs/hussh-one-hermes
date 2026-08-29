@@ -48,6 +48,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 from .judge import (
     NEGATIVE_CONTROLS,
+    POSITIVE_CONTROLS,
     VERDICT_CORRECT,
     VERDICT_UNSURE,
     VERDICT_WRONG,
@@ -138,6 +139,7 @@ def write_queue(
     run_id: Optional[str] = None,
     seed: Optional[int] = None,
     controls: Sequence[dict[str, Any]] = NEGATIVE_CONTROLS,
+    positive_controls: Sequence[dict[str, Any]] = POSITIVE_CONTROLS,
     capability_profile: Optional[dict[str, Any]] = None,
 ) -> QueuedRun:
     """Write the review queue and the manifest that holds its answers.
@@ -174,9 +176,30 @@ def write_queue(
             }
         )
 
+    # Known-good rows the judge must NOT flag. Without these the design has no
+    # false-positive rate: a judge that flags everything passes a
+    # negative-only gate perfectly, and its noise reads as diligence.
+    clean_ids: dict[str, str] = {}
+    offset = len(cases) + len(controls)
+    for index, control in enumerate(positive_controls):
+        row_id = f"c{offset + index:03d}"
+        clean_ids[row_id] = str(control.get("must_not_flag") or "a correct save")
+        rows.append(
+            {
+                "id": row_id,
+                "utterance": str(control.get("utterance") or ""),
+                "output": control.get("output"),
+            }
+        )
+
     order = _seeded_order(len(rows), shuffle_seed)
     shuffled = [rows[i] for i in order]
     for row in shuffled:
+        # Versioned per row, not just per manifest. The row shape is the thing
+        # most likely to grow -- a multimodal utterance, an agentic trajectory,
+        # a second judge's verdict -- and a reader that meets an unknown version
+        # should be able to say so instead of misparsing it as v1.
+        row["v"] = SCHEMA_VERSION
         row["hash"] = _row_hash(row)
 
     queue_path = out / QUEUE_FILENAME
@@ -193,6 +216,7 @@ def write_queue(
         "row_count": len(shuffled),
         # The answers. Deliberately NOT in the queue file.
         "controls": control_ids,
+        "clean_controls": clean_ids,
         "hashes": {row["id"]: row["hash"] for row in shuffled},
         "queue_file": QUEUE_FILENAME,
         "verdicts_file": VERDICTS_FILENAME,
@@ -205,15 +229,28 @@ def write_queue(
         queue_path=queue_path,
         manifest_path=manifest_path,
         row_count=len(shuffled),
-        control_count=len(control_ids),
+        control_count=len(control_ids) + len(clean_ids),
     )
 
 
-def _citation_is_real(citation: str, output: Any) -> bool:
+def _citation_is_real(citation: str, output: Any, utterance: str = "") -> bool:
+    """A citation must quote something that was actually in front of the judge.
+
+    Checked against the output OR the utterance. Output-only would be a bug that
+    silently penalises correct judgement: an OMISSION failure -- the model
+    dropped a fact the owner stated -- has nothing to quote in the output by
+    definition, since the whole complaint is that it is not there. Forcing those
+    to `unsure`, which counts against accuracy, would train a judge away from
+    reporting the one failure class that loses the owner's data.
+
+    So an omission cites the utterance span that went unrecorded.
+    """
     if not citation:
         return False
-    haystack = json.dumps(output, sort_keys=True).casefold()
-    return citation.strip().casefold().strip('"') in haystack
+    needle = citation.strip().casefold().strip('"')
+    if needle in json.dumps(output, sort_keys=True).casefold():
+        return True
+    return bool(utterance) and needle in utterance.casefold()
 
 
 def ingest(
@@ -280,12 +317,13 @@ def ingest(
         return report
 
     controls = manifest.get("controls") or {}
+    clean_controls = manifest.get("clean_controls") or {}
     for row_id, row in sorted(queue.items()):
         parsed = verdicts[row_id]
         counted = True
         note = parsed["note"]
         if parsed["verdict"] == VERDICT_WRONG and not _citation_is_real(
-            parsed["citation"], row.get("output")
+            parsed["citation"], row.get("output"), str(row.get("utterance") or "")
         ):
             counted = False
             note = (note + " [discarded: citation not found in output]").strip()
@@ -298,18 +336,39 @@ def ingest(
                 citation=parsed["citation"],
                 note=note,
                 counted=counted,
-                control=controls.get(row_id),
+                # Both kinds of control are marked, so neither enters the score.
+                control=controls.get(row_id) or clean_controls.get(row_id),
             )
         )
 
     missed = [
-        c for c in report.cases if c.control is not None and c.verdict != VERDICT_WRONG
+        c
+        for c in report.cases
+        if c.case_id in controls and c.verdict != VERDICT_WRONG
     ]
     if missed:
         report.void = True
         report.void_reason = (
             "grader passed planted failures it was required to catch: "
             + "; ".join(f"{c.case_id} ({c.control})" for c in missed)
+        )
+        return report
+
+    # The other half of the gate. A judge told to hunt for planted failures can
+    # flag every correct row and sail through a negative-only check, with its
+    # noise reading as diligence. These rows are unambiguous, so flagging one is
+    # not strictness, it is a false positive -- and a judge with an unmeasured
+    # false-positive rate produces failures nobody can act on.
+    false_positives = [
+        c
+        for c in report.cases
+        if c.case_id in clean_controls and c.verdict == VERDICT_WRONG and c.counted
+    ]
+    if false_positives:
+        report.void = True
+        report.void_reason = (
+            "grader flagged known-good outputs it was required to pass: "
+            + "; ".join(f"{c.case_id} ({c.control})" for c in false_positives)
         )
     return report
 

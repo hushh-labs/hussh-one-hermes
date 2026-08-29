@@ -208,6 +208,44 @@ NEGATIVE_CONTROLS: tuple[dict[str, Any], ...] = (
     },
 )
 
+# Known-GOOD outputs the judge must NOT flag.
+#
+# Negative controls alone catch a rubber-stamper, and nothing else. A judge that
+# has been told to hunt for planted failures can flag every correct row and
+# still pass a negative-only gate perfectly -- so the design would have had no
+# false-positive rate at all, and "found 9 problems" would look like diligence
+# rather than noise.
+#
+# These are deliberately plain and unambiguous. A positive control that a
+# careful judge could reasonably fault would punish good judgement, which is the
+# opposite of the point.
+POSITIVE_CONTROLS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "control-clean-preference",
+        "utterance": "I prefer window seats on flights.",
+        "output": {
+            "domain": "travel",
+            "scope_path": "travel.preferences.seat",
+            "merge_patch": {"seat": "window"},
+            "summary": "Prefers a window seat on flights.",
+            "operation": "upsert",
+        },
+        "must_not_flag": "a minimal, faithful, correctly-domained save",
+    },
+    {
+        "id": "control-clean-allergy",
+        "utterance": "I'm allergic to penicillin.",
+        "output": {
+            "domain": "health",
+            "scope_path": "health.allergies.penicillin",
+            "merge_patch": {"allergen": "penicillin"},
+            "summary": "Allergic to penicillin.",
+            "operation": "upsert",
+        },
+        "must_not_flag": "a durable medical fact recorded exactly as stated",
+    },
+)
+
 # The rules the judge grades against. Lifted from the shared PKM kernel the
 # agent manifests actually carry, so the judge holds the model to the
 # instruction it was given rather than to the judge's own taste.

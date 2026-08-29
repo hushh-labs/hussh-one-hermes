@@ -84,9 +84,12 @@ class TestTheQueueHidesItsAnswers:
     def test_the_answers_live_in_the_manifest_not_the_queue(self, tmp_path):
         queued = _write(tmp_path)
         manifest = json.loads(queued.manifest_path.read_text())
-        assert len(manifest["controls"]) == queued.control_count
+        planted = len(manifest["controls"]) + len(manifest["clean_controls"])
+        assert planted == queued.control_count
         # Ingest reads them; a grader given only the queue path cannot.
-        assert "controls" not in queued.queue_path.read_text()
+        raw = queued.queue_path.read_text()
+        assert "controls" not in raw
+        assert "must_not_flag" not in raw
 
     def test_control_positions_differ_between_runs(self, tmp_path):
         # If traps always sat in the same slots, a grader would learn the slots
@@ -282,3 +285,89 @@ class TestInstructions:
 
     def test_they_require_a_citation(self, tmp_path):
         assert "REQUIRES a citation" in _write(tmp_path).instructions()
+
+
+class TestFalsePositivesAreCaught:
+    """Negative controls alone catch a rubber-stamper and nothing else.
+
+    A judge told to hunt for planted failures can flag every correct row and
+    sail through a negative-only gate, its noise reading as diligence. The
+    design had no false-positive rate at all until these rows existed.
+    """
+
+    def test_a_judge_that_flags_everything_voids_the_run(self, tmp_path):
+        queued = _write(tmp_path)
+        _grade(
+            queued,
+            lambda row: {
+                "verdict": "wrong",
+                "rule": "no-invention",
+                # Cite something genuinely present so the citation check passes
+                # and only the false-positive gate can catch this.
+                "citation": str(row["output"].get("domain", "")),
+            },
+        )
+        report = Q.ingest(out_dir=tmp_path)
+        assert report.void is True
+        assert "flagged known-good outputs" in report.void_reason
+
+    def test_clean_controls_never_enter_the_score(self, tmp_path):
+        queued = _write(tmp_path)
+        _grade(queued, _catches_controls)
+        report = Q.ingest(out_dir=tmp_path)
+        assert report.void is False
+        # Only real cases are graded; both kinds of control sit outside.
+        assert report.scoreboard()["graded"] == len(CASES)
+
+    def test_rubber_stamping_is_named_before_over_flagging(self, tmp_path):
+        # Passing a planted failure is the more fundamental break, so it wins.
+        queued = _write(tmp_path)
+        _grade(queued, lambda _row: {"verdict": "correct"})
+        assert "planted failures" in Q.ingest(out_dir=tmp_path).void_reason
+
+
+class TestOmissionFailuresCanBeCited:
+    def test_a_citation_from_the_utterance_is_accepted(self, tmp_path):
+        # An omission has nothing to quote in the output by definition: the
+        # complaint IS that it is absent. Output-only checking would force these
+        # to `unsure`, which counts against accuracy, training a judge away from
+        # the one failure class that loses the owner's data.
+        queued = _write(tmp_path)
+
+        def _grader(row):
+            base = _catches_controls(row)
+            if base["verdict"] == "correct" and "dairy" in row["utterance"]:
+                # "January" is in the utterance and absent from the output --
+                # exactly the shape of an omission complaint.
+                return {
+                    "verdict": "wrong",
+                    "rule": "minimal-patch",
+                    "citation": "January",
+                }
+            return base
+
+        _grade(queued, _grader)
+        report = Q.ingest(out_dir=tmp_path)
+        assert report.void is False
+        assert report.scoreboard()["discarded_uncited"] == 0
+
+    def test_a_citation_in_neither_place_is_still_discarded(self, tmp_path):
+        queued = _write(tmp_path)
+
+        def _grader(row):
+            base = _catches_controls(row)
+            if base["verdict"] == "correct":
+                return {"verdict": "wrong", "rule": "x", "citation": "nowhere at all"}
+            return base
+
+        _grade(queued, _grader)
+        assert Q.ingest(out_dir=tmp_path).scoreboard()["discarded_uncited"] == len(CASES)
+
+
+class TestRowsAreVersioned:
+    def test_every_row_carries_a_schema_version(self, tmp_path):
+        # The row shape is what grows: multimodal input, agentic trajectories, a
+        # second judge. A reader meeting an unknown version should say so rather
+        # than misparse it as v1.
+        for row in _rows(_write(tmp_path)):
+            assert row["v"] == Q.SCHEMA_VERSION
