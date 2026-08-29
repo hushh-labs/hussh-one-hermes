@@ -65,6 +65,7 @@ MANIFEST_FILENAME = "run-manifest.json"
 LEDGER_FILENAME = "evolution-ledger.jsonl"
 
 SCHEMA_VERSION = 1
+SEAL_SUFFIX = ".seal.json"
 
 
 def _row_hash(row: dict[str, Any]) -> str:
@@ -110,6 +111,10 @@ class QueuedRun:
     manifest_path: Path
     row_count: int
     control_count: int
+    # Deliberately outside the run directory. Handing this path to the grader
+    # defeats it, so it is returned to the caller and never mentioned in the
+    # instructions.
+    seal_path: Optional[Path] = None
 
     def instructions(self) -> str:
         """What to tell the grading session."""
@@ -149,6 +154,7 @@ def write_queue(
     controls: Sequence[dict[str, Any]] = NEGATIVE_CONTROLS,
     positive_controls: Sequence[dict[str, Any]] = POSITIVE_CONTROLS,
     capability_profile: Optional[dict[str, Any]] = None,
+    seal_path: Optional[Path | str] = None,
 ) -> QueuedRun:
     """Write the review queue and the manifest that holds its answers.
 
@@ -232,12 +238,28 @@ def write_queue(
     manifest_path = out / MANIFEST_FILENAME
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
+    # Seal the run OUTSIDE its directory. The judge holds Bash, so everything
+    # inside the run directory -- the queue, the manifest, the verdicts, and the
+    # harness itself -- is editable. The seal cannot prevent that; it makes it
+    # detectable, and only if it lives somewhere the judge was not handed a path
+    # to. A seal inside the run directory is one more file to regenerate.
+    from .integrity import seal_run, write_seal
+
+    seal = seal_run(
+        run_id=run,
+        rows=shuffled,
+        control_ids=list(control_ids) + list(clean_ids),
+    )
+    seal_target = Path(seal_path) if seal_path else out.parent / f"{run}{SEAL_SUFFIX}"
+    write_seal(seal, seal_target)
+
     return QueuedRun(
         run_id=run,
         queue_path=queue_path,
         manifest_path=manifest_path,
         row_count=len(shuffled),
         control_count=len(control_ids) + len(clean_ids),
+        seal_path=seal_target,
     )
 
 
@@ -265,6 +287,8 @@ def ingest(
     *,
     out_dir: Path | str,
     judge_label: str = "claude-code",
+    seal_path: Optional[Path | str] = None,
+    require_seal: bool = True,
 ) -> JudgeReport:
     """Read the verdicts back and score the run.
 
@@ -326,6 +350,35 @@ def ingest(
 
     controls = manifest.get("controls") or {}
     clean_controls = manifest.get("clean_controls") or {}
+
+    # Integrity check before scoring. The judge holds Bash, so the queue, the
+    # manifest, the verdicts and the harness itself are all editable by the
+    # party being measured. This cannot prevent that; it detects it, and a run
+    # with detectable tampering publishes no accuracy rather than a number
+    # produced under rules that may have been rewritten.
+    if require_seal:
+        from .integrity import describe, read_seal, verify
+
+        resolved_seal = (
+            Path(seal_path)
+            if seal_path
+            else out.parent / f"{manifest.get('run_id')}{SEAL_SUFFIX}"
+        )
+        violations = verify(
+            seal=read_seal(resolved_seal),
+            rows=list(queue.values()),
+            control_ids=list(controls) + list(clean_controls),
+            verdicts=[
+                {**parsed, "id": row_id} for row_id, parsed in verdicts.items()
+            ],
+            run_dir=out,
+            seal_path=resolved_seal,
+        )
+        if violations:
+            report.void = True
+            report.void_reason = "integrity check failed -- " + describe(violations)
+            return report
+
     for row_id, row in sorted(queue.items()):
         parsed = verdicts[row_id]
         counted = True

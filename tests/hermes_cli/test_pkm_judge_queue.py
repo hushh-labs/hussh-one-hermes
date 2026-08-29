@@ -368,7 +368,13 @@ class TestOmissionFailuresCanBeCited:
         def _grader(row):
             base = _catches_controls(row)
             if base["verdict"] == "correct":
-                return {"verdict": "wrong", "rule": "x", "citation": "nowhere at all"}
+                # A real rule name; the point under test is the citation, and an
+                # invented rule would void the run for a different reason.
+                return {
+                    "verdict": "wrong",
+                    "rule": "no-invention",
+                    "citation": "nowhere at all",
+                }
             return base
 
         _grade(queued, _grader)
