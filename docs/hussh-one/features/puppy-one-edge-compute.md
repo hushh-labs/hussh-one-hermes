@@ -16,6 +16,31 @@ owner utterance
   -> encrypted PKM write
 ```
 
+## Turning it on
+
+```yaml
+hussh_one:
+  on_device_only: true
+auxiliary:
+  compression:
+    provider: auto     # NOT a cloud provider, and not left pinned
+    model: ""
+```
+
+`auto` matters more than the flag. With the gate on and an explicit cloud
+provider, the task is **refused**, which means *skipped* rather than run
+locally: the gate removes the work instead of relocating it. `auto` resolves
+through step 1 of auto-route to the main provider, which is the local model, so
+the work actually happens here.
+
+Verify with `python3 -m hermes_cli.hussh_one_egress_audit`, which exits non-zero
+while anything leaves.
+
+**The cost is real and should be stated.** A compression call that a flash-class
+cloud model answers in about a second took **20.2 s** on
+`gemma-4-26b-a4b-qat`. On-device trades latency for the work never leaving the
+machine. Sessions long enough to trigger compression will feel it.
+
 ## What actually enforces "on-device"
 
 | Layer | Mechanism | Failure mode without it |
