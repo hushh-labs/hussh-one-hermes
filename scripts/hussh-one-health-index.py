@@ -341,21 +341,51 @@ def probe_puppy_one() -> None:
     except Exception:
         add(harness, "model-host", INFO, "LM Studio not reachable on 127.0.0.1:1234")
 
-    # The on-device gate.
+    # The on-device gate, reported by what actually leaves rather than by the
+    # flag alone. "Gate off" is not itself a problem: most auxiliary tasks
+    # resolve to the local provider anyway. Naming the tasks that genuinely
+    # reach a vendor is actionable; warning about the flag is noise, and noise
+    # is what gets a safety signal ignored.
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_cli.hussh_one_egress_audit import LEAVES, build_report
 
-        gated = bool(cfg_get(load_config_readonly(), "hussh_one", "on_device_only"))
-        add(
-            harness,
-            "on-device-gate",
-            OK if gated else INFO,
-            "enforced: non-local providers refuse"
-            if gated
-            else "off: auxiliary tasks may route to a cloud provider",
-        )
+        config = load_config_readonly()
+        gated = bool(cfg_get(config, "hussh_one", "on_device_only"))
+        report = build_report(config, gate_on=gated)
+        leaking = [r["task"] for r in report["auxiliary"] if r["verdict"] == LEAVES]
+        if report["main_turn"]["verdict"] == LEAVES:
+            leaking.insert(0, "main_turn")
+        if leaking:
+            add(
+                harness,
+                "on-device-gate",
+                WARN,
+                f"gate {'on' if gated else 'off'}; leaves this machine: "
+                + ", ".join(leaking),
+            )
+        else:
+            add(
+                harness,
+                "on-device-gate",
+                OK,
+                f"gate {'on' if gated else 'off'}; nothing reaches a model vendor",
+            )
     except Exception as e:  # noqa: BLE001
-        add(harness, "on-device-gate", WARN, f"config unreadable: {e}")
+        add(harness, "on-device-gate", WARN, f"egress unreadable: {e}")
+
+    # A restart in progress. Surfaced because a drain is a deliberate wait, and
+    # a silent thirty-second pause is indistinguishable from a hang -- someone
+    # will kill it, which is exactly the interrupted turn the drain prevents.
+    try:
+        from hermes_cli.hussh_one_graceful_restart import PHASE_IDLE, read_status
+
+        restart = read_status(HERMES_HOME)
+        phase = str(restart.get("phase") or PHASE_IDLE)
+        if phase != PHASE_IDLE:
+            add(harness, "restart", INFO, str(restart.get("message") or phase))
+    except Exception as e:  # noqa: BLE001
+        add(harness, "restart", WARN, f"restart status unreadable: {e}")
 
     # The machine the agent runs on, including power state on a laptop.
     try:
