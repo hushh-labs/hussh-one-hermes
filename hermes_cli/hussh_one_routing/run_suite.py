@@ -98,6 +98,39 @@ def run(
     timings: dict[str, list] = {}
     reasoning_spend: dict[str, list] = {}
 
+    # A ladder pass is hours long, and writing the report only at the end means
+    # an interruption at hour two destroys hour one. This already happened: a
+    # five-model run was killed during the fourth rung and three complete models
+    # of results existed nowhere but the progress log. Every completed case is
+    # checkpointed instead, so a resumed run costs the rung it was in and
+    # nothing before it.
+    checkpoint = Path(str(destination) + ".partial") if destination else None
+
+    def save_checkpoint() -> None:
+        if not checkpoint:
+            return
+        try:
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "context_length": pinned,
+                        "max_tokens": max_tokens,
+                        "completed": {
+                            model: [asdict(v) for v in verdicts]
+                            for model, verdicts in graded.items()
+                        },
+                        "timings": timings,
+                        "reasoning_spend": reasoning_spend,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:  # noqa: BLE001
+            # A failed checkpoint must never take down the run it exists to
+            # protect.
+            logger.debug("checkpoint write failed", exc_info=True)
+
     def run_case(model: str, case: Any) -> Turn:
         started = time.time()
         turn = complete(
@@ -119,6 +152,7 @@ def run(
                 f"{model} {getattr(case, 'case_id', '')}: INDETERMINATE "
                 f"({'timeout' if turn.timed_out else 'truncated' if turn.truncated else turn.error})"
             )
+            save_checkpoint()
             return turn
 
         answer = suite.strip_fences(turn.content)
@@ -129,6 +163,7 @@ def run(
             f"{verdict.failed_check or ('match' if verdict.reference_match else verdict.side)}"
             f" ({elapsed:.0f}s)"
         )
+        save_checkpoint()
         return turn
 
     result = walk(
