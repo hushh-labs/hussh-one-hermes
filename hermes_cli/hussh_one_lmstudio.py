@@ -52,6 +52,8 @@ __all__ = [
     "list_models",
     "loaded_models",
     "parse_lms_ps",
+    "parse_lms_ls",
+    "catalog_sizes",
     "host_memory",
     "plan_eviction",
     "unload_model",
@@ -277,6 +279,67 @@ def parse_lms_ps(output: str) -> list[dict]:
             }
         )
     return records
+
+
+def parse_lms_ls(output: str) -> dict[str, float]:
+    """Parse ``lms ls`` into ``{model_id: size_gb}`` for models on disk.
+
+    ``lms ps`` only sees what is resident, so it cannot size a model the
+    harness is about to load -- which is exactly when the size matters. This
+    reads the on-disk catalog instead.
+
+    Reuses the header-offset slicing from ``parse_lms_ps`` because the same
+    two-token SIZE cell ("15.64 GB") defeats whitespace splitting here too, and
+    the identifier column carries a trailing "(1 variant)" that has to be
+    trimmed rather than counted as a column.
+    """
+    lines = str(output or "").splitlines()
+    sizes: dict[str, float] = {}
+    spans: Optional[list[tuple[str, int, Optional[int]]]] = None
+
+    for line in lines:
+        upper = line.upper()
+        # Two tables (LLM, then EMBEDDING), each with its own header, so
+        # re-derive spans rather than assuming a single layout.
+        if ("LLM" in upper or "EMBEDDING" in upper) and "SIZE" in upper:
+            spans = _column_spans(line)
+            continue
+        if spans is None or not line.strip():
+            continue
+        cells = {name: line[start:end].strip() for name, start, end in spans}
+        identifier = cells.get("LLM") or cells.get("EMBEDDING") or ""
+        # "google/gemma-4-12b (1 variant)" -> "google/gemma-4-12b"
+        identifier = re.sub(r"\s*\(\d+\s+variants?\)\s*$", "", identifier).strip()
+        if not identifier:
+            continue
+        size = _parse_size_gb(cells.get("SIZE", ""))
+        if size > 0:
+            sizes[identifier] = size
+    return sizes
+
+
+def catalog_sizes(*, timeout: float = 15.0) -> dict[str, float]:
+    """Measured on-disk footprint per model, read from the host itself.
+
+    Preferred over estimating from the identifier. The estimator in
+    ``benchmark.py`` parsed a parameter count out of the name at a flat
+    0.6 GB/B and returned 8.0 GB for ``nemotron-3-nano-omni``, which actually
+    needs 26.10 -- a 3x under-estimate that makes ``ensure_capacity`` clear far
+    too little room. Reading the catalog also means a newly downloaded model is
+    sized correctly with no code and no data file to update, which is what
+    keeps this usable for models that do not exist yet.
+
+    Returns ``{}`` when the CLI is unavailable, so a caller can fall back
+    rather than reading an empty catalog as "nothing takes up space".
+    """
+    binary = _lms_binary()
+    if not binary:
+        logger.debug("lms CLI not found; cannot read on-disk model sizes")
+        return {}
+    completed = bounded_probe_run([binary, "ls"], timeout=timeout)
+    if completed is None or completed.returncode != 0:
+        return {}
+    return parse_lms_ls(completed.stdout or "")
 
 
 def _parse_int(value: str) -> int:

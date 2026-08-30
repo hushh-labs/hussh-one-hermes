@@ -545,12 +545,29 @@ def _safe_loaded_models() -> list[dict]:
 
 
 def _estimated_size_gb(model: str) -> float:
-    """Best-effort footprint for a model that is not resident yet.
+    """Footprint for a model that is not resident yet.
 
-    LM Studio does not report a size for an unloaded model, so this reads the
-    parameter count out of the identifier. It is an estimate and is only used to
-    ask for room, never reported as a measurement.
+    Reads the host's own catalog first. The name-parsing fallback below is kept
+    only for a model the catalog does not know, because parsing a size out of an
+    identifier is wrong often enough to be dangerous: at a flat 0.6 GB per
+    billion it returned 8.0 GB for ``nemotron-3-nano-omni``, which needs 26.10 --
+    a 3x under-estimate, and ``ensure_capacity`` would then clear a third of the
+    room actually required. It was also wrong for ``gemma-4-e2b`` (the "e2b"
+    token is not a digit) and for the 8-bit ``gemma-4-12b`` (the 0.6 factor
+    assumes 4-bit).
+
+    Reading the catalog also means a newly downloaded model is sized correctly
+    with no code change and no data file to update.
     """
+    try:
+        from hermes_cli.hussh_one_lmstudio import catalog_sizes
+
+        measured = catalog_sizes().get(model)
+        if isinstance(measured, (int, float)) and measured > 0:
+            return float(measured)
+    except Exception:
+        logger.debug("catalog size unavailable for %s", model, exc_info=True)
+
     for token in model.replace("/", "-").split("-"):
         lowered = token.casefold()
         if lowered.endswith("b") and lowered[:-1].replace(".", "", 1).isdigit():

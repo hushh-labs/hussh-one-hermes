@@ -222,6 +222,24 @@ class TestSummary:
 
 
 class TestSizeEstimate:
+    """Measured sizes beat parsed ones, and this test used to assert the bug.
+
+    It previously pinned the name-parsing estimates (7.2, 18.6, 21.0). Those
+    numbers are wrong -- the real footprints are 7.15, 18.85 and 22.07 -- and
+    for `nemotron-3-nano-omni` the estimator returned 8.0 against an actual
+    26.10, a 3x under-estimate that makes `ensure_capacity` clear a third of the
+    room required.
+    """
+
+    def test_the_host_catalog_is_preferred_over_parsing_the_name(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.hussh_one_lmstudio.catalog_sizes",
+            lambda: {"nvidia/nemotron-3-nano-omni": 26.10},
+        )
+        # The name has no numeric "*b" token at all, so the estimator would
+        # fall through to its 8.0 default.
+        assert bench._estimated_size_gb("nvidia/nemotron-3-nano-omni") == 26.10
+
     @pytest.mark.parametrize(
         "model,expected",
         [
@@ -230,11 +248,32 @@ class TestSizeEstimate:
             ("qwen/qwen3.6-35b-a3b", 21.0),
         ],
     )
-    def test_reads_the_parameter_count_from_the_identifier(self, model, expected):
+    def test_the_name_heuristic_still_covers_an_unknown_model(
+        self, model, expected, monkeypatch
+    ):
+        # Only reached when the catalog does not know the model -- a fallback,
+        # not the primary source.
+        monkeypatch.setattr(
+            "hermes_cli.hussh_one_lmstudio.catalog_sizes", lambda: {}
+        )
         assert bench._estimated_size_gb(model) == expected
 
-    def test_an_unreadable_identifier_falls_back_rather_than_raising(self):
+    def test_an_unreadable_identifier_falls_back_rather_than_raising(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hermes_cli.hussh_one_lmstudio.catalog_sizes", lambda: {}
+        )
         assert bench._estimated_size_gb("some/custom-model") == 8.0
+
+    def test_an_unavailable_catalog_does_not_break_sizing(self, monkeypatch):
+        def _explode():
+            raise OSError("lms not installed")
+
+        monkeypatch.setattr(
+            "hermes_cli.hussh_one_lmstudio.catalog_sizes", _explode
+        )
+        assert bench._estimated_size_gb("google/gemma-4-12b-qat") == 7.2
 
 
 class _FakeResponse:
