@@ -122,7 +122,107 @@ class TestOrderIsCounterbalanced:
         assert firsts == set(models)
 
 
+class TestContextIsPinnedNotInherited:
+    def test_the_rung_is_loaded_at_the_pinned_context(self):
+        loaded = []
+
+        def _load(model, ctx):
+            loaded.append((model, ctx))
+            return ctx
+
+        L.walk(
+            models=["m1", "m2"],
+            suite_id="merge",
+            cases=["c"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=_load,
+            context_length=131072,
+        )
+        assert loaded == [("m1", 131072), ("m2", 131072)]
+
+    def test_a_server_that_clamps_the_context_fails_the_rung(self):
+        # The real hazard: the walk asks for 131072, the server quietly loads at
+        # 16384 because that is what fits, and the manifest still records the
+        # number that was requested.
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=lambda m, ctx: 16384,
+            context_length=131072,
+        )
+        rung = result["rungs"][0]
+        assert "server loaded at 16384" in rung["load_error"]
+        assert rung["turns"] == []
+
+    def test_a_rung_that_cannot_load_is_skipped_not_measured(self):
+        def _explode(model, ctx):
+            raise RuntimeError("out of memory")
+
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=_explode,
+            context_length=131072,
+        )
+        assert "could not load at 131072" in result["rungs"][0]["load_error"]
+
+    def test_without_a_loader_the_walk_still_runs(self):
+        # Falls back to just-in-time loading. Permitted, but it is how a ladder
+        # ends up comparing 262144 against 16384, so nothing records a context.
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+        )
+        assert result["rungs"][0]["context_length"] is None
+        assert result["rungs"][0]["turns"]
+
+
 class TestComparabilityIsReportedNotCorrected:
+    def _ctx_rungs(self, *pairs):
+        return [
+            L.RungResult(
+                model=f"m{i}", suite="s",
+                available_gb_before_load=gb, context_length=ctx,
+            )
+            for i, (gb, ctx) in enumerate(pairs)
+        ]
+
+    def test_mixed_context_lengths_are_not_comparable(self):
+        # The measured mistake: MoE at 262144 against a dense model at 16384.
+        # Nothing in the output would have shown it.
+        verdict = L.comparability(
+            self._ctx_rungs((63.0, 262144), (62.0, 16384))
+        )
+        assert verdict["comparable"] is False
+        assert "different context lengths" in verdict["reason"]
+        assert verdict["context_lengths"] == [16384, 262144]
+
+    def test_context_is_checked_before_memory(self):
+        # A 16x KV cache difference dwarfs a few GB of drift, so reporting the
+        # memory spread instead would name the smaller problem.
+        verdict = L.comparability(
+            self._ctx_rungs((63.0, 131072), (20.0, 16384))
+        )
+        assert "context" in verdict["reason"]
+
+    def test_matched_contexts_fall_through_to_the_memory_check(self):
+        verdict = L.comparability(
+            self._ctx_rungs((63.0, 131072), (62.5, 131072))
+        )
+        assert verdict["comparable"] is True
+        assert verdict["context_lengths"] == [131072]
+
+    def test_rungs_with_no_context_recorded_do_not_trip_the_check(self):
+        verdict = L.comparability(
+            self._ctx_rungs((63.0, None), (62.5, None))
+        )
+        assert verdict["comparable"] is True
     def _rungs(self, *readings):
         return [
             L.RungResult(model=f"m{i}", suite="s", available_gb_before_load=r)

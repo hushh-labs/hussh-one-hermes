@@ -28,6 +28,14 @@ Two other comparability hazards handled here:
   * **The resident head start.** Whatever is loaded when the walk begins would
     otherwise get a free warm cold-start. Draining first is what makes its cold
     number mean the same thing as everyone else's.
+  * **Context length.** This one was found the hard way: a comparison ran with
+    the MoE at 262144 and the dense model at 16384, a 16x difference in KV cache
+    and in how much of a prompt survives. Nothing in the output would have shown
+    it. Rungs are now loaded at an explicitly pinned context, the value is read
+    back from the server rather than assumed from what was requested, and a
+    mismatch makes the run not comparable. Relying on just-in-time loading is
+    what produced the mismatch: JIT loads at the server's default, which differs
+    per model.
 """
 
 from __future__ import annotations
@@ -60,6 +68,10 @@ class RungResult:
     abandoned_reason: str = ""
     load_error: str = ""
     wall_clock_offset_s: Optional[float] = None
+    # Read back from the server after loading, never taken from what the load
+    # requested. A server free to clamp a request down to what fits would
+    # otherwise have its clamping recorded as the value that was asked for.
+    context_length: Optional[int] = None
 
     @property
     def usable(self) -> bool:
@@ -131,6 +143,27 @@ def comparability(rungs: Sequence[RungResult]) -> dict[str, Any]:
     is "this run is not comparable" rather than a ranking with a caveat that
     gets dropped the first time someone quotes the number.
     """
+    # Context first. It is the coarser failure: a 16x difference in KV cache and
+    # in how much of a prompt survives dwarfs a few GB of memory drift, and it
+    # is invisible in the output unless something checks.
+    contexts = {
+        r.context_length
+        for r in rungs
+        if isinstance(r.context_length, int) and r.context_length > 0
+    }
+    if len(contexts) > 1:
+        return {
+            "comparable": False,
+            "reason": (
+                "rungs ran at different context lengths "
+                f"({', '.join(str(c) for c in sorted(contexts))}); KV cache size "
+                "and how much of a prompt survives both change with it, so "
+                "these are different machines rather than different models"
+            ),
+            "spread_gb": None,
+            "context_lengths": sorted(contexts),
+        }
+
     readings = [
         r.available_gb_before_load
         for r in rungs
@@ -141,6 +174,7 @@ def comparability(rungs: Sequence[RungResult]) -> dict[str, Any]:
             "comparable": False,
             "reason": "fewer than two rungs recorded a memory reading",
             "spread_gb": None,
+            "context_lengths": sorted(contexts),
         }
     spread = round(max(readings) - min(readings), 2)
     within = spread <= COMPARABILITY_MEMORY_TOLERANCE_GB
@@ -159,6 +193,7 @@ def comparability(rungs: Sequence[RungResult]) -> dict[str, Any]:
         "spread_gb": spread,
         "min_gb": round(min(readings), 2),
         "max_gb": round(max(readings), 2),
+        "context_lengths": sorted(contexts),
     }
 
 
@@ -172,6 +207,8 @@ def walk(
     unload: Optional[Callable[[str], bool]] = None,
     resident: Optional[Callable[[], list]] = None,
     available_gb: Optional[Callable[[], Optional[float]]] = None,
+    load: Optional[Callable[[str, int], Optional[int]]] = None,
+    context_length: Optional[int] = None,
     on_progress: Optional[Callable[[str], None]] = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
@@ -179,6 +216,11 @@ def walk(
 
     The I/O is injected so the walk is testable without a server and without
     evicting anything on a real machine.
+
+    ``load`` is given ``(model, context_length)`` and returns the context the
+    server actually loaded at. Without it the rung falls back to just-in-time
+    loading, which loads at the server's per-model default and is how a ladder
+    silently ends up comparing a model at 262144 against one at 16384.
     """
     announce = on_progress or (lambda _m: None)
     started = clock()
@@ -206,6 +248,26 @@ def walk(
                     rung.available_gb_before_load = available_gb()
                 except Exception:  # noqa: BLE001
                     logger.debug("memory probe failed", exc_info=True)
+
+            if load is not None and context_length:
+                try:
+                    rung.context_length = load(model, context_length)
+                except Exception as exc:  # noqa: BLE001
+                    rung.load_error = f"could not load at {context_length}: {exc}"
+                    announce(f"{model}: {rung.load_error}")
+                    rungs.append(rung)
+                    continue
+                # A server may clamp the request down to what fits. Silently
+                # accepting that would put one rung on a different machine while
+                # the manifest still claims the context that was asked for.
+                if rung.context_length != context_length:
+                    rung.load_error = (
+                        f"asked for context {context_length}, server loaded at "
+                        f"{rung.context_length}; not comparable to the other rungs"
+                    )
+                    announce(f"{model}: {rung.load_error}")
+                    rungs.append(rung)
+                    continue
 
             breaker = CircuitBreaker()
             for case in cases:
