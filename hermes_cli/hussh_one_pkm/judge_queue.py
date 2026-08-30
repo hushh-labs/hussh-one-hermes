@@ -155,6 +155,7 @@ def write_queue(
     positive_controls: Sequence[dict[str, Any]] = POSITIVE_CONTROLS,
     capability_profile: Optional[dict[str, Any]] = None,
     seal_path: Optional[Path | str] = None,
+    suite: str = "pkm",
 ) -> QueuedRun:
     """Write the review queue and the manifest that holds its answers.
 
@@ -227,6 +228,9 @@ def write_queue(
         "created_at": stamp,
         "answerer_model": answerer_model,
         "capability_profile": capability_profile or {},
+        # Which rule vocabulary a verdict in this run may cite. Recorded at
+        # issue time so ingest cannot be argued into a more permissive set later.
+        "suite": suite,
         "row_count": len(shuffled),
         # The answers. Deliberately NOT in the queue file.
         "controls": control_ids,
@@ -373,6 +377,11 @@ def ingest(
             ],
             run_dir=out,
             seal_path=resolved_seal,
+            # The rule vocabulary is a property of what was graded. Without
+            # this, a merge judge citing a merge-specific rule is recorded as
+            # having invented it, and the whole run voids on its first real
+            # finding.
+            suite=manifest.get("suite"),
         )
         if violations:
             report.void = True

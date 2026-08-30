@@ -66,19 +66,76 @@ SEALED_SOURCES = (
     "integrity.py",
 )
 
+# Grading logic that lives outside this package but decides the same verdicts.
+# Sealed relative to the repo root rather than this directory: an oracle a judge
+# could edit undetected is a rule it can rewrite mid-run, which is exactly what
+# sealing exists to prevent. Paths that do not exist hash as "<missing>" and are
+# therefore also detected if one is deleted.
+SEALED_REPO_SOURCES = (
+    "hermes_cli/hussh_one_write_guard.py",
+    "hermes_cli/hussh_one_routing/request.py",
+    "hermes_cli/hussh_one_routing/profile.py",
+)
+
 # A verdict may only name a rule the contract defines. Without this a judge can
 # invent a rule, cite something real against it, and produce a failure that
 # looks fully compliant while grading against a standard nobody agreed to.
-KNOWN_RULES = frozenset(
-    {
-        "right-domain",
-        "no-invention",
-        "durable-only",
-        "no-metadata",
-        "minimal-patch",
-        "faithful-summary",
-    }
-)
+#
+# Keyed by suite, because a single flat set makes every non-PKM run void on its
+# first real finding: a merge judge citing `kept-wrong-side` would be recorded
+# as an invented rule, `verify` would raise, and `ingest` would discard the
+# whole run. The rule vocabulary is a property of what is being graded, not of
+# the harness.
+SUITE_RULES: dict[str, frozenset[str]] = {
+    "pkm": frozenset(
+        {
+            "right-domain",
+            "no-invention",
+            "durable-only",
+            "no-metadata",
+            "minimal-patch",
+            "faithful-summary",
+        }
+    ),
+    "code_edit": frozenset(
+        {
+            "wrong-target",      # edited something other than what was asked
+            "incomplete-edit",   # the asked-for change is not fully present
+            "collateral-change", # changed code outside the intended region
+            "duplicated-region", # emitted context twice instead of replacing it
+            "broken-structure",  # indentation or syntax the file cannot carry
+            "invented-symbol",   # referenced something that does not exist
+        }
+    ),
+    "merge": frozenset(
+        {
+            "kept-wrong-side",   # chose ours where theirs was correct, or vice versa
+            "dropped-fork-behaviour",  # silently lost a Hussh-One-only change
+            "dropped-upstream-change", # silently lost an upstream addition
+            "duplicated-region",
+            "broken-structure",
+            "markers-left",      # conflict markers survived into the result
+        }
+    ),
+}
+
+# Every rule any suite defines. `verify` accepts a rule when it belongs to the
+# run's own suite; this union exists only so an older run whose suite is
+# unrecorded still verifies rather than voiding retroactively.
+KNOWN_RULES = frozenset().union(*SUITE_RULES.values())
+
+
+def rules_for(suite: Optional[str]) -> frozenset[str]:
+    """The rule vocabulary a verdict in this suite may cite.
+
+    An unknown or absent suite falls back to the union rather than to the PKM
+    set. Being permissive here is right: the alternative is voiding a run for
+    citing a rule that is real but belongs to a suite this code did not know
+    about, which punishes the run for the harness being out of date.
+    """
+    if suite and suite in SUITE_RULES:
+        return SUITE_RULES[suite]
+    return KNOWN_RULES
 
 
 @dataclass
@@ -153,18 +210,28 @@ def control_commitment(control_ids: Iterable[str], salt: str) -> str:
     return _digest(salt, joined)
 
 
+def _hash_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        # A missing harness file is itself a finding: the run cannot be scored
+        # by rules that are not there.
+        return "<missing>"
+
+
 def source_hashes(package_dir: Optional[Path | str] = None) -> dict[str, str]:
     """Hash the harness files that define what a valid run means."""
     root = Path(package_dir) if package_dir else Path(__file__).parent
-    hashes: dict[str, str] = {}
-    for name in SEALED_SOURCES:
-        path = root / name
-        try:
-            hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-        except OSError:
-            # A missing harness file is itself a finding: the run cannot be
-            # scored by rules that are not there.
-            hashes[name] = "<missing>"
+    hashes: dict[str, str] = {name: _hash_file(root / name) for name in SEALED_SOURCES}
+
+    # Grading logic outside this package. Skipped entirely when `package_dir` is
+    # supplied, because that argument means "hash this directory" -- a test
+    # pointing at a temp dir must not have real repo files silently folded in,
+    # which would make its seal depend on files it never wrote.
+    if package_dir is None:
+        repo_root = Path(__file__).resolve().parents[2]
+        for rel in SEALED_REPO_SOURCES:
+            hashes[rel] = _hash_file(repo_root / rel)
     return hashes
 
 
@@ -242,6 +309,7 @@ def verify(
     run_dir: Optional[Path | str] = None,
     seal_path: Optional[Path | str] = None,
     package_dir: Optional[Path | str] = None,
+    suite: Optional[str] = None,
 ) -> list[Violation]:
     """Everything that changed between issue and ingest.
 
@@ -316,16 +384,17 @@ def verify(
                 )
             )
 
+    permitted = rules_for(suite)
     for entry in verdicts:
         rule = str(entry.get("rule") or "")
-        if str(entry.get("verdict")) == "wrong" and rule and rule not in KNOWN_RULES:
+        if str(entry.get("verdict")) == "wrong" and rule and rule not in permitted:
             # Improvising a rule produces a failure that looks compliant while
             # grading against a standard nobody agreed to.
             violations.append(
                 Violation(
                     "invented-rule",
                     f"verdict for {entry.get('id')} cites rule {rule!r}, which the "
-                    "contract does not define",
+                    f"{suite or 'default'} contract does not define",
                 )
             )
 

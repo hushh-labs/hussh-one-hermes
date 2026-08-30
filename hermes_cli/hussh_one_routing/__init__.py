@@ -15,13 +15,33 @@ table in ``docs/hussh-one/features/puppy-one-edge-compute.md`` at zero risk.
 from __future__ import annotations
 
 __all__ = [
+    "Capability",
+    "CapabilityProfile",
     "CircuitBreaker",
+    "RungResult",
     "Turn",
     "UnboundedRequest",
     "build_body",
+    "comparability",
     "complete",
+    "counterbalanced_order",
+    "drain",
+    "probe_capabilities",
+    "walk",
 ]
 
+from .ladder import (  # noqa: F401
+    RungResult,
+    comparability,
+    counterbalanced_order,
+    drain,
+    walk,
+)
+from .profile import (  # noqa: F401
+    Capability,
+    CapabilityProfile,
+    probe_capabilities,
+)
 from .request import (  # noqa: F401
     CircuitBreaker,
     Turn,

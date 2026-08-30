@@ -304,3 +304,102 @@ class TestIngestVoidsOnTampering:
         # It gets past integrity and fails on the controls instead, which is
         # the next gate rather than this one.
         assert "integrity check failed" not in report.void_reason
+
+
+class TestRulesAreScopedToTheSuite:
+    """A flat rule set voids every non-PKM run on its first real finding.
+
+    A merge judge citing `kept-wrong-side` would be recorded as having invented
+    a rule, `verify` would raise `invented-rule`, and `ingest` treats any
+    violation as void. The vocabulary is a property of what is being graded.
+    """
+
+    def _verdict(self, rule):
+        return [{"id": "c000", "verdict": "wrong", "rule": rule, "citation": "x"}]
+
+    def test_a_merge_rule_is_valid_in_the_merge_suite(self):
+        assert (
+            _verify(_seal(), verdicts=self._verdict("kept-wrong-side"), suite="merge")
+            == []
+        )
+
+    def test_a_code_edit_rule_is_valid_in_the_code_edit_suite(self):
+        assert (
+            _verify(
+                _seal(),
+                verdicts=self._verdict("collateral-change"),
+                suite="code_edit",
+            )
+            == []
+        )
+
+    def test_a_merge_rule_is_rejected_inside_the_pkm_suite(self):
+        # Scoping cuts both ways, or it is not scoping.
+        kinds = [
+            v.kind
+            for v in _verify(
+                _seal(), verdicts=self._verdict("kept-wrong-side"), suite="pkm"
+            )
+        ]
+        assert "invented-rule" in kinds
+
+    def test_a_genuinely_invented_rule_is_still_caught_in_every_suite(self):
+        for suite in ("pkm", "merge", "code_edit"):
+            kinds = [
+                v.kind
+                for v in _verify(_seal(), verdicts=self._verdict("vibes"), suite=suite)
+            ]
+            assert "invented-rule" in kinds, suite
+
+    def test_an_unknown_suite_accepts_any_defined_rule_rather_than_voiding(self):
+        # Permissive on purpose: voiding a run for citing a real rule that
+        # belongs to a suite this code has not heard of punishes the run for
+        # the harness being out of date.
+        assert (
+            _verify(
+                _seal(),
+                verdicts=self._verdict("kept-wrong-side"),
+                suite="something-new",
+            )
+            == []
+        )
+
+    def test_the_suite_is_recorded_at_issue_time(self, tmp_path):
+        # Recorded in the manifest so ingest cannot later be argued into a more
+        # permissive vocabulary than the run was issued under.
+        queued = Q.write_queue(
+            out_dir=tmp_path / "run",
+            cases=[{"utterance": "u", "output": {"domain": "d"}}],
+            answerer_model="m",
+            run_id="r",
+            suite="merge",
+        )
+        manifest = json.loads(queued.manifest_path.read_text())
+        assert manifest["suite"] == "merge"
+
+    def test_pkm_remains_the_default_for_existing_callers(self, tmp_path):
+        queued = Q.write_queue(
+            out_dir=tmp_path / "run",
+            cases=[{"utterance": "u", "output": {"domain": "d"}}],
+            answerer_model="m",
+            run_id="r",
+        )
+        assert json.loads(queued.manifest_path.read_text())["suite"] == "pkm"
+
+
+class TestGradingLogicOutsideThePackageIsSealed:
+    def test_the_write_guard_and_routing_modules_are_hashed(self):
+        # An oracle a judge could edit undetected is a rule it can rewrite
+        # mid-run, which is what sealing exists to prevent.
+        hashes = I.source_hashes()
+        for rel in I.SEALED_REPO_SOURCES:
+            assert rel in hashes, rel
+            assert hashes[rel] != "<missing>", rel
+
+    def test_a_package_dir_override_does_not_fold_in_real_repo_files(self, tmp_path):
+        # `package_dir` means "hash this directory". A test pointing at a temp
+        # dir must not have its seal depend on files it never wrote.
+        for name in I.SEALED_SOURCES:
+            (tmp_path / name).write_text("x")
+        hashes = I.source_hashes(tmp_path)
+        assert set(hashes) == set(I.SEALED_SOURCES)
