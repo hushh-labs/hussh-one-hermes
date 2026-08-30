@@ -17,11 +17,25 @@ including models that behave very differently. So the profile is measured.
 back with ``finish_reason: "stop"``. A probe that asks "did this error" learns
 nothing. Every probe here inspects what came back instead.
 
-**Per feature-combination, never per model.** ``reasoning_effort: "none"``
-suppresses reasoning on most of this fleet and is *defeated on gemma-4-e2b when
-combined with json_schema* -- 337 reasoning tokens with the schema, 0 without,
-same model, same instruction. A per-model answer records the wrong one. So
-reasoning suppression is probed twice: alone, and in combination.
+**Per feature-combination, never per model.** Observed reasoning suppression
+varies with the *combination*, not the model: on gemma-4-e2b there were 337
+reasoning tokens with a json_schema and 0 without, same model, same instruction.
+A per-model answer records the wrong one. So it is probed twice, alone and in
+combination.
+
+**And the effort knob itself is measured, because it is not connected.** On this
+LM Studio build ``reasoning_effort`` changes nothing on ``/v1/chat/completions``:
+``none``, ``low``, ``minimal`` and ``high`` all return byte-identical
+reasoning_token counts, and so does ``chat_template_kwargs`` with
+``enable_thinking: false``. LM Studio documents ``reasoning.effort`` only for
+``/v1/responses`` on one specific model, and its bug tracker carries an open
+report that the parameter is ignored and the GUI setting wins. What that means
+for the harness is that a zero reasoning count is not evidence of suppression;
+it is evidence that this particular prompt did not happen to reason. A real task
+will reason anyway and there is no lever to stop it, so the budget has to absorb
+reasoning instead of turning it down. ``reasoning_effort_honored`` records which
+world this server is in, and the recommended budget carries a floor when the
+answer is no.
 
 The profile is the comparability key. Two runs whose profiles differ were not
 asked the same question, and `compare_runs` already refuses to compare across a
@@ -45,6 +59,21 @@ PROFILE_SCHEMA_VERSION = 1
 # Generous enough that a refusal is a real refusal and not a budget artifact,
 # small enough that a runaway costs seconds.
 _PROBE_MAX_TOKENS = 600
+
+# Budget floor for a server that ignores reasoning_effort. Set from the worst
+# measured case rather than chosen: gemma-4-26b-a4b-qat averaged 5492 reasoning
+# tokens per merge conflict with a 5997 maximum, so anything under ~6000 turns
+# a working model into a page of truncations.
+UNCONTROLLED_REASONING_FLOOR = 8000
+
+# A prompt with enough structure to make a reasoning model reason. "What colour
+# is the sky" answers straight through on every model here, so using it to
+# compare effort levels would compare two zeros and call the knob broken.
+_EFFORT_PROBE_PROMPT = (
+    "A file has 40 lines. Lines 12 through 19 are replaced by 3 new lines, "
+    "and 5 lines are appended at the end. How many lines does the file have? "
+    "Answer with the number only."
+)
 
 _PROBE_TOOL = {
     "type": "function",
@@ -245,6 +274,53 @@ def probe_capabilities(
         measured={"reasoning_tokens": schema_effort},
     )
 
+    # 6. Does reasoning_effort do anything at all on this server?
+    #
+    #    Everything above reads reasoning_tokens under effort=none and calls a
+    #    zero "suppression". That conflates two very different worlds: a server
+    #    that honoured the request, and a model that was never going to reason
+    #    for this prompt on a server that discarded the parameter. LM Studio
+    #    documents reasoning.effort only for /v1/responses on one specific
+    #    model, its bug tracker carries an open report that the parameter is
+    #    ignored on /v1/chat/completions, and both are claims about somebody
+    #    else's build. So it is measured here: two identical calls that differ
+    #    only in effort. Byte-identical reasoning_tokens means the knob is
+    #    connected to nothing, and a harness that believes otherwise is holding
+    #    a lever attached to no rope.
+    control = _run(
+        messages=[{"role": "user", "content": _EFFORT_PROBE_PROMPT}],
+        reasoning_effort="none",
+    )
+    contrast = _run(
+        messages=[{"role": "user", "content": _EFFORT_PROBE_PROMPT}],
+        reasoning_effort="high",
+    )
+    low_tokens = control.reasoning_tokens
+    high_tokens = contrast.reasoning_tokens
+    honoured = (
+        control.ok
+        and contrast.ok
+        and low_tokens is not None
+        and high_tokens is not None
+        and low_tokens != high_tokens
+    )
+    profile.capabilities["reasoning_effort_honored"] = Capability(
+        name="reasoning_effort_honored",
+        supported=bool(honoured),
+        evidence=(
+            f"effort=none -> {low_tokens} reasoning tokens, "
+            f"effort=high -> {high_tokens}"
+            + (
+                ""
+                if honoured
+                else " -- IDENTICAL, so the parameter changes nothing on this "
+                "server and the budget must absorb reasoning rather than "
+                "turn it down"
+            )
+        ),
+        measured={"none": low_tokens, "high": high_tokens},
+    )
+
     profile.recommended = _recommend(profile)
     return profile
 
@@ -259,15 +335,29 @@ def _recommend(profile: CapabilityProfile) -> dict[str, Any]:
     """
     suppressed = profile.capabilities.get("reasoning_suppression")
     with_schema = profile.capabilities.get("reasoning_suppression_with_schema")
+    honored = profile.capabilities.get("reasoning_effort_honored")
     observed = max(
         (suppressed.measured.get("reasoning_tokens") or 0) if suppressed else 0,
         (with_schema.measured.get("reasoning_tokens") or 0) if with_schema else 0,
+        (honored.measured.get("none") or 0) if honored else 0,
+        (honored.measured.get("high") or 0) if honored else 0,
     )
 
     # Headroom for observed reasoning plus room for a real answer. Deliberately
     # generous: an over-budget run costs seconds, an under-budget one publishes
     # a truncation as a model failure.
     budget = 1200 + (observed * 3 if observed else 0)
+
+    # When the effort parameter is inert, a zero here means "this short probe
+    # did not happen to reason", not "reasoning is off". A real task will reason
+    # anyway and there is no lever to stop it, so the floor has to be high
+    # enough to survive that. Measured on this fleet: gemma-4-26b-a4b spent 5492
+    # reasoning tokens on average resolving a merge conflict and emitted 20
+    # tokens of answer, and at a 1600 budget every single case came back
+    # truncated. That is a harness under-budget, and reporting it as a model
+    # failure is the mistake this floor exists to prevent.
+    if honored is not None and not honored.supported:
+        budget = max(budget, UNCONTROLLED_REASONING_FLOOR)
 
     tool = profile.capabilities.get("tool_calling")
     schema = profile.capabilities.get("json_schema")

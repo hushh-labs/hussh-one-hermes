@@ -205,6 +205,54 @@ class TestCapabilityIsMeasuredPerCombination:
         assert P._recommend(prof)["probe_shape"] == "text"
 
 
+class TestTheEffortKnobIsMeasuredNotTrusted:
+    def _profile(self, none_tokens, high_tokens, *, supported):
+        prof = P.CapabilityProfile(schema_version=1, model="m")
+        prof.capabilities["reasoning_effort_honored"] = P.Capability(
+            name="reasoning_effort_honored",
+            supported=supported,
+            measured={"none": none_tokens, "high": high_tokens},
+        )
+        return prof
+
+    def test_an_inert_knob_forces_a_budget_floor(self):
+        # Measured on this build: none/low/minimal/high all return byte-identical
+        # reasoning counts. A zero from a short probe then means "this prompt did
+        # not reason", not "reasoning is off", and the real task reasons anyway.
+        rec = P._recommend(self._profile(0, 0, supported=False))
+        assert rec["max_tokens"] >= P.UNCONTROLLED_REASONING_FLOOR
+
+    def test_a_working_knob_keeps_the_measured_budget(self):
+        rec = P._recommend(self._profile(0, 900, supported=True))
+        assert rec["max_tokens"] < P.UNCONTROLLED_REASONING_FLOOR
+
+    def test_reasoning_seen_during_the_effort_probe_raises_the_budget(self):
+        # gemma-4-26b-a4b-qat spent 5492 reasoning tokens per merge conflict and
+        # emitted 20 tokens of answer. At 1600 every case came back truncated,
+        # which is a harness under-budget reported as a model failure.
+        rec = P._recommend(self._profile(1484, 1484, supported=False))
+        assert rec["reasoning_tokens_observed"] == 1484
+        assert rec["max_tokens"] >= 1484 * 3
+
+    def test_an_absent_probe_does_not_impose_the_floor(self):
+        # Older profiles predate this probe; they must not be retro-inflated,
+        # because that would silently change the comparability key.
+        prof = P.CapabilityProfile(schema_version=1, model="m")
+        prof.capabilities["reasoning_suppression"] = P.Capability(
+            name="reasoning_suppression", supported=True,
+            measured={"reasoning_tokens": 0})
+        assert P._recommend(prof)["max_tokens"] == 1200
+
+    def test_identical_counts_are_reported_as_the_knob_being_disconnected(self):
+        cap = P.Capability(
+            name="reasoning_effort_honored", supported=False,
+            evidence="effort=none -> 1484 reasoning tokens, effort=high -> 1484"
+                     " -- IDENTICAL, so the parameter changes nothing",
+            measured={"none": 1484, "high": 1484})
+        assert "IDENTICAL" in cap.evidence
+        assert cap.supported is False
+
+
 class TestProbeModeIsTheComparabilityKey:
     def test_output_protocol_is_part_of_the_key(self):
         # A model asked for a whole file and one asked for a region were not

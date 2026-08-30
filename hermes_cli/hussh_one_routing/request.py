@@ -4,9 +4,19 @@
 """The only place a benchmark request body is built, and it is always bounded.
 
 Measured on this host: a ~600-token prompt to ``gemma-4-26b-a4b-qat`` with no
-``max_tokens`` and no ``reasoning_effort`` ran past **900 seconds** and returned
-nothing. The identical prompt with ``reasoning_effort: "none"`` and
-``max_tokens: 1200`` returned in **7.1 seconds**. Same model, same prompt, 128x.
+``max_tokens`` ran past **900 seconds** and returned nothing. The identical
+prompt with ``max_tokens: 1200`` returned in **7.1 seconds**. Same model, same
+prompt, 128x.
+
+**Only one of the two is a real bound.** ``max_tokens`` is enforced.
+``reasoning_effort`` is not: on this LM Studio build ``none``, ``low``,
+``minimal`` and ``high`` all return byte-identical reasoning-token counts, and
+so does ``chat_template_kwargs`` with ``enable_thinking: false``. It is still
+required by ``build_body`` and still sent, because a server that honours it
+should get it and the value belongs in the comparability key either way. But it
+must never be read as a guarantee that reasoning was limited, and the fix for a
+model that reasons too much is a larger ``max_tokens``, not a lower effort.
+``profile.reasoning_effort_honored`` measures which server this is.
 
 Reasoning tokens are drawn from the same budget as the answer and no model
 metadata declares that a model reasons at all, so an unbounded request is not a

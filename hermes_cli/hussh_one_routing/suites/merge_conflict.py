@@ -270,6 +270,71 @@ def grade(
     return verdict
 
 
+SYSTEM_PROMPT = (
+    "You resolve git merge conflicts. You reply with the resolved lines only "
+    "and nothing else: no conflict markers, no surrounding context, no fences, "
+    "no explanation. Preserve the exact indentation the file uses."
+)
+
+# Every instruction here corresponds to an observed failure, not a guess about
+# what a model might do. Padding the prompt with rules nothing has broken buys
+# nothing and costs context.
+_USER_TEMPLATE = """\
+Resolve one merge conflict in {path}.
+
+Lines before the conflict (context, do NOT repeat these in your answer):
+{pre}
+=== conflict ===
+Version A (ours, the fork's current code):
+{ours}
+Version B (theirs, incoming upstream):
+{theirs}
+=== end conflict ===
+
+Lines after the conflict (context, do NOT repeat these in your answer):
+{post}
+
+Reply with ONLY the lines that replace the conflict region, between and not
+including the markers. Keep the indentation shown above.\
+"""
+
+
+def prompt_for(case: MergeCase) -> list:
+    """Messages for one case, in the shape ``complete`` expects."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": _USER_TEMPLATE.format(
+                path=Path(case.path).name,
+                pre=case.pre.rstrip("\n") or "(start of file)",
+                ours=case.ours.rstrip("\n") or "(empty: this side adds nothing)",
+                theirs=case.theirs.rstrip("\n") or "(empty: this side adds nothing)",
+                post=case.post.rstrip("\n") or "(end of file)",
+            ),
+        },
+    ]
+
+
+def strip_fences(text: str) -> str:
+    """Remove a markdown fence the model was asked not to add.
+
+    Models add these constantly despite the instruction. Failing an otherwise
+    correct answer for its wrapper would measure instruction-following dressed
+    up as merge ability, and those are different questions with different
+    answers.
+    """
+    lines = text.strip("\n").splitlines()
+    if not lines or not lines[0].lstrip().startswith("```"):
+        return text
+    lines = lines[1:]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].lstrip().startswith("```"):
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
 def summarize(verdicts: Sequence[MergeVerdict]) -> dict[str, Any]:
     """Per-stage counts. Deliberately no single blended score.
 
