@@ -72,6 +72,45 @@ and logic, 2048-4096 for architecture decisions. On this fleet the observed
 merge-conflict cost was far higher than the code-generation guidance, which is
 the reason it is measured per model rather than taken from the table.
 
+## First execution: the merge suite, 2026-08-30
+
+Five models, 20 real merge conflicts recovered from this repo's own history, all
+pinned at **262144 context** (comparability confirmed: one context across every
+rung), 12000-token budget, drained to empty between rungs.
+
+| Model | Arch | Format | Usable / 20 | Truncated | Ref match | Median |
+| --- | --- | --- | --- | --- | --- | --- |
+| `qwen/qwen3.8-27b` | dense 27B | mlx 4bit | **12** | **0** | **7** | **24s** |
+| `gemma-4-31b-qat` | dense 31B | gguf Q4_0 | 10 | **0** | **7** | 104s |
+| `gemma-4-26b-a4b-qat` | **MoE**, ~4B active | mlx 4bit | 6 | 9 | 4 | 65s |
+| `gemma-4-12b` | dense 12B | mlx 8bit | 6 | 3 | 4 | 113s |
+| `gemma-4-12b-qat` | dense 12B | gguf Q4_0 | 1 | **16** | 1 | 261s |
+
+"Usable" is `deterministically_ok` out of the 20 offered: markers gone, splices
+back and parses, nothing duplicated. It is the operationally honest number,
+because a truncated answer and a broken answer are both unusable even though
+only one is a correctness failure.
+
+**Routing decision for the `merge` suite: `qwen/qwen3.8-27b`.** It had never
+been tested before this run. It leads on validity, ties the 31b on reference
+match, never truncated once, and is 4.3x faster than the 31b.
+
+Three findings worth keeping:
+
+1. **Dense models did not truncate; the MoE did, on 9 of 20.** Even at a 12000
+   budget. That is the stability difference, and it is a budget-exhaustion
+   effect rather than a reasoning-quality one.
+2. **Quantization mattered more than parameter count.** Same 12B dense
+   architecture: the 8-bit MLX build produced 6 usable answers with a mean of
+   4875 reasoning tokens, while the Q4_0 QAT build produced 1, truncated 16
+   times, and averaged 9982 reasoning tokens against a 12000 cap. Confounded
+   with the runtime (mlx vs gguf) and not separated here, so treat it as
+   "this build" rather than "4-bit".
+3. **No model is good enough to merge unsupervised.** `broken-structure` ran at
+   30-40% across the whole ladder, and that is exactly the failure class that
+   took the WhatsApp bridge down for 42 hours. The routing answer names the
+   least-bad model, not a safe one.
+
 ## The procedure
 
 ### 1. Size it from the host
