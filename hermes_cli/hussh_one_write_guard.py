@@ -201,9 +201,25 @@ def _via_subprocess(
         return Verdict(ok=True, language=language)
     detail = (proc.stderr or proc.stdout or "").strip()
     # Strip the temp path so the model sees its mistake, not our plumbing.
-    detail = detail.replace(temp_path, "<file>")
-    first = next((ln for ln in detail.splitlines() if ln.strip()), detail)
-    return Verdict(ok=False, language=language, error=first[:400])
+    # Both spellings: macOS resolves /tmp and /var to /private/..., so the
+    # parser reports a path that does not string-match the one we created, and
+    # a partial strip leaves a mangled "/private<file>" prefix that reads like
+    # part of the error.
+    for variant in (str(Path(temp_path).resolve()), temp_path):
+        detail = detail.replace(variant, "<file>")
+
+    lines = [ln.strip() for ln in detail.splitlines() if ln.strip()]
+    # Prefer the line that names the fault. node --check leads with the
+    # location and puts "SyntaxError: ..." several lines down, so taking the
+    # first line alone hands back "<file>:2" -- a location with no problem
+    # attached, which tells the model where to look and nothing about what to
+    # change.
+    named = next((ln for ln in lines if "Error" in ln), "")
+    located = next((ln for ln in lines if "<file>:" in ln), "")
+    error = " ".join(part for part in (named, located) if part) or (
+        lines[0] if lines else "unparseable"
+    )
+    return Verdict(ok=False, language=language, error=error[:400])
 
 
 def _javascript(text: str) -> Verdict:

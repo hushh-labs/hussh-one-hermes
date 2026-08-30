@@ -765,12 +765,45 @@ def _lint_python_inproc(content: str) -> tuple[bool, str]:
 # takes file content (str) and returns (ok: bool, error: str).  An error
 # string of ``"__SKIP__"`` signals the linter isn't available (missing
 # dependency) and should be treated as "no linter".
+def _lint_javascript_inproc(content: str) -> tuple[bool, str]:
+    """Pre-write JavaScript syntax check.  Returns (ok, error_message).
+
+    Delegates to ``hussh_one_write_guard``, which parses via ``node --check``
+    against a temp file — never the destination, so a failing candidate is
+    never briefly live.
+
+    Returns ``__SKIP__`` when node is unavailable, so a machine without it
+    keeps editing JavaScript normally rather than being unable to write it.
+    """
+    try:
+        from hermes_cli.hussh_one_write_guard import validate
+    except Exception:  # noqa: BLE001 — the guard must never block a write
+        return True, "__SKIP__"
+    verdict = validate("candidate.js", content)
+    if not verdict.checked:
+        return True, "__SKIP__"
+    return verdict.ok, verdict.error
+
+
 LINTERS_INPROC = {
     '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
     '.yaml': _lint_yaml_inproc,
     '.yml': _lint_yaml_inproc,
     '.toml': _lint_toml_inproc,
+}
+
+# Pre-write-only linters. Kept OUT of ``LINTERS_INPROC`` on purpose: that map
+# also drives the post-write lint-delta report, and adding ``.js`` there would
+# route JavaScript away from the shell linter and silently drop its native
+# Windows path handling (tests/tools/test_file_operations.py's
+# ``test_shell_linter_uses_native_form`` catches exactly that). This map is
+# additive -- the existing post-write behaviour for these extensions is
+# untouched, and only the refusal gate is new.
+_FAIL_CLOSED_PREWRITE_ONLY = {
+    '.js': _lint_javascript_inproc,
+    '.mjs': _lint_javascript_inproc,
+    '.cjs': _lint_javascript_inproc,
 }
 
 # Subset of LINTERS_INPROC that the pre-write fail-closed gate in
@@ -786,6 +819,18 @@ LINTERS_INPROC = {
 # established, exercised pattern as an error and break it. Python source
 # keeps the existing (unchanged) post-write lint-delta *report* — still
 # visible to the caller, just not a write-blocking refusal.
+# ``.js``/``.mjs``/``.cjs`` were added 2026-08-29 after a real outage. A local
+# model wrote a Python-style ``#`` comment into scripts/whatsapp-bridge/
+# bridge_helpers.js; ``node --check`` ALREADY ran on that write and ALREADY
+# reported the SyntaxError — as a post-write ``lint`` field, with no top-level
+# ``error``, and the broken file on disk. The bridge then died two seconds
+# after every launch for 483 reconnects and roughly 42 hours while the cron
+# jobs that depended on it reported ok and lost every message.
+#
+# The check was never the missing piece. Acting on it was. The ``.py``
+# exclusion below does not apply here: nothing in this codebase uses ``.js`` as
+# a stand-in extension for arbitrary text, so refusing unparseable JavaScript
+# cannot break an established pattern the way refusing invalid Python would.
 _FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
 
 # Max limits for read operations
@@ -2005,6 +2050,10 @@ class ShellFileOperations(FileOperations):
         # ``_file_has_bom``/``_UTF8_BOM`` below.
         ext = os.path.splitext(path)[1].lower()
         inproc_linter = LINTERS_INPROC.get(ext) if ext in _FAIL_CLOSED_INPROC_EXTS else None
+        if inproc_linter is None:
+            # Pre-write-only linters (JavaScript). Same refusal, without
+            # disturbing the post-write report path for these extensions.
+            inproc_linter = _FAIL_CLOSED_PREWRITE_ONLY.get(ext)
         if inproc_linter is not None:
             _ok, _lint_err = inproc_linter(content)
             if not _ok and _lint_err != "__SKIP__":
