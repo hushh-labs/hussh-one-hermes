@@ -307,3 +307,38 @@ class TestControlsAreRealViolations:
                 ]
             }
             assert score_tool_call(payload)["valid"] is True, control["id"]
+
+
+class TestTheAuditorIsNeverALocalModel:
+    """After a local model caused a 42-hour outage on 2026-08-28.
+
+    A local model auditing local models is being asked to certify its own
+    failure modes, and "the local models checked each other and agreed" is not
+    evidence. The strong model is already running; insisting on it costs
+    nothing.
+    """
+
+    @pytest.mark.parametrize(
+        "provider", ["lmstudio", "LM-Studio", "ollama", "lm_studio"]
+    )
+    def test_a_local_provider_is_refused(self, provider):
+        with pytest.raises(J.JudgeIsOnDevice, match="runs on this machine"):
+            J.assert_auditor_is_not_local("some-model", provider)
+
+    @pytest.mark.parametrize(
+        "model",
+        ["google/gemma-4-26b-a4b-qat", "qwen/qwen3.6-35b", "nemotron-3-nano"],
+    )
+    def test_a_local_looking_model_is_refused_without_a_provider(self, model):
+        # Provider is the reliable signal, but a caller that omits it must not
+        # thereby smuggle a local model through.
+        with pytest.raises(J.JudgeIsOnDevice):
+            J.assert_auditor_is_not_local(model)
+
+    def test_the_claude_code_auditor_is_allowed(self):
+        J.assert_auditor_is_not_local("claude-code-opus")
+        J.assert_auditor_is_not_local("claude-opus-5", "anthropic")
+
+    def test_provider_is_checked_before_the_name_heuristic(self):
+        with pytest.raises(J.JudgeIsOnDevice, match="runs on this machine"):
+            J.assert_auditor_is_not_local("some-unfamiliar-model", "lmstudio")

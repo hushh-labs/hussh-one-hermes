@@ -65,6 +65,46 @@ class JudgeIsTheAnswerer(RuntimeError):
     """Raised when the grader and the graded resolve to the same model."""
 
 
+class JudgeIsOnDevice(RuntimeError):
+    """Raised when the auditor is itself a local model."""
+
+
+# Providers that run on this machine. An auditor on one of these is being asked
+# to certify the class of model it belongs to.
+_LOCAL_JUDGE_PROVIDERS = frozenset({"lmstudio", "lm-studio", "lm_studio", "ollama"})
+
+
+def assert_auditor_is_not_local(judge_model: str, judge_provider: str = "") -> None:
+    """Refuse an audit run by an on-device model.
+
+    Not a preference. On 2026-08-28 a local model wrote a Python-style comment
+    into a JavaScript file and took WhatsApp down for about 42 hours; the whole
+    point of this harness is to catch that class of output. An auditor drawn
+    from the same class is being asked to certify its own failure modes, and
+    "the local models checked each other and agreed" is not evidence.
+
+    The strong model is the auditor. It is already running -- it is the session
+    driving this repo -- so there is no cost to insisting on it.
+
+    Provider is checked first because it is the reliable signal: a model id
+    alone cannot always be classified, and guessing from a name would let an
+    unfamiliar local model through.
+    """
+    provider = (judge_provider or "").strip().casefold()
+    if provider and provider in _LOCAL_JUDGE_PROVIDERS:
+        raise JudgeIsOnDevice(
+            f"auditor resolves to {judge_provider!r}, which runs on this machine. "
+            "A local model cannot audit local models; run the audit from the "
+            "Claude Code session instead."
+        )
+    lowered = (judge_model or "").strip().casefold()
+    if any(hint in lowered for hint in ("gemma", "qwen", "nemotron", "llama", "phi", "mistral")):
+        raise JudgeIsOnDevice(
+            f"auditor model {judge_model!r} looks like a local model. If it is "
+            "not, pass its provider explicitly so this check can tell."
+        )
+
+
 @dataclass
 class GradedCase:
     """One small-model output and what the judge made of it."""
