@@ -152,8 +152,10 @@ def run_round(
     suite: str,
     cases: Sequence[Any],
     answer: Callable[[Any, str], Verdict],
-    reflect: Callable[[list, str], list],
+    reflect: Callable[[list, list], list],
     book: Optional[pb.Playbook] = None,
+    score_fn: Optional[Callable[[Sequence[Verdict]], float]] = None,
+    failures_fn: Optional[Callable[[Sequence[Verdict]], list]] = None,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> tuple:
     """One full round. Returns ``(RoundResult, Playbook)``.
@@ -162,8 +164,17 @@ def run_round(
     grades it. ``reflect(failures, playbook_text) -> [Bullet]`` is the stronger
     model. Both are injected so the loop is testable without a server and
     without spending anything.
+
+    ``score_fn`` and ``failures_fn`` are injectable because the defaults are
+    wrong for the replay suite, and the first real round proved it: the generic
+    ``score`` counts a disagreement with the reference as a failure, so a model
+    with 0.952 structural validity reported a held-out score of 0.357. The
+    signal the loop is measured on must be the signal it is allowed to learn
+    from, and only the suite knows which oracles those are.
     """
     announce = on_progress or (lambda _m: None)
+    scorer = score_fn or score
+    collect = failures_fn or failures_for_reflection
     book = book or pb.load(model, suite)
     train, hold = split_cases(cases)
     result = RoundResult(
@@ -183,12 +194,12 @@ def run_round(
 
     train_verdicts = [answer(case, text) for case in train]
     hold_before = [answer(case, text) for case in hold]
-    baseline = score(hold_before)
+    baseline = scorer(hold_before)
     result.train = summarize(train_verdicts)
     result.held_out = summarize(hold_before)
     result.held_out["score"] = baseline
 
-    failures = failures_for_reflection(train_verdicts)
+    failures = collect(train_verdicts)
     announce(f"  {len(failures)} training failures offered to the reflector")
     if not failures:
         # Nothing to learn from is a real outcome, not an error.
@@ -211,8 +222,9 @@ def run_round(
         return result, book
 
     # Re-measure on the held-out split with the new playbook in place. This is
-    # the only number that decides anything.
-    after = score([answer(case, book.render()) for case in hold])
+    # the only number that decides anything, and it must use the same scorer as
+    # the baseline or the delta compares two different questions.
+    after = scorer([answer(case, book.render()) for case in hold])
     result.delta = round(after - baseline, 4)
     result.improved = result.delta >= MIN_MEANINGFUL_GAIN
     result.held_out["score_after"] = after
@@ -238,6 +250,15 @@ def shuffled_control(failures: list, *, seed: int = 0) -> list:
     Check ``control_is_degenerate`` before trusting a verdict from this: when
     every failure carries the same diagnosis, rotating them changes nothing and
     the two arms are the same experiment run twice.
+
+    A subtler requirement, learned from the first live run: **the reflector must
+    read the evidence content, not just the oracle names.** Rotation moves each
+    diagnosis to a different case but preserves the multiset of oracle names, so
+    a deterministic oracle-to-tactic lookup proposes the identical tactic set in
+    both arms no matter how varied the evidence is. With such a reflector this
+    control is degenerate by construction. It only measures anything when the
+    reflector is a model that writes tactics from the pairing of case and
+    diagnosis, which is the arrangement the loop ships with.
     """
     if len(failures) < 2:
         return [dict(f) for f in failures]

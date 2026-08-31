@@ -172,6 +172,69 @@ class TestOnlyHeldOutGainCounts:
         assert result.delta is None
 
 
+class TestTheScorerIsInjectable:
+    """The first live round measured the wrong signal, and this is the fix.
+
+    The generic score counts a disagreement with the reference as a failure, so
+    a model with 0.952 structural validity reported a held-out score of 0.357.
+    The signal the loop is measured on must be the one it may learn from, and
+    only the suite knows which oracles those are.
+    """
+
+    def _cases(self):
+        return [_Case(f"c{i}") for i in range(30)]
+
+    def test_a_custom_scorer_decides_the_baseline_and_the_delta(self, home):
+        # Score only case-id parity, ignoring verdict contents entirely; the
+        # loop must use it for baseline AND for the after re-run.
+        def parity_score(verdicts):
+            if not verdicts:
+                return 0.0
+            return sum(1 for v in verdicts if v.case_id.endswith("2")) / len(verdicts)
+
+        result, _ = L.run_round(
+            model="m", suite="file_edit", cases=self._cases(),
+            answer=lambda c, t: verdict(c.case_id, ok=False),
+            reflect=lambda f, t: [
+                pb.Bullet(text=SPECIFIC, case_id="c1", suite="file_edit")
+            ],
+            score_fn=parity_score,
+        )
+        # With verdicts all failing, the generic scorer would report 0.0; the
+        # injected one reports parity on both sides so the delta is exactly 0.
+        assert result.held_out["score"] > 0.0
+        assert result.delta == 0.0
+
+    def test_a_custom_failure_filter_decides_what_the_reflector_sees(self, home):
+        seen = {}
+
+        def only_c1(verdicts):
+            return [
+                {"case_id": v.case_id, "suite": "file_edit", "fault": "execution",
+                 "oracles": ["parses"], "asi": "x"}
+                for v in verdicts if v.case_id == "c1"
+            ]
+
+        def reflect(failures, text):
+            seen["failures"] = failures
+            return []
+
+        L.run_round(
+            model="m", suite="file_edit", cases=self._cases(),
+            answer=lambda c, t: verdict(c.case_id, ok=False),
+            reflect=reflect, failures_fn=only_c1,
+        )
+        assert [f["case_id"] for f in seen["failures"]] == ["c1"]
+
+    def test_the_defaults_are_unchanged(self, home):
+        result, _ = L.run_round(
+            model="m", suite="file_edit", cases=self._cases(),
+            answer=lambda c, t: verdict(c.case_id, ok=True),
+            reflect=lambda f, t: [],
+        )
+        assert result.held_out["score"] == 1.0
+
+
 class TestTheLoopHasItsOwnNegativeControl:
     def test_shuffling_detaches_each_diagnosis_from_its_case(self):
         failures = [
