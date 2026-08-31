@@ -81,7 +81,15 @@ NATIVE_EFFORT_FAMILIES = ("qwen3.8",)
 # model failure. At a 1600-token budget one model returned truncated on 12 merge
 # cases out of 12.
 BUDGET_HEADROOM = 2.5
-MIN_BUDGET = 4000
+
+# The probe measures a short arithmetic question. A real task reasons far
+# harder, so the probe's number is a floor on the floor rather than an estimate
+# of the real spend. Measured: gemma-4-26b-a4b-qat spent 722 tokens on the probe
+# under max thinking, and then blew past a 6000-token budget on an actual file
+# repair, which the loop correctly recorded as a harness fault rather than a
+# model failure. Matches UNCONTROLLED_REASONING_FLOOR in `profile`, for the same
+# reason: when reasoning cannot be turned down, the budget has to absorb it.
+MIN_BUDGET = 8000
 
 
 @dataclass
