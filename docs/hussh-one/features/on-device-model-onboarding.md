@@ -87,29 +87,95 @@ rung), 12000-token budget, drained to empty between rungs.
 | `gemma-4-12b-qat` | dense 12B | gguf Q4_0 | 1 | **16** | 1 | 261s |
 
 "Usable" is `deterministically_ok` out of the 20 offered: markers gone, splices
-back and parses, nothing duplicated. It is the operationally honest number,
-because a truncated answer and a broken answer are both unusable even though
-only one is a correctness failure.
+back and parses, nothing duplicated.
 
-**Routing decision for the `merge` suite: `qwen/qwen3.8-27b`.** It had never
-been tested before this run. It leads on validity, ties the 31b on reference
-match, never truncated once, and is 4.3x faster than the 31b.
+> **Read the truncation column with care; it is not what it looked like.**
+> This run counted a truncated turn as unusable. Hermes compacts and continues
+> when a turn hits `max_tokens`, so in a real loop that is a normal event rather
+> than a failure, and a one-shot probe simply cannot see the continuation. The
+> MoE's 9 and the 12b-qat's 16 are **compaction events**, not evidence those
+> models cannot do the work. `summarize()` now reports `compacted` apart from
+> `timed_out` for exactly this reason. Treat the ranking below as provisional
+> for every row with a non-zero truncation count.
 
-Three findings worth keeping:
+**Provisional routing for the `merge` suite: `qwen/qwen3.8-27b`.** It leads on
+validity, ties the 31b on reference match, truncated zero times so its number is
+unaffected by the caveat above, and is 4.3x faster than the 31b.
 
-1. **Dense models did not truncate; the MoE did, on 9 of 20.** Even at a 12000
-   budget. That is the stability difference, and it is a budget-exhaustion
-   effect rather than a reasoning-quality one.
+Three findings, one of them since revised:
+
+1. ~~Dense models did not truncate; the MoE did, on 9 of 20.~~ **Revised.** The
+   dense/MoE truncation gap is real but does not mean what this originally
+   claimed. Truncation is compaction, so the gap says the MoE writes more before
+   yielding, not that it fails more often.
 2. **Quantization mattered more than parameter count.** Same 12B dense
    architecture: the 8-bit MLX build produced 6 usable answers with a mean of
-   4875 reasoning tokens, while the Q4_0 QAT build produced 1, truncated 16
-   times, and averaged 9982 reasoning tokens against a 12000 cap. Confounded
-   with the runtime (mlx vs gguf) and not separated here, so treat it as
-   "this build" rather than "4-bit".
+   4875 reasoning tokens, while the Q4_0 QAT build produced 1 and averaged 9982
+   reasoning tokens against a 12000 cap. Confounded with the runtime (mlx vs
+   gguf) and not separated here, so treat it as "this build" rather than
+   "4-bit".
 3. **No model is good enough to merge unsupervised.** `broken-structure` ran at
    30-40% across the whole ladder, and that is exactly the failure class that
    took the WhatsApp bridge down for 42 hours. The routing answer names the
    least-bad model, not a safe one.
+
+## The exam that matters: replayed session turns
+
+The merge suite grades one upstream chore. `hermes puppy replay` asks the
+question the product asks, on the owner's own history: the agent's real
+conversation cut just before it acted, the real tool catalog, and *what do you
+do next*.
+
+400 such cases exist across 22 sessions, sampled round-robin so one long session
+cannot crowd out the rest. The next-action mix matches the measured workload:
+terminal 210, read_file 49, search_files 44, execute_code 48. Median prompt is
+about 71k tokens, so long-context behaviour is measured rather than simulated.
+
+**Two numbers, reported apart and never added.** *Agreement* is whether the
+model picked the tool a frontier model picked, which is imitation fidelity and
+not correctness. *Structural* is whether the output would have worked, which
+does not depend on the reference at all.
+
+First result, `gemma-4-26b-a4b-qat`, 25 turns:
+
+| | rate |
+| --- | --- |
+| Agreement | 0.50 |
+| Structural | 0.875 |
+| Shell commands that parsed | 14 / 14 |
+| Argument sets validating against schema | 23 / 23 |
+| Invented parameters | 0 |
+| Unrequested destructive commands | 0 |
+
+The shape of that result is the product argument. **The model is wrong about
+what to do roughly half the time and almost never wrong about how to say it**,
+and where it is, a deterministic gate catches it. A parser can be pushed toward
+certainty because it is a parser; a model cannot. So the claim that survives
+contact with a customer is *Puppy One never ships broken output*, not *the model
+is always right*.
+
+## A latency measurement that is not yet trustworthy
+
+On `gemma-4-31b-qat`, the same prompt with a larger output budget returned
+**byte-identical output** (551 reasoning tokens, 26 answer tokens) in a fraction
+of the time:
+
+| prompt tokens | `max_tokens` | elapsed |
+| --- | --- | --- |
+| 51,012 | 12,000 | 405.0s |
+| 51,012 | 40,000 | 37.5s |
+
+If that holds, every latency number on this page is inflated by the harness's
+own configuration. **It is not yet established**, because the large budget ran
+second on each prompt and a warm prompt cache is therefore perfectly confounded
+with the larger budget. This is the same class of error as comparing a model at
+262144 context against one at 16384: the measurement is real, the attribution is
+unproven. The controlled version runs the large budget cold on a fresh prompt.
+
+Related and already confirmed: 7 of 50 turns in the first 50-case replay were
+recorded as indeterminate at exactly 420.0s, which was the harness timeout to
+the decimal. Those were **timeouts, not truncations**, and they were reported as
+a budget problem for a while before anyone checked.
 
 ## The procedure
 
