@@ -146,8 +146,23 @@ class CapabilityProfile:
         budget = self.recommended.get("max_tokens", "?")
         return f"{suite_id}/{output_protocol}/effort={effort}/max_tokens={budget}"
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(
+        self,
+        *,
+        suite_id: Optional[str] = None,
+        output_protocol: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Serialise, including the comparability key when it can be derived.
+
+        ``probe_mode`` is a method rather than a field, so the first version of
+        this omitted it entirely. ``compare_runs`` then read ``None`` from both
+        sides of every comparison, and ``None != None`` is False, so the one
+        function whose whole job is refusing to compare unlike runs silently
+        declared every pair comparable. Passing the suite and protocol is what
+        makes the key real; omitting them leaves it absent, and ``compare_runs``
+        now treats absent as not-comparable rather than as a match.
+        """
+        payload = {
             "schema_version": self.schema_version,
             "model": self.model,
             "capabilities": {k: asdict(v) for k, v in self.capabilities.items()},
@@ -155,6 +170,9 @@ class CapabilityProfile:
             "failed": self.failed,
             "failure_reason": self.failure_reason,
         }
+        if suite_id is not None and output_protocol is not None:
+            payload["probe_mode"] = self.probe_mode(suite_id, output_protocol)
+        return payload
 
 
 def _emitted_tool_call(turn: Turn) -> bool:

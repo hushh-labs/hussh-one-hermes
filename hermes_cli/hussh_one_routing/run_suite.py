@@ -48,17 +48,27 @@ DEFAULT_MAX_TOKENS = 12000
 DEFAULT_TIMEOUT_S = 600.0
 
 
-def _assert_auditor_is_not_local(judge_model: Optional[str]) -> None:
+def _assert_auditor_is_not_local(
+    judge_model: Optional[str], judge_provider: str = ""
+) -> None:
     """A model may not grade its own class of output.
 
     ``assert_auditor_is_not_local`` has existed in the PKM package for a while
     with no production caller. This is the caller.
+
+    It lives in ``judge``, not ``integrity``. The first version of this function
+    imported it from ``integrity`` and therefore raised ImportError on every
+    call that passed a judge, while the docstring above claimed the check was
+    wired. Nothing caught it because the guard only fires when a judge is
+    configured and this module had no test at all. The provider is threaded
+    through because the real signature checks it *before* falling back to
+    guessing from the model name.
     """
     if judge_model is None:
         return
-    from hermes_cli.hussh_one_pkm.integrity import assert_auditor_is_not_local
+    from hermes_cli.hussh_one_pkm.judge import assert_auditor_is_not_local
 
-    assert_auditor_is_not_local(judge_model)
+    assert_auditor_is_not_local(judge_model, judge_provider)
 
 
 def run(

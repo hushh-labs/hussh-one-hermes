@@ -64,6 +64,21 @@ VERDICTS_FILENAME = "verdicts.jsonl"
 MANIFEST_FILENAME = "run-manifest.json"
 LEDGER_FILENAME = "evolution-ledger.jsonl"
 
+
+def default_ledger_path() -> Path:
+    """Where the ledger lives when a caller does not say.
+
+    ``append_to_ledger`` has always required an explicit ``ledger_path`` and no
+    default existed anywhere, which is a large part of why nothing ever wrote to
+    it: every would-be caller had to invent a location, so none did. Resolved
+    through ``get_hermes_home`` rather than ``Path.home`` so an active profile
+    or a sandboxed capsule keeps its own ledger instead of writing into the
+    owner's.
+    """
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / LEDGER_FILENAME
+
 SCHEMA_VERSION = 1
 SEAL_SUFFIX = ".seal.json"
 
@@ -445,7 +460,7 @@ def ingest(
 
 def append_to_ledger(
     *,
-    ledger_path: Path | str,
+    ledger_path: Optional[Path | str] = None,
     report: JudgeReport,
     capability_profile: Optional[dict[str, Any]] = None,
     benchmark: Optional[dict[str, Any]] = None,
@@ -478,7 +493,7 @@ def append_to_ledger(
         "void": report.void,
         "void_reason": report.void_reason,
     }
-    path = Path(ledger_path)
+    path = Path(ledger_path) if ledger_path is not None else default_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
@@ -519,6 +534,20 @@ def compare_runs(
     latest, previous = rows[-1], rows[-2]
     latest_probe = (latest.get("capability_profile") or {}).get("probe_mode")
     previous_probe = (previous.get("capability_profile") or {}).get("probe_mode")
+    # Absent is not a match. `CapabilityProfile.to_dict()` used to omit this key
+    # entirely, so both sides read None, `None != None` was False, and the one
+    # check that exists to refuse unlike runs passed every pair it ever saw.
+    # An unknown probe mode cannot be shown equal to anything, including another
+    # unknown one.
+    if latest_probe is None or previous_probe is None:
+        return {
+            "comparable": False,
+            "reason": (
+                "probe mode missing on at least one run "
+                f"({previous_probe!r} -> {latest_probe!r}); a run that did not "
+                "record how it was asked cannot be shown to match another"
+            ),
+        }
     if latest_probe != previous_probe:
         return {
             "comparable": False,
