@@ -184,10 +184,71 @@ def _cmd_loop(args) -> int:
         print()
         print(pb.render_markdown(book))
         return EXIT_OK
-    print("\nA loop round needs a graded corpus and a reflector; run it through")
-    print("hermes_cli.hussh_one_routing.loop.run_round with both injected.")
-    print("`--show` prints what this model has learned so far.")
+    if not args.run:
+        print("\n`--show` prints the playbook; `--run` executes one round on")
+        print("real session turns. A round needs a reflector, which must not be")
+        print("an on-device model.")
+        return EXIT_OK
+
+    from hermes_cli.hussh_one_routing import loop as L
+    from hermes_cli.hussh_one_routing import loop_replay as LR
+    from hermes_cli.hussh_one_routing import reasoning as RZ
+    from hermes_cli.hussh_one_routing import reflector as RF
+    from hermes_cli.hussh_one_routing.exam import replay as RP
+
+    cases = RP.extract_cases(max_cases=args.limit)
+    if not cases:
+        print("no replay cases found", file=sys.stderr)
+        return EXIT_ERROR
+
+    profile = RZ.ReasoningProfile(
+        model=args.model, family=RZ.family_of(args.model),
+        mode=RZ.MAX, prefix=RZ.control_for(args.model, RZ.MAX),
+    )
+    answer = LR.make_answerer(
+        model=args.model,
+        max_tokens=args.max_tokens or profile.max_tokens,
+        timeout=args.timeout,
+        reasoning_prefix=profile.prefix,
+    )
+    try:
+        reflect = RF.make_reflector(
+            model=args.judge, suite=LR.SUITE_ID, ask=None if args.judge else _no_judge
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"reflector refused: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    # The shuffled arm detaches each diagnosis from the case that produced it.
+    # If the playbook improves as much on mismatched evidence, the loop is
+    # fitting noise and the matched arm's gain means nothing either.
+    if args.control:
+        inner = reflect
+
+        def reflect(failures, text):  # noqa: F811
+            return inner(L.shuffled_control(failures), text)
+
+    print(f"\n{len(cases)} real session turns | "
+          f"{'SHUFFLED CONTROL' if args.control else 'matched evidence'}")
+    result, book = L.run_round(
+        model=args.model + ("::control" if args.control else ""),
+        suite=LR.SUITE_ID,
+        cases=cases,
+        answer=answer,
+        reflect=reflect,
+        on_progress=print,
+    )
+    print("\n=== round ===")
+    print(json.dumps(result.to_dict(), indent=2)[:1600])
+    if args.out:
+        Path(args.out).write_text(json.dumps(result.to_dict(), indent=2),
+                                  encoding="utf-8")
     return EXIT_OK
+
+
+def _no_judge(prompt: str) -> str:
+    """Used when no judge is configured: propose nothing rather than guess."""
+    return ""
 
 
 def _cmd_replay(args) -> int:
@@ -374,6 +435,15 @@ def build_puppy_parser(subparsers) -> None:
     loop.add_argument("model", help="Model id")
     loop.add_argument("--suite", default="file_edit", help="Suite name")
     loop.add_argument("--show", action="store_true", help="Print the playbook")
+    loop.add_argument("--run", action="store_true",
+                      help="Execute one round on real session turns")
+    loop.add_argument("--control", action="store_true",
+                      help="Shuffle the evidence: the loop's negative control")
+    loop.add_argument("--limit", type=int, default=25, help="Cases per round")
+    loop.add_argument("--judge", help="Reflector model; must not be on-device")
+    loop.add_argument("--max-tokens", type=int, dest="max_tokens")
+    loop.add_argument("--timeout", type=float, default=900.0)
+    loop.add_argument("--out", help="Write the round result here")
 
     replay = sub.add_parser(
         "replay",
