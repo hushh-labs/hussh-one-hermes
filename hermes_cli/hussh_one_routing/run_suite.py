@@ -83,6 +83,7 @@ def run(
     context_length: Optional[int] = None,
     judge_model: Optional[str] = None,
     destination: Optional[Path] = None,
+    ledger_path: Optional[Path] = None,
     on_progress: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
     """Walk the ladder over one suite and grade every turn deterministically."""
@@ -224,9 +225,114 @@ def run(
         report["per_model"][model] = summary
 
     report["ranking"] = rank(report["per_model"])
+    report["ledger"] = _append_to_ledger(
+        report,
+        suite_id=suite_id,
+        output_protocol=getattr(suite, "OUTPUT_PROTOCOL", "text"),
+        pinned=pinned,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+        judge_model=judge_model,
+        ledger_path=ledger_path,
+    )
     if destination:
         Path(destination).write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
+
+
+def _append_to_ledger(
+    report: dict,
+    *,
+    suite_id: str,
+    output_protocol: str,
+    pinned: int,
+    max_tokens: int,
+    reasoning_effort: str,
+    judge_model: Optional[str],
+    ledger_path=None,
+) -> list:
+    """Record one row per model, so the next run can be compared to this one.
+
+    This call is the whole reason the ledger exists and it had never been made
+    from anywhere. `append_to_ledger`, `read_ledger` and `compare_runs` were
+    written and tested and had zero production callers, so the evolution ledger
+    had zero rows and every ladder result lived only in a markdown table that
+    nothing could check.
+
+    The probe mode is assembled here rather than left out. Omitting it is what
+    made `compare_runs` accept every pair of runs it was ever shown, since both
+    sides read None and None does not differ from None.
+    """
+    from hermes_cli.hussh_one_pkm.judge import (
+        VERDICT_CORRECT,
+        VERDICT_WRONG,
+        GradedCase,
+        JudgeReport,
+    )
+    from hermes_cli.hussh_one_pkm.judge_queue import append_to_ledger
+
+    rows = []
+    for model, summary in report["per_model"].items():
+        graded = summary.get("graded", 0)
+        ok = summary.get("deterministically_ok", summary.get("ok", 0))
+        # The ledger speaks in JudgeReport; a deterministic suite fills it with
+        # one synthetic case per outcome so the scoreboard maths is unchanged.
+        # The verdict words are the judge module's, imported rather than
+        # written out. Spelling one of them "right" instead of "correct" is not
+        # a rejected value; it simply matches nothing, so every passing case
+        # counts as neither correct nor wrong and the accuracy comes out 0.0
+        # while the run looks like it succeeded.
+        #
+        # A wrong verdict must also cite, or `scoreboard` discards it as
+        # uncited and the accuracy silently rises instead. The citation here is
+        # the oracle that failed, which is exactly the evidence a deterministic
+        # failure has and a hallucinating judge does not.
+        cases = [
+            GradedCase(
+                case_id=f"{model}-{i}",
+                model=model,
+                verdict=VERDICT_CORRECT if i < ok else VERDICT_WRONG,
+                rule="" if i < ok else "broken-structure",
+                citation="" if i < ok else "deterministic oracle failure",
+            )
+            for i in range(graded)
+        ]
+        judge_report = JudgeReport(
+            judge_model=judge_model or "deterministic-oracles",
+            answerer_model=model,
+            cases=cases,
+        )
+        try:
+            rows.append(
+                append_to_ledger(
+                    ledger_path=ledger_path,
+                    report=judge_report,
+                    capability_profile={
+                        "probe_mode": (
+                            f"{suite_id}/{output_protocol}/"
+                            f"effort={reasoning_effort}/max_tokens={max_tokens}/"
+                            f"context={pinned}"
+                        ),
+                        "context_length": pinned,
+                        "max_tokens": max_tokens,
+                        "reasoning_effort": reasoning_effort,
+                        "reasoning_effort_honored": False,
+                    },
+                    benchmark={
+                        "suite": suite_id,
+                        "offered": summary.get("offered"),
+                        "graded": graded,
+                        "indeterminate": summary.get("indeterminate"),
+                        "latency_s": summary.get("latency_s"),
+                        "reasoning_tokens": summary.get("reasoning_tokens"),
+                    },
+                    host={"comparability": report.get("comparability")},
+                )
+            )
+        except Exception:  # noqa: BLE001
+            # A ledger failure must not discard a run that already cost hours.
+            logger.warning("could not append %s to the ledger", model, exc_info=True)
+    return rows
 
 
 def _rung(row: Any):
