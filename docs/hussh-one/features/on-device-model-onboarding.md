@@ -208,6 +208,43 @@ harness, and because the corrected run is the reason the result can be trusted:
 the ranking **replicated on harder cases**, which is much stronger evidence than
 either run alone.
 
+## First judged learning round, 2026-08-31: the machinery works, the effect is unresolved
+
+One full round with a frontier session as the reflector, on the speed-tier
+model (`gemma-4-26b-a4b-qat`), over 36 real session turns (18 train, 18 held
+out): generate, verify with deterministic oracles, judge the failures, curate
+tactics, re-measure held out.
+
+The judge reviewed 12 evidence items and wrote **5 tactics, refusing 2 misses
+as defensible alternatives** (git state via terminal; skill_view versus a
+directory listing). That refusal is the step a deterministic oracle-to-tactic
+lookup cannot perform, and the reason the reflector must read the pairing of
+case and diagnosis rather than the oracle name: a shuffled-evidence control is
+degenerate by construction against a lookup reflector.
+
+The strongest pattern in the evidence: **skills-first**. Four of eleven
+agreement misses were board, governance, or PKM tasks where the reference
+consulted the matching skill and the small model went to session search, file
+search, web search, or nothing.
+
+Result on the 18 held-out turns:
+
+| signal | before | after | delta |
+| --- | --- | --- | --- |
+| structural | 0.778 | 0.833 | +0.056 (one case) |
+| agreement | 0.563 | 0.438 | -0.125 (two cases) |
+
+**No learning claim is made from this.** At n=18 both deltas are inside the
+noise a single flipped case produces, and the two signals moved in opposite
+directions. What the round establishes is that the machinery runs end to end
+honestly; what it does not establish is that the playbook helps. Two follow-ups
+are implied: a held-out split near 100 cases so a real effect can be resolved,
+and the context-tax hypothesis, because the playbook adds ~1,400 characters of
+instructions and a measured property of these models is that a plain system
+prompt alone inflates reasoning by ~50%. The tactics were deliberately not
+persisted to the live playbook pending a resolvable measurement, and the
+`replay` suite is not among the suites the live plugin injects.
+
 ## A latency measurement that turned out to be the prompt cache
 
 An earlier diagnostic appeared to show a 10.8x speedup from raising `max_tokens`
