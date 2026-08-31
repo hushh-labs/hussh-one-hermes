@@ -50,6 +50,7 @@ def cmd_puppy(args) -> int:
         "exam": _cmd_exam,
         "ladder": _cmd_ladder,
         "loop": _cmd_loop,
+        "replay": _cmd_replay,
         "routing": _cmd_routing,
     }.get(action)
     if handler is None:
@@ -189,6 +190,105 @@ def _cmd_loop(args) -> int:
     return EXIT_OK
 
 
+def _cmd_replay(args) -> int:
+    """Ask a model to take the next action on real moments from real sessions.
+
+    The exam that matters. Everything else grades a chore; this asks the
+    question the product asks, on the owner's own work, at the context length
+    that work actually arrives at.
+    """
+    import time
+
+    from hermes_cli.hussh_one_routing import reasoning as RZ
+    from hermes_cli.hussh_one_routing.exam import replay as RP
+    from hermes_cli.hussh_one_routing.request import complete
+
+    cases = RP.extract_cases(max_cases=args.limit)
+    if not cases:
+        print("no replay cases found in the session dumps", file=sys.stderr)
+        return EXIT_ERROR
+
+    sizes = sorted(c.tokens for c in cases)
+    print(f"{len(cases)} cases from {len({c.session_id for c in cases})} sessions")
+    print(f"  next-action mix: " + ", ".join(
+        f"{name} {count}" for name, count in _top_tools(cases)
+    ))
+    print(f"  prompt tokens: median {sizes[len(sizes)//2]:,} max {sizes[-1]:,}")
+    print(f"  catalog size: max {max(c.catalog_size for c in cases)}")
+
+    profile = RZ.ReasoningProfile(
+        model=args.model, family=RZ.family_of(args.model),
+        mode=RZ.MAX, prefix=RZ.control_for(args.model, RZ.MAX),
+    )
+    budget = args.max_tokens or profile.max_tokens
+    print(f"  thinking: {profile.mode} | budget {budget}\n")
+
+    verdicts = []
+    for index, case in enumerate(cases, 1):
+        messages = profile.apply(case.messages)
+        started = time.time()
+        turn = complete(
+            model=args.model,
+            messages=messages,
+            max_tokens=budget,
+            reasoning_effort="low",
+            tools=RP.tools_payload(case) or None,
+            timeout=args.timeout,
+        )
+        elapsed = time.time() - started
+
+        if turn.indeterminate:
+            verdict = RP.grade(case, chosen=None, arguments=None)
+            verdict.indeterminate = (
+                "timeout" if turn.timed_out
+                else "truncated" if turn.truncated else (turn.error or "error")
+            )
+            print(f"[{index}/{len(cases)}] INDETERMINATE ({verdict.indeterminate}) "
+                  f"{elapsed:.0f}s  {case.tokens:,}tok")
+            verdicts.append(verdict)
+            continue
+
+        chosen, arguments = _first_call(turn)
+        verdict = RP.grade(case, chosen=chosen, arguments=arguments)
+        verdict.elapsed_s = round(elapsed, 1)
+        verdicts.append(verdict)
+        mark = "=" if verdict.label_match else "~"
+        broken = [o.name for o in verdict.failures]
+        print(f"[{index}/{len(cases)}] {mark} chose {chosen or '(none)'} "
+              f"want {case.expected_tool} {elapsed:.0f}s {case.tokens:,}tok"
+              + (f"  FAIL {','.join(broken[:3])}" if broken else ""))
+
+    summary = RP.summarize(verdicts)
+    print("\n=== summary ===")
+    print(json.dumps(summary, indent=2)[:2200])
+    if args.out:
+        Path(args.out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return EXIT_OK
+
+
+def _top_tools(cases, limit: int = 6):
+    counts: dict = {}
+    for case in cases:
+        counts[case.expected_tool] = counts.get(case.expected_tool, 0) + 1
+    return sorted(counts.items(), key=lambda kv: -kv[1])[:limit]
+
+
+def _first_call(turn):
+    """The tool the model chose, and its arguments, from an OpenAI-shaped turn."""
+    calls = getattr(turn, "tool_calls", None) or []
+    if not calls:
+        return None, None
+    function = (calls[0] or {}).get("function") or {}
+    name = function.get("name")
+    raw = function.get("arguments")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            raw = {}
+    return name, (raw if isinstance(raw, dict) else {})
+
+
 def _cmd_routing(args) -> int:
     """What the ledger actually supports recommending."""
     from hermes_cli.hussh_one_pkm.judge_queue import (
@@ -274,6 +374,17 @@ def build_puppy_parser(subparsers) -> None:
     loop.add_argument("model", help="Model id")
     loop.add_argument("--suite", default="file_edit", help="Suite name")
     loop.add_argument("--show", action="store_true", help="Print the playbook")
+
+    replay = sub.add_parser(
+        "replay",
+        help="Replay real session turns and grade the next action",
+    )
+    replay.add_argument("model", help="On-device model id")
+    replay.add_argument("--limit", type=int, default=30, help="Cases to replay")
+    replay.add_argument("--max-tokens", type=int, dest="max_tokens",
+                        help="Generation budget (default: measured)")
+    replay.add_argument("--timeout", type=float, default=600.0)
+    replay.add_argument("--out", help="Write the summary here")
 
     routing = sub.add_parser("routing", help="What the ledger supports recommending")
     routing.add_argument("--ledger", help="Ledger path (default: $HERMES_HOME)")
