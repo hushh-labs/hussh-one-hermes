@@ -241,6 +241,53 @@ class TestStaleReads:
         assert outcome(v, "fresh_read").outcome == SKIP
 
 
+class TestTruncationIsNotATimeout:
+    """The founder's correction: a truncated turn is compaction, not failure.
+
+    Hermes compacts and continues when a turn hits max_tokens, so calling that
+    a harness fault implies a setting to fix when often there is none, and
+    calling it a model failure is worse. A timeout is genuinely our clock.
+    """
+
+    def _verdict(self, reason):
+        from hermes_cli.hussh_one_routing.exam.model import Verdict
+
+        return Verdict(case_id="c", suite="file_edit", indeterminate=reason)
+
+    def test_a_truncated_turn_is_its_own_category(self):
+        from hermes_cli.hussh_one_routing.exam.model import COMPACTED
+
+        assert self._verdict("truncated").fault == COMPACTED
+
+    def test_a_length_finish_is_also_compaction(self):
+        from hermes_cli.hussh_one_routing.exam.model import COMPACTED
+
+        assert self._verdict("finish_reason=length").fault == COMPACTED
+
+    def test_a_timeout_is_our_clock(self):
+        from hermes_cli.hussh_one_routing.exam.model import HARNESS
+
+        assert self._verdict("timeout").fault == HARNESS
+
+    def test_a_transport_error_is_plumbing(self):
+        from hermes_cli.hussh_one_routing.exam.model import HARNESS
+
+        assert self._verdict("connection reset").fault == HARNESS
+
+    def test_the_summary_reports_them_apart(self):
+        # One of these is a number to act on and the other is not; a single
+        # 'indeterminate' count hides which.
+        from hermes_cli.hussh_one_routing.exam.model import summarize
+
+        rows = summarize(
+            [self._verdict("truncated"), self._verdict("timeout"),
+             self._verdict("truncated")]
+        )
+        assert rows["compacted"] == 2
+        assert rows["timed_out"] == 1
+        assert rows["indeterminate"] == 3
+
+
 class TestFaultAttribution:
     def test_a_broken_write_is_an_execution_fault(self):
         from hermes_cli.hussh_one_routing.exam.model import EXECUTION

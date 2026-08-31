@@ -29,7 +29,15 @@ SKIP = "skip"
 # to the same place.
 COMPREHENSION = "comprehension"  # wrong tool, wrong file, ignored constraint
 EXECUTION = "execution"  # right intent, malformed output
-HARNESS = "harness"  # truncation, timeout: our budget, never the model's fault
+HARNESS = "harness"  # our clock or our plumbing ran out, not the model
+# A turn that hit max_tokens. Deliberately NOT the same as HARNESS: in a real
+# agent loop this is a normal event, because Hermes compacts and continues. A
+# single-shot probe cannot see the continuation, so the turn is ungraded here,
+# but calling it a harness fault implies a setting to fix when often there is
+# none, and calling it a model failure is worse. It is its own category, and
+# what actually matters is the quality of the answer after compaction, which
+# only a multi-turn probe can measure.
+COMPACTED = "compacted"
 
 
 @dataclass
@@ -102,12 +110,22 @@ class Verdict:
     def fault(self) -> str:
         """Whose problem this is.
 
-        An indeterminate turn is always ours. At a 1600-token budget a model
-        returned truncated on 12 merge cases out of 12, and reporting that as a
-        model failure would have been a harness under-budget wearing a model's
-        name.
+        Three distinct outcomes that a single ``indeterminate`` flag used to
+        collapse into one, and they call for different responses.
+
+        A **timeout** is our clock. It was the binding constraint on 7 of 50
+        real turns while being reported as a budget problem, so it gets named.
+
+        A **truncation** is a turn Hermes would compact and continue. Not a
+        model failure and not really ours either; the answer after compaction is
+        what matters, and a one-shot probe cannot see it.
+
+        Anything else is plumbing.
         """
         if self.indeterminate:
+            reason = self.indeterminate.lower()
+            if "truncat" in reason or "length" in reason:
+                return COMPACTED
             return HARNESS
         if self.label_match is False and not self.failures:
             # Well-formed and wrong: it did the job it thought it was given.
@@ -161,6 +179,11 @@ def summarize(verdicts: list) -> dict:
         "offered": offered,
         "graded": len(gradeable),
         "indeterminate": offered - len(gradeable),
+        # Broken out because they mean different things and only one of them is
+        # a number to act on. Timeouts say raise the clock; compacted says the
+        # turn would have continued in a real loop and this probe stopped early.
+        "timed_out": sum(1 for v in verdicts if v.fault == HARNESS),
+        "compacted": sum(1 for v in verdicts if v.fault == COMPACTED),
         "ok": sum(1 for v in gradeable if v.ok),
         "label_match": sum(1 for v in labelled if v.label_match),
         "labelled": len(labelled),

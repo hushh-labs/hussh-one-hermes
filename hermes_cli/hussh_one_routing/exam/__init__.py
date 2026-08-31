@@ -26,6 +26,8 @@ and calling those "passed" would be a lie of omission at 10% of the corpus.
 from __future__ import annotations
 
 __all__ = [
+    "COMPACTED",
+    "HARNESS",
     "SUITES",
     "Case",
     "Outcome",
@@ -35,6 +37,15 @@ __all__ = [
     "SKIP",
 ]
 
-from .model import FAIL, PASS, SKIP, Case, Outcome, Verdict
+from .model import (
+    COMPACTED,
+    FAIL,
+    HARNESS,
+    PASS,
+    SKIP,
+    Case,
+    Outcome,
+    Verdict,
+)
 
 SUITES = ("terminal", "tool_select", "file_edit", "long_context")
