@@ -154,7 +154,80 @@ certainty because it is a parser; a model cannot. So the claim that survives
 contact with a customer is *Puppy One never ships broken output*, not *the model
 is always right*.
 
-## A latency measurement that is not yet trustworthy
+## Model selection, 2026-08-31: replicated across two runs
+
+45 replayed session turns per model (median 51,012 tokens, max 95,205), drained
+between rungs, pinned at 262144, budget 16000, timeout 900s.
+
+| Model | Structural | 95% CI | Agreement | 95% CI | Median |
+| --- | --- | --- | --- | --- | --- |
+| `gemma-4-12b` (8-bit MLX) | **0.952** | [0.842, 0.987] | **0.619** | [0.468, 0.750] | 87.2s |
+| `gemma-4-26b-a4b-qat` (MoE) | **0.952** | [0.842, 0.987] | 0.452 | [0.312, 0.601] | **35.1s** |
+| `qwen/qwen3.8-27b` (dense 27B) | 0.714 | [0.529, 0.848] | 0.464 | [0.295, 0.642] | 101.9s |
+
+**Zero timeouts and zero truncations for all three models.** The 7 indeterminate
+turns in the earlier 50-case run were the harness clock at exactly 420.0s, and
+they are gone at a 900s timeout. The budget was never the constraint.
+
+### The recommendation, and how it changed
+
+**`qwen/qwen3.8-27b` is out**, and this page previously recommended it. It came
+last on structural validity in **both** runs, on different case samples of
+different difficulty, while also being the slowest. Its merge-suite win did not
+generalise to the work Hermes actually does.
+
+**Accuracy tier: `gemma-4-12b` (8-bit MLX).** Ties for best structural validity
+and leads clearly on agreement.
+
+**Speed tier: `gemma-4-26b-a4b-qat` (MoE).** Identical structural validity and
+**2.5x faster**.
+
+### What separates them, honestly
+
+- **Structural: identical.** 0.952 both. Not a tiebreak in either direction.
+- **Agreement: the 12b leads by 17 points**, but the intervals overlap
+  ([0.468, 0.750] against [0.312, 0.601]), so at 95% this is a lean and not a
+  separation. It is the strongest signal available and it is not conclusive.
+- **Latency: decisive.** 35.1s against 87.2s is far outside run-to-run noise.
+
+So the tiering rests on a decisive latency difference plus a non-significant
+agreement lean. That is enough to choose two tiers; it is not enough to claim
+one model is better than the other overall, and the report says so.
+
+### A sampling flaw in the first attempt, and why it is recorded
+
+The first run of this comparison sorted the case list so an earlier phase could
+select large prompts, then took the first 30 — which were the **30 smallest**.
+Median 25,365 tokens against a representative 71,000: the easiest third of the
+corpus, scored as though it were the corpus. The within-run comparison was still
+fair, since all three models got identical cases, but every absolute number was
+optimistic.
+
+It is recorded because the flaw was in the orchestration rather than in the
+harness, and because the corrected run is the reason the result can be trusted:
+the ranking **replicated on harder cases**, which is much stronger evidence than
+either run alone.
+
+## A latency measurement that turned out to be the prompt cache
+
+An earlier diagnostic appeared to show a 10.8x speedup from raising `max_tokens`
+alone (405.0s to 37.5s, byte-identical output). It was wrong. The large budget
+had run *second* on every prompt, so a warm prompt cache was perfectly
+confounded with the larger budget.
+
+Controlled, with each budget running cold on a fresh prompt:
+
+```
+small budget, cold: mean  54.1s
+large budget, cold: mean 101.0s
+```
+
+**The budget does not drive latency; the earlier gap was the cache.** Latency on
+this fleet is real, and `max_tokens` is not the lever. Two arms of two runs each
+with high within-arm variance is enough to kill the 10.8x claim and not enough
+to assert the larger budget is slower.
+
+## The earlier latency note, superseded
 
 On `gemma-4-31b-qat`, the same prompt with a larger output budget returned
 **byte-identical output** (551 reasoning tokens, 26 answer tokens) in a fraction
@@ -165,17 +238,16 @@ of the time:
 | 51,012 | 12,000 | 405.0s |
 | 51,012 | 40,000 | 37.5s |
 
-If that holds, every latency number on this page is inflated by the harness's
-own configuration. **It is not yet established**, because the large budget ran
-second on each prompt and a warm prompt cache is therefore perfectly confounded
-with the larger budget. This is the same class of error as comparing a model at
-262144 context against one at 16384: the measurement is real, the attribution is
-unproven. The controlled version runs the large budget cold on a fresh prompt.
+A 10.8x gap with byte-identical output looks like a decisive finding and was an
+artifact of running the two arms in a fixed order, with the large budget always
+second on a warm cache. Kept here because the retraction is the useful part: this
+harness already refuses to compare models at different context lengths, and the
+same discipline was missing one level up, in the order the arms themselves ran.
 
-Related and already confirmed: 7 of 50 turns in the first 50-case replay were
-recorded as indeterminate at exactly 420.0s, which was the harness timeout to
-the decimal. Those were **timeouts, not truncations**, and they were reported as
-a budget problem for a while before anyone checked.
+Also confirmed and now fixed: 7 of 50 turns in the first 50-case replay were
+recorded as indeterminate at exactly 420.0s, the harness timeout to the decimal.
+Those were **timeouts, not truncations**, and were reported as a budget problem
+for a while before anyone checked. At a 900s timeout they are gone entirely.
 
 ## The procedure
 
