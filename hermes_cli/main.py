@@ -4261,6 +4261,8 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass"),
+    ("pkm_judge", "Puppy One judge", "grades on-device output; must not be local"),
+    ("puppy_reflect", "Puppy One reflector", "writes tactics from graded failures"),
 ]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation.

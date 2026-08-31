@@ -222,6 +222,7 @@ def run(
                 "mean": round(sum(spend) / len(spend)),
                 "max": max(spend),
             }
+        summary["ship_gate"] = ship_gate(summary)
         report["per_model"][model] = summary
 
     report["ranking"] = rank(report["per_model"])
@@ -360,6 +361,65 @@ REPORT_CAVEATS = (
     "reasoning_effort is sent but inert on this LM Studio build; the budget "
     "absorbs reasoning rather than limiting it.",
 )
+
+
+# Below this measured validity a task stays behind the write guard rather than
+# running unsupervised. Not a target anyone has hit: on the merge ladder the
+# best model produced structurally valid output on 12 of 20 real conflicts, and
+# broken-structure ran at 30-40% across every model tested. The number is here
+# so the gap is a stated fact rather than an impression.
+SHIP_THRESHOLD = 0.95
+
+# Fewer graded cases than this and the rate is a small-sample artifact. A model
+# that answered four cases correctly is not a 100% model.
+MIN_CASES_FOR_A_GATE = 30
+
+
+def ship_gate(summary: dict, *, threshold: float = SHIP_THRESHOLD) -> dict:
+    """May this model run this task unsupervised?
+
+    Three ways to fail, kept distinct because they call for different responses.
+    Not enough evidence means run more cases. Below threshold means the model is
+    not ready. Indeterminate turns mean the harness is under-budget and the
+    number is not about the model at all.
+    """
+    graded = summary.get("graded", 0)
+    offered = summary.get("offered", graded)
+    ok = summary.get("deterministically_ok", summary.get("ok", 0))
+    indeterminate = summary.get("indeterminate", 0)
+
+    if graded < MIN_CASES_FOR_A_GATE:
+        return {
+            "ship": False,
+            "reason": (
+                f"only {graded} graded cases; below {MIN_CASES_FOR_A_GATE} a "
+                "rate is a small-sample artifact"
+            ),
+            "rate": None,
+        }
+    # Rate over offered, not graded: a model that could not answer a third of
+    # the cases has not earned an unsupervised path, whatever it scored on the
+    # rest.
+    rate = ok / offered if offered else 0.0
+    if indeterminate and indeterminate / offered > 0.1:
+        return {
+            "ship": False,
+            "reason": (
+                f"{indeterminate} of {offered} turns were indeterminate; fix the "
+                "budget before drawing any conclusion about the model"
+            ),
+            "rate": round(rate, 4),
+        }
+    if rate < threshold:
+        return {
+            "ship": False,
+            "reason": (
+                f"validity {rate:.3f} is below the {threshold} bar for running "
+                "without the write guard in front of it"
+            ),
+            "rate": round(rate, 4),
+        }
+    return {"ship": True, "reason": "", "rate": round(rate, 4)}
 
 
 def rank(per_model: dict) -> list:

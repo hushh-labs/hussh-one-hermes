@@ -152,6 +152,51 @@ class TestTheLedgerHasAHome:
         assert not (tmp_path / Q.LEDGER_FILENAME).exists()
 
 
+class TestTheShipGate:
+    def _summary(self, *, graded=40, ok=40, offered=40, indeterminate=0):
+        return {
+            "graded": graded, "deterministically_ok": ok,
+            "offered": offered, "indeterminate": indeterminate,
+        }
+
+    def test_a_clean_high_scorer_ships(self):
+        assert R.ship_gate(self._summary())["ship"] is True
+
+    def test_below_threshold_does_not_ship(self):
+        gate = R.ship_gate(self._summary(ok=30))
+        assert gate["ship"] is False
+        assert "below the" in gate["reason"]
+
+    def test_too_few_cases_is_its_own_refusal(self):
+        # A model that answered four cases correctly is not a 100% model.
+        gate = R.ship_gate(self._summary(graded=4, ok=4, offered=4))
+        assert gate["ship"] is False
+        assert "small-sample" in gate["reason"]
+
+    def test_indeterminate_turns_block_before_any_verdict(self):
+        # A budget problem is not a statement about the model, so the gate must
+        # not let a high score on the answerable third stand in for the whole.
+        gate = R.ship_gate(self._summary(graded=40, ok=40, offered=60,
+                                         indeterminate=20))
+        assert gate["ship"] is False
+        assert "budget" in gate["reason"]
+
+    def test_the_rate_is_over_offered_not_graded(self):
+        # 40 of 40 graded but 20 unanswered is not 100%.
+        gate = R.ship_gate(self._summary(graded=40, ok=40, offered=60,
+                                         indeterminate=20))
+        assert gate["rate"] < 1.0
+
+    def test_todays_best_measured_model_would_not_ship(self):
+        # The merge ladder's best: 12 structurally valid of 20 real conflicts.
+        # The gate has to say no to that, or it is decoration.
+        gate = R.ship_gate(
+            {"graded": 40, "deterministically_ok": 24, "offered": 40,
+             "indeterminate": 0}
+        )
+        assert gate["ship"] is False
+
+
 class TestRankingNeverLetsLatencyBuyAWin:
     def test_validity_outranks_speed(self):
         rows = R.rank(

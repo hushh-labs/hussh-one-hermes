@@ -1234,6 +1234,35 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
+        # Puppy One judge — grades on-device model output. Must be a strong,
+        # non-local model: `assert_auditor_is_not_local` refuses a judge served
+        # from this machine, because a small model grading a small model's work
+        # is not a check. Worked before this entry existed (the getter is a
+        # plain dict lookup) but was invisible to `hermes model`, the dashboard
+        # and the reset-to-auto path.
+        "pkm_judge": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 180,
+            "extra_body": {},
+            "reasoning_effort": "",
+        },
+        # Puppy One reflector — reads graded failures and proposes tactics for
+        # the on-device model's playbook. Separate from pkm_judge on purpose:
+        # judging and teaching are different jobs and worth routing apart. Runs
+        # offline and occasionally; nothing on the serving path calls it, which
+        # is what keeps the device's token cost at zero.
+        "puppy_reflect": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 300,
+            "extra_body": {},
+            "reasoning_effort": "",
+        },
         # Curator — skill-usage review fork. Timeout is generous because the
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat
