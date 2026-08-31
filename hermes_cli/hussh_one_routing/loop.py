@@ -234,6 +234,10 @@ def shuffled_control(failures: list, *, seed: int = 0) -> list:
     when the reflector is fed mismatched evidence, the loop is fitting noise and
     the gains from the real run mean nothing either. A learning loop with no way
     to fail this check is not measured, it is believed.
+
+    Check ``control_is_degenerate`` before trusting a verdict from this: when
+    every failure carries the same diagnosis, rotating them changes nothing and
+    the two arms are the same experiment run twice.
     """
     if len(failures) < 2:
         return [dict(f) for f in failures]
@@ -245,6 +249,41 @@ def shuffled_control(failures: list, *, seed: int = 0) -> list:
         row["oracles"] = other.get("oracles", [])
         out.append(row)
     return out
+
+
+def control_is_degenerate(failures: list) -> tuple:
+    """Can shuffling this evidence produce a different experiment at all?
+
+    Learned from a run that reported "LOOP FAILS ITS OWN CONTROL" on two arms
+    with byte-identical results. All eleven training failures were the same
+    oracle, so rotating the diagnoses among them was a no-op: both arms received
+    the same evidence, proposed the same single tactic, and moved the held-out
+    score by the same amount. The verdict was not a finding, it was an artifact.
+
+    A control that cannot distinguish its arms must refuse to return a verdict
+    rather than return a confident one, so this reports the reason.
+    """
+    if len(failures) < 2:
+        return True, "fewer than two failures; there is nothing to shuffle"
+    signatures = {
+        (tuple(f.get("oracles") or ()), (f.get("asi") or "").strip())
+        for f in failures
+    }
+    if len(signatures) < 2:
+        return True, (
+            f"all {len(failures)} failures carry the same diagnosis "
+            f"({', '.join(failures[0].get('oracles') or ['?'])}), so rotating "
+            "them changes nothing and both arms run the same experiment"
+        )
+    shuffled = shuffled_control(failures)
+    moved = sum(
+        1
+        for before, after in zip(failures, shuffled)
+        if (before.get("asi") or "") != (after.get("asi") or "")
+    )
+    if moved == 0:
+        return True, "the rotation left every diagnosis on its original case"
+    return False, ""
 
 
 def write_report(result: RoundResult, destination) -> None:

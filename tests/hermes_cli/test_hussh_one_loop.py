@@ -195,6 +195,38 @@ class TestTheLoopHasItsOwnNegativeControl:
         one = [{"case_id": "a", "asi": "x", "oracles": []}]
         assert L.shuffled_control(one)[0]["asi"] == "x"
 
+    def test_uniform_evidence_makes_the_control_degenerate(self):
+        # The real run that taught this: 11 training failures, all
+        # paths_grounded. Both arms proposed the same single tactic and moved
+        # the held-out score identically, and the harness announced "LOOP FAILS
+        # ITS OWN CONTROL" on what was actually the same experiment twice.
+        same = [
+            {"case_id": f"c{i}", "asi": "paths_grounded: bad path",
+             "oracles": ["paths_grounded"]}
+            for i in range(11)
+        ]
+        degenerate, reason = L.control_is_degenerate(same)
+        assert degenerate is True
+        assert "same diagnosis" in reason
+
+    def test_varied_evidence_makes_a_real_control(self):
+        varied = [
+            {"case_id": "a", "asi": "shell_parses: unbalanced quote",
+             "oracles": ["shell_parses"]},
+            {"case_id": "b", "asi": "paths_grounded: invented path",
+             "oracles": ["paths_grounded"]},
+        ]
+        degenerate, reason = L.control_is_degenerate(varied)
+        assert degenerate is False
+        assert reason == ""
+
+    def test_a_single_failure_cannot_be_a_control(self):
+        one = [{"case_id": "a", "asi": "x", "oracles": ["shell_parses"]}]
+        assert L.control_is_degenerate(one)[0] is True
+
+    def test_no_failures_cannot_be_a_control(self):
+        assert L.control_is_degenerate([])[0] is True
+
     def test_the_control_exists_at_all(self):
         # If the playbook "improves" on mismatched evidence, the real run's
         # gains mean nothing either. A loop with no way to fail this check is
