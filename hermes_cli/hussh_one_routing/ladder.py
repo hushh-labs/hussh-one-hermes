@@ -36,6 +36,15 @@ Two other comparability hazards handled here:
     mismatch makes the run not comparable. Relying on just-in-time loading is
     what produced the mismatch: JIT loads at the server's default, which differs
     per model.
+  * **A live gateway sharing the same server.** Found 2026-09-01: this host
+    also runs a production Hermes gateway against the same LM Studio instance,
+    and it JIT-loads on real traffic. A long rung with no mid-run check would
+    silently keep grading turns against whatever model or context the gateway
+    swapped in partway through, and nothing in the transcript would show it --
+    the request/response shape looks identical either way. ``walk`` accepts an
+    optional ``verify_context`` and re-checks after every turn; a mismatch
+    stops the rung rather than let the rest of its turns describe conditions
+    that no longer hold.
 """
 
 from __future__ import annotations
@@ -72,11 +81,21 @@ class RungResult:
     # requested. A server free to clamp a request down to what fits would
     # otherwise have its clamping recorded as the value that was asked for.
     context_length: Optional[int] = None
+    # Set when a post-turn recheck finds the loaded model/context no longer
+    # matches what this rung pinned at its start -- most likely another
+    # process (the live gateway) reloaded something mid-run.
+    interference_detected: bool = False
+    interference_reason: str = ""
 
     @property
     def usable(self) -> bool:
         """False when this rung produced nothing worth scoring."""
-        return not self.abandoned and not self.load_error and bool(self.turns)
+        return (
+            not self.abandoned
+            and not self.load_error
+            and not self.interference_detected
+            and bool(self.turns)
+        )
 
 
 def drain(
@@ -209,6 +228,7 @@ def walk(
     available_gb: Optional[Callable[[], Optional[float]]] = None,
     load: Optional[Callable[[str, int], Optional[int]]] = None,
     context_length: Optional[int] = None,
+    verify_context: Optional[Callable[[str], Optional[int]]] = None,
     on_progress: Optional[Callable[[str], None]] = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
@@ -221,6 +241,12 @@ def walk(
     server actually loaded at. Without it the rung falls back to just-in-time
     loading, which loads at the server's per-model default and is how a ladder
     silently ends up comparing a model at 262144 against one at 16384.
+
+    ``verify_context``, given ``model``, returns its currently loaded context.
+    When supplied and a context was pinned, it is re-checked after every turn;
+    a value other than what this rung pinned stops the rung immediately (see
+    "A live gateway sharing the same server" above) rather than let later
+    turns describe conditions that no longer hold.
     """
     announce = on_progress or (lambda _m: None)
     started = clock()
@@ -280,6 +306,20 @@ def walk(
                     rung.abandoned_reason = breaker.reason
                     announce(f"{model}: {breaker.reason}")
                     break
+                if verify_context is not None and rung.context_length:
+                    try:
+                        current = verify_context(model)
+                    except Exception:  # noqa: BLE001
+                        current = None
+                    if current != rung.context_length:
+                        rung.interference_detected = True
+                        rung.interference_reason = (
+                            f"context changed mid-run: pinned at "
+                            f"{rung.context_length}, now reads {current}; "
+                            "another process likely reloaded this model"
+                        )
+                        announce(f"{model}: {rung.interference_reason}")
+                        break
             rungs.append(rung)
 
     return {

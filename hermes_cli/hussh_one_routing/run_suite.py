@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from . import host as H
+from . import reasoning as RZ
 from .ladder import comparability, walk
 from .request import Turn, complete
 from .suites import merge_conflict as merge_suite
@@ -40,9 +41,11 @@ logger = logging.getLogger(__name__)
 
 SUITES = {merge_suite.SUITE_ID: merge_suite}
 
-# Generous on purpose. Reasoning cannot be turned down on this server, so the
-# only way not to publish a truncation as a model failure is to leave room for
-# it: gemma-4-26b-a4b-qat spent a mean of 5492 reasoning tokens per merge case.
+# Generous on purpose. Reasoning cannot be turned down for most families on
+# this server (qwen3.8 is the one measured exception -- see reasoning.py), so
+# the only way not to publish a truncation as a model failure is to leave room
+# for it: gemma-4-26b-a4b-qat spent a mean of 5492 reasoning tokens per merge
+# case.
 DEFAULT_MAX_TOKENS = 12000
 
 DEFAULT_TIMEOUT_S = 600.0
@@ -79,7 +82,7 @@ def run(
     suite_id: str = merge_suite.SUITE_ID,
     reps: int = 1,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-    reasoning_effort: str = "low",
+    mode: str = RZ.MAX,
     context_length: Optional[int] = None,
     judge_model: Optional[str] = None,
     destination: Optional[Path] = None,
@@ -142,13 +145,28 @@ def run(
             # protect.
             logger.debug("checkpoint write failed", exc_info=True)
 
+    # Per model, not one flat value for the whole ladder: the reasoning lever
+    # is per family. gemma's is a prompt-embedded control token (injected via
+    # ReasoningProfile.apply below); the reasoning_effort API parameter is
+    # inert for it. qwen3.8's lever IS that parameter, live through LM
+    # Studio's chat template -- sending every model the same flat string, as
+    # this used to, silently shipped a think-less instruction to exactly the
+    # one family where the parameter does something.
+    effort_sent: dict[str, str] = {}
+
     def run_case(model: str, case: Any) -> Turn:
+        profile = RZ.ReasoningProfile(
+            model=model, family=RZ.family_of(model), mode=mode,
+            prefix=RZ.control_for(model, mode),
+        )
+        effort = RZ.effort_for(model, mode)
+        effort_sent[model] = effort
         started = time.time()
         turn = complete(
             model=model,
-            messages=suite.prompt_for(case),
+            messages=profile.apply(suite.prompt_for(case)),
             max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort=effort,
             timeout=DEFAULT_TIMEOUT_S,
         )
         elapsed = time.time() - started
@@ -191,8 +209,7 @@ def run(
         "suite": suite_id,
         "context_length": pinned,
         "max_tokens": max_tokens,
-        "reasoning_effort_sent": reasoning_effort,
-        "reasoning_effort_is_inert_on_this_server": True,
+        "reasoning_mode": mode,
         "cases_offered": len(cases),
         "reps": reps,
         "comparability": comparability(
@@ -209,6 +226,12 @@ def run(
         summary["graded"] = len(verdicts)
         summary["indeterminate"] = offered - len(verdicts)
         summary["offered"] = offered
+        # Per model, not a single blanket flag: the reasoning_effort API
+        # parameter is live for some families (qwen3.8) and inert for others
+        # (gemma, which is steered by a prompt-embedded control token
+        # instead). A run mixing families genuinely has both answers in it.
+        summary["reasoning_effort_sent"] = effort_sent.get(model, "")
+        summary["reasoning_effort_honored"] = RZ.supports_native_effort(model)
         latencies = timings.get(model, [])
         if latencies:
             ordered = sorted(latencies)
@@ -232,7 +255,7 @@ def run(
         output_protocol=getattr(suite, "OUTPUT_PROTOCOL", "text"),
         pinned=pinned,
         max_tokens=max_tokens,
-        reasoning_effort=reasoning_effort,
+        effort_sent=effort_sent,
         judge_model=judge_model,
         ledger_path=ledger_path,
     )
@@ -248,7 +271,7 @@ def _append_to_ledger(
     output_protocol: str,
     pinned: int,
     max_tokens: int,
-    reasoning_effort: str,
+    effort_sent: dict[str, str],
     judge_model: Optional[str],
     ledger_path=None,
 ) -> list:
@@ -303,6 +326,7 @@ def _append_to_ledger(
             answerer_model=model,
             cases=cases,
         )
+        model_effort = effort_sent.get(model, "")
         try:
             rows.append(
                 append_to_ledger(
@@ -311,13 +335,17 @@ def _append_to_ledger(
                     capability_profile={
                         "probe_mode": (
                             f"{suite_id}/{output_protocol}/"
-                            f"effort={reasoning_effort}/max_tokens={max_tokens}/"
+                            f"effort={model_effort}/max_tokens={max_tokens}/"
                             f"context={pinned}"
                         ),
                         "context_length": pinned,
                         "max_tokens": max_tokens,
-                        "reasoning_effort": reasoning_effort,
-                        "reasoning_effort_honored": False,
+                        "reasoning_effort": model_effort,
+                        # Per model: live for qwen3.8 through LM Studio's chat
+                        # template, inert for families steered by a
+                        # prompt-embedded control token instead (see
+                        # reasoning.supports_native_effort).
+                        "reasoning_effort_honored": RZ.supports_native_effort(model),
                     },
                     benchmark={
                         "suite": suite_id,
@@ -358,8 +386,11 @@ REPORT_CAVEATS = (
     "judge result.",
     "The merge corpus contains no keep-ours case, so a model that silently "
     "discards fork behaviour scores clean on it.",
-    "reasoning_effort is sent but inert on this LM Studio build; the budget "
-    "absorbs reasoning rather than limiting it.",
+    "reasoning_effort is live for qwen3.8 through LM Studio's chat template "
+    "and inert for other families, which are steered instead by a "
+    "prompt-embedded control token; see per_model.reasoning_effort_honored. "
+    "For families where it is inert the budget absorbs reasoning rather than "
+    "limiting it.",
 )
 
 

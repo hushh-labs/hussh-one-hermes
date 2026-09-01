@@ -27,14 +27,17 @@ from pathlib import Path
 EXIT_OK = 0
 EXIT_ERROR = 1
 
-# Every model on this ladder reaches 262144 except gemma-4-e2b at 131072, and a
-# ladder is only as wide as its narrowest rung.
+# The two models Puppy One ships, decided 2026-09-01 after the goal-progress
+# result: the MoE leads structural validity and latency, the qwen dense model
+# leads judged goal progress, and no third model has led anything since.
+# `gemma-4-12b` was cut -- it led only agreement, the weakest of the three
+# signals by this harness's own design. Kept as one tuple, not scattered
+# literals, so a monthly model refresh changes candidates in exactly one
+# place; add a third entry here (e.g. a GGUF build of the same base model)
+# to widen the ladder without touching any command below.
 DEFAULT_LADDER = (
     "google/gemma-4-26b-a4b-qat",
     "qwen/qwen3.8-27b",
-    "google/gemma-4-31b-qat",
-    "google/gemma-4-12b-qat",
-    "google/gemma-4-12b",
 )
 
 
@@ -51,6 +54,7 @@ def cmd_puppy(args) -> int:
         "ladder": _cmd_ladder,
         "loop": _cmd_loop,
         "replay": _cmd_replay,
+        "goal-progress": _cmd_goal_progress,
         "routing": _cmd_routing,
     }.get(action)
     if handler is None:
@@ -190,6 +194,7 @@ def _cmd_loop(args) -> int:
         print("an on-device model.")
         return EXIT_OK
 
+    from hermes_cli.hussh_one_routing import host as H
     from hermes_cli.hussh_one_routing import loop as L
     from hermes_cli.hussh_one_routing import loop_replay as LR
     from hermes_cli.hussh_one_routing import reasoning as RZ
@@ -201,6 +206,23 @@ def _cmd_loop(args) -> int:
         print("no replay cases found", file=sys.stderr)
         return EXIT_ERROR
 
+    pinned = args.context or H.common_max_context([args.model])
+    if not pinned:
+        print(f"could not determine a context length for {args.model}",
+              file=sys.stderr)
+        return EXIT_ERROR
+    loaded = H.ensure_context(
+        args.model, pinned,
+        unload=H.unload, resident=H.resident, load=H.load_at_context,
+        restart=None if args.no_restart else H.restart_app,
+    )
+    if loaded != pinned:
+        print(f"asked for context {pinned:,}, server holds {loaded!r}; "
+              "refusing to run a learning round whose window is not what it "
+              "claims", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"  context: {loaded:,} (verified by readback)")
+
     profile = RZ.ReasoningProfile(
         model=args.model, family=RZ.family_of(args.model),
         mode=RZ.MAX, prefix=RZ.control_for(args.model, RZ.MAX),
@@ -210,6 +232,7 @@ def _cmd_loop(args) -> int:
         max_tokens=args.max_tokens or profile.max_tokens,
         timeout=args.timeout,
         reasoning_prefix=profile.prefix,
+        reasoning_effort=RZ.effort_for(args.model, RZ.MAX),
     )
     try:
         reflect = RF.make_reflector(
@@ -257,9 +280,28 @@ def _cmd_replay(args) -> int:
     The exam that matters. Everything else grades a chore; this asks the
     question the product asks, on the owner's own work, at the context length
     that work actually arrives at.
+
+    Context is pinned and verified, never left to whatever happened to be
+    loaded. Two bugs found 2026-09-01 by direct measurement are fixed here
+    because this is the command a monthly model refresh actually runs:
+
+      * ``reasoning_effort`` used to be hard-coded to ``"low"`` for every
+        model. That string is inert for gemma but LIVE for qwen through LM
+        Studio's chat template -- "low" was silently injecting a think-less
+        instruction into every qwen run this command ever produced. Computed
+        per model now, via :func:`reasoning.effort_for`.
+      * Nothing pinned or verified context at all; whatever was already
+        loaded (or whatever a JIT load's own default happened to be) is what
+        ran. Pinned via :func:`host.ensure_context`, which restarts LM Studio
+        once and retries if a plain reload does not take effect -- found to
+        be necessary, not optional, on this build. Re-verified after every
+        turn: a live production gateway shares this LM Studio instance, and a
+        turn graded after it swapped models would look identical to a normal
+        one without the check.
     """
     import time
 
+    from hermes_cli.hussh_one_routing import host as H
     from hermes_cli.hussh_one_routing import reasoning as RZ
     from hermes_cli.hussh_one_routing.exam import replay as RP
     from hermes_cli.hussh_one_routing.request import complete
@@ -277,27 +319,61 @@ def _cmd_replay(args) -> int:
     print(f"  prompt tokens: median {sizes[len(sizes)//2]:,} max {sizes[-1]:,}")
     print(f"  catalog size: max {max(c.catalog_size for c in cases)}")
 
+    pinned = args.context or H.common_max_context([args.model])
+    if not pinned:
+        print(f"could not determine a context length for {args.model}",
+              file=sys.stderr)
+        return EXIT_ERROR
+    loaded = H.ensure_context(
+        args.model, pinned,
+        unload=H.unload, resident=H.resident, load=H.load_at_context,
+        restart=None if args.no_restart else H.restart_app,
+    )
+    if loaded != pinned:
+        print(f"asked for context {pinned:,}, server holds {loaded!r}; "
+              "refusing to run a benchmark whose window is not what it "
+              "claims" + ("" if args.no_restart else
+                          " (even after a restart)"), file=sys.stderr)
+        return EXIT_ERROR
+    print(f"  context: {loaded:,} (verified by readback)")
+
     profile = RZ.ReasoningProfile(
         model=args.model, family=RZ.family_of(args.model),
         mode=RZ.MAX, prefix=RZ.control_for(args.model, RZ.MAX),
     )
     budget = args.max_tokens or profile.max_tokens
-    print(f"  thinking: {profile.mode} | budget {budget}\n")
+    effort = RZ.effort_for(args.model, RZ.MAX)
+    print(f"  thinking: {profile.mode} | budget {budget} | effort {effort}\n")
+
+    def last_user(case, limit=2000):
+        for message in reversed(case.messages):
+            if message.get("role") == "user" and isinstance(message.get("content"), str):
+                return message["content"][-limit:]
+        return ""
 
     verdicts = []
+    artifact_rows = []
+    interfered = False
     for index, case in enumerate(cases, 1):
+        if interfered:
+            verdict = RP.grade(case, chosen=None, arguments=None)
+            verdict.indeterminate = "environment_interference"
+            verdicts.append(verdict)
+            continue
+
         messages = profile.apply(case.messages)
         started = time.time()
         turn = complete(
             model=args.model,
             messages=messages,
             max_tokens=budget,
-            reasoning_effort="low",
+            reasoning_effort=effort,
             tools=RP.tools_payload(case) or None,
             timeout=args.timeout,
         )
         elapsed = time.time() - started
 
+        chosen = arguments = None
         if turn.indeterminate:
             verdict = RP.grade(case, chosen=None, arguments=None)
             verdict.indeterminate = (
@@ -307,24 +383,115 @@ def _cmd_replay(args) -> int:
             print(f"[{index}/{len(cases)}] INDETERMINATE ({verdict.indeterminate}) "
                   f"{elapsed:.0f}s  {case.tokens:,}tok")
             verdicts.append(verdict)
-            continue
+        else:
+            chosen, arguments = _first_call(turn)
+            verdict = RP.grade(case, chosen=chosen, arguments=arguments)
+            verdict.elapsed_s = round(elapsed, 1)
+            verdicts.append(verdict)
+            mark = "=" if verdict.label_match else "~"
+            broken = [o.name for o in verdict.failures]
+            print(f"[{index}/{len(cases)}] {mark} chose {chosen or '(none)'} "
+                  f"want {case.expected_tool} {elapsed:.0f}s {case.tokens:,}tok"
+                  + (f"  FAIL {','.join(broken[:3])}" if broken else ""))
 
-        chosen, arguments = _first_call(turn)
-        verdict = RP.grade(case, chosen=chosen, arguments=arguments)
-        verdict.elapsed_s = round(elapsed, 1)
-        verdicts.append(verdict)
-        mark = "=" if verdict.label_match else "~"
-        broken = [o.name for o in verdict.failures]
-        print(f"[{index}/{len(cases)}] {mark} chose {chosen or '(none)'} "
-              f"want {case.expected_tool} {elapsed:.0f}s {case.tokens:,}tok"
-              + (f"  FAIL {','.join(broken[:3])}" if broken else ""))
+        if args.artifacts:
+            # Every field goal_progress.build_rows and a future audit both
+            # need. This is the exact gap that pushed every prior model
+            # comparison this session into throwaway scripts: this command's
+            # own --out only ever wrote an aggregate summary, discarding the
+            # per-case detail a surprising result needs to be checked at all.
+            artifact_rows.append({
+                "case_id": case.case_id,
+                "prompt_tokens": case.tokens,
+                "catalog_size": case.catalog_size,
+                "user_request_tail": last_user(case),
+                "reference_tool": case.expected_tool,
+                "reference_args": case.expected_args,
+                "chosen_tool": chosen,
+                "chosen_args": arguments,
+                "assistant_text": (turn.content or "")[:1500],
+                "reasoning_tokens": turn.reasoning_tokens,
+                "completion_tokens": turn.completion_tokens,
+                "finish_reason": turn.finish_reason,
+                "indeterminate": verdict.indeterminate,
+                "label_match": verdict.label_match,
+                "oracles": [
+                    {"name": o.name, "outcome": o.outcome, "detail": o.detail}
+                    for o in verdict.outcomes
+                ],
+                "elapsed_s": round(elapsed, 1),
+            })
+
+        try:
+            current = H.loaded_context(args.model)
+        except Exception:  # noqa: BLE001
+            current = None
+        if current != pinned:
+            interfered = True
+            print(f"  !! context now reads {current!r}, pinned at {pinned:,}; "
+                  "another process reloaded this model mid-run -- remaining "
+                  "cases marked indeterminate rather than graded on a window "
+                  "that no longer holds", file=sys.stderr)
 
     summary = RP.summarize(verdicts)
+    summary["context_length"] = pinned
+    summary["reasoning_effort"] = effort
+    summary["environment_interference"] = interfered
     print("\n=== summary ===")
     print(json.dumps(summary, indent=2)[:2200])
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if args.artifacts:
+        Path(args.artifacts).write_text(
+            "".join(json.dumps(r) + "\n" for r in artifact_rows), encoding="utf-8"
+        )
+        print(f"\nper-case artifacts ({len(artifact_rows)} rows): {args.artifacts}")
     return EXIT_OK
+
+
+def _cmd_goal_progress(args) -> int:
+    """The judged third number: did the chosen action advance the goal.
+
+    Two phases, because the queue author and the grading session must not be
+    the same session -- see the judging contract. ``queue`` turns replay
+    artifacts (from ``hermes puppy replay --artifacts``) into one blinded,
+    sealed queue across every model. A separate session grades it through
+    ``verdict_cli``. ``report`` then ingests the graded queue and prints
+    per-model rates, voiding the whole run if a planted control was missed.
+    """
+    from hermes_cli.hussh_one_routing.exam import goal_progress as GP
+
+    action = getattr(args, "goal_progress_command", None)
+    if action == "queue":
+        artifacts = [Path(a) for a in args.artifacts]
+        missing = [str(a) for a in artifacts if not a.exists()]
+        if missing:
+            print(f"artifact file(s) not found: {', '.join(missing)}",
+                  file=sys.stderr)
+            return EXIT_ERROR
+        run = GP.write_goal_queue(
+            artifact_files=artifacts,
+            out_dir=Path(args.out),
+            seal_path=Path(args.seal),
+            identity_path=Path(args.identity),
+        )
+        print(f"queue: {run.queue_path}")
+        print(f"rows : {run.row_count} (controls {run.control_count})")
+        print(f"\nGrade every row in a DIFFERENT session via verdict_cli, "
+              f"never opening {args.seal} or {args.identity} until grading "
+              "is complete, then run `hermes puppy goal-progress report`.")
+        return EXIT_OK
+
+    if action == "report":
+        result = GP.report(
+            out_dir=Path(args.out), seal_path=Path(args.seal),
+            identity_path=Path(args.identity), judge_label=args.judge,
+        )
+        print(json.dumps(result, indent=2))
+        return EXIT_OK
+
+    print("goal-progress needs a subcommand: queue or report", file=sys.stderr)
+    return EXIT_ERROR
 
 
 def _top_tools(cases, limit: int = 6):
@@ -444,6 +611,11 @@ def build_puppy_parser(subparsers) -> None:
     loop.add_argument("--max-tokens", type=int, dest="max_tokens")
     loop.add_argument("--timeout", type=float, default=900.0)
     loop.add_argument("--out", help="Write the round result here")
+    loop.add_argument("--context", type=int,
+                      help="Pinned context (default: this model's max)")
+    loop.add_argument("--no-restart", action="store_true",
+                      help="Refuse a context mismatch rather than "
+                           "restarting LM Studio to try to clear it")
 
     replay = sub.add_parser(
         "replay",
@@ -455,6 +627,43 @@ def build_puppy_parser(subparsers) -> None:
                         help="Generation budget (default: measured)")
     replay.add_argument("--timeout", type=float, default=600.0)
     replay.add_argument("--out", help="Write the summary here")
+    replay.add_argument("--artifacts",
+                        help="Write one JSON line per case here (needed for "
+                             "goal-progress queue and for auditing a "
+                             "surprising result after the fact)")
+    replay.add_argument("--context", type=int,
+                        help="Pinned context (default: this model's max)")
+    replay.add_argument("--no-restart", action="store_true",
+                        help="Refuse a context mismatch rather than "
+                             "restarting LM Studio to try to clear it")
+
+    goal_progress = sub.add_parser(
+        "goal-progress",
+        help="The judged third number: did the action advance the goal",
+    )
+    gp_sub = goal_progress.add_subparsers(dest="goal_progress_command")
+
+    gp_queue = gp_sub.add_parser(
+        "queue", help="Build one blinded queue from replay artifacts"
+    )
+    gp_queue.add_argument("--artifacts", nargs="+", required=True,
+                          help="One or more replay --artifacts files, "
+                               "one per model")
+    gp_queue.add_argument("--out", required=True, help="Queue directory")
+    gp_queue.add_argument("--seal", required=True,
+                          help="Seal path, OUTSIDE the queue directory")
+    gp_queue.add_argument("--identity", required=True,
+                          help="Identity map path, OUTSIDE the queue "
+                               "directory")
+
+    gp_report = gp_sub.add_parser(
+        "report", help="Ingest a graded queue and report per-model rates"
+    )
+    gp_report.add_argument("--out", required=True, help="Queue directory")
+    gp_report.add_argument("--seal", required=True, help="Seal path")
+    gp_report.add_argument("--identity", required=True, help="Identity map path")
+    gp_report.add_argument("--judge", required=True,
+                           help="Label identifying who graded this queue")
 
     routing = sub.add_parser("routing", help="What the ledger supports recommending")
     routing.add_argument("--ledger", help="Ledger path (default: $HERMES_HOME)")

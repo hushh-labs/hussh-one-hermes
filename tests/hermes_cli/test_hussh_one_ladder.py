@@ -183,6 +183,82 @@ class TestContextIsPinnedNotInherited:
         assert result["rungs"][0]["turns"]
 
 
+class TestInterferenceIsDetectedMidRun:
+    def test_a_context_change_between_turns_stops_the_rung(self):
+        # The live-gateway hazard: something else reloads the model partway
+        # through a rung. Scripted here as the third check returning a
+        # different context than the first two.
+        readings = iter([131072, 131072, 262144, 262144])
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c1", "c2", "c3", "c4"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=lambda m, ctx: ctx,
+            context_length=131072,
+            verify_context=lambda m: next(readings),
+        )
+        rung = result["rungs"][0]
+        assert rung["interference_detected"] is True
+        assert "another process" in rung["interference_reason"]
+        # c1 and c2 checked clean; the mismatch surfaces on c3's check, which
+        # stops the rung before c4 ever runs. The tainted-or-not turn (c3)
+        # stays in the record rather than being silently dropped.
+        assert len(rung["turns"]) == 3
+
+    def test_a_stable_context_throughout_never_flags_interference(self):
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c1", "c2", "c3"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=lambda m, ctx: ctx,
+            context_length=131072,
+            verify_context=lambda m: 131072,
+        )
+        rung = result["rungs"][0]
+        assert rung["interference_detected"] is False
+        assert len(rung["turns"]) == 3
+
+    def test_without_verify_context_nothing_is_checked(self):
+        # Opt-in: a caller that never passes it keeps today's behaviour.
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c1", "c2"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=lambda m, ctx: ctx,
+            context_length=131072,
+        )
+        rung = result["rungs"][0]
+        assert rung["interference_detected"] is False
+        assert len(rung["turns"]) == 2
+
+    def test_a_raising_verify_probe_counts_as_a_mismatch_not_a_crash(self):
+        def _explode(_model):
+            raise RuntimeError("server unreachable")
+
+        result = L.walk(
+            models=["m1"],
+            suite_id="merge",
+            cases=["c1", "c2"],
+            run_case=lambda m, c: Turn(model=m, ok=True),
+            load=lambda m, ctx: ctx,
+            context_length=131072,
+            verify_context=_explode,
+        )
+        rung = result["rungs"][0]
+        assert rung["interference_detected"] is True
+        assert len(rung["turns"]) == 1
+
+    def test_interference_makes_a_rung_unusable(self):
+        rung = L.RungResult(
+            model="m", suite="s", turns=[Turn(model="m", ok=True)],
+            interference_detected=True,
+        )
+        assert rung.usable is False
+
+
 class TestComparabilityIsReportedNotCorrected:
     def _ctx_rungs(self, *pairs):
         return [

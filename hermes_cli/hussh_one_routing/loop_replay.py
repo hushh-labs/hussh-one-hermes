@@ -132,9 +132,17 @@ def make_answerer(
     max_tokens: int,
     timeout: float,
     reasoning_prefix: str = "",
+    reasoning_effort: str = "low",
     complete_fn: Optional[Callable] = None,
 ) -> Callable:
-    """An ``answer(case, playbook_text) -> Verdict`` for the on-device model."""
+    """An ``answer(case, playbook_text) -> Verdict`` for the on-device model.
+
+    ``reasoning_effort`` defaults to ``"low"`` for backward compatibility, but
+    a real caller should pass ``reasoning.effort_for(model, mode)``: "low" is
+    inert for gemma and LIVE for qwen3.8 through LM Studio's chat template,
+    where it injects a think-less instruction. Sending it unconditionally is
+    how a MAX-thinking learning round silently ran qwen3.8 think-less.
+    """
     import json
 
     def answer(case, playbook_text: str):
@@ -156,7 +164,7 @@ def make_answerer(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
-            reasoning_effort="low",
+            reasoning_effort=reasoning_effort,
             tools=RP.tools_payload(case) or None,
             timeout=timeout,
         )

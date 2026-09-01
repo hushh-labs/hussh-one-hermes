@@ -21,8 +21,10 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
+import time
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,102 @@ def load_at_context(
             (result.stderr or result.stdout or "lms load failed").strip()[:300]
         )
     return loaded_context(model, base_url=base_url, timeout=30.0)
+
+
+_LMSTUDIO_APP_PATTERN = r"/Applications/LM Studio\.app/Contents/MacOS/LM Studio$"
+
+
+def restart_app(
+    *, base_url: str = DEFAULT_SERVER_ROOT, timeout: float = 120.0
+) -> None:
+    """Quit and relaunch the LM Studio app, then wait for its server.
+
+    **Why this exists, found 2026-09-01 by direct test on two models:** once a
+    model has loaded at some context within one running LM Studio app process,
+    reloading it at a DIFFERENT context does not take effect -- not through the
+    ``lms load -c`` flag, not through the persisted per-model default config
+    file, not through both together, not through a plain unload and reload.
+    The model comes back at whatever context it first held in that process's
+    lifetime. Proven directly: with the config file forced to a value distinct
+    from both the currently-loaded context and the one requested, a reload
+    still returned the currently-loaded value, unchanged. Only a fresh LM
+    Studio process, loading the model for the first time, correctly honours
+    the persisted config. This is macOS-only and touches the user's actual
+    running app -- it is not something to call speculatively; see
+    :func:`ensure_context`, which calls it at most once per request and only
+    after a plain reload has already been tried and shown to not take effect.
+    """
+    if sys.platform != "darwin":
+        raise RuntimeError("restart_app is only implemented for macOS")
+    subprocess.run(
+        ["pkill", "-9", "-f", _LMSTUDIO_APP_PATTERN],
+        capture_output=True,
+        check=False,
+    )
+    subprocess.run(["open", "-a", "LM Studio"], capture_output=True, check=False)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(f"{base_url}/api/v0/models", timeout=3)
+            return
+        except Exception:  # noqa: BLE001
+            time.sleep(3)
+    raise RuntimeError(
+        f"LM Studio server did not come back within {timeout}s of restart"
+    )
+
+
+def ensure_context(
+    model: str,
+    context_length: int,
+    *,
+    unload: Callable[[str], bool],
+    resident: Callable[[], list],
+    load: Callable[..., Optional[int]] = load_at_context,
+    restart: Optional[Callable[[], None]] = None,
+    max_restarts: int = 1,
+) -> Optional[int]:
+    """Load ``model`` at ``context_length``, self-healing across the LM
+    Studio session-stickiness described in :func:`restart_app`.
+
+    A plain drain-and-load cannot tell "genuinely stuck at a stale context"
+    apart from "the server clamped a request it cannot satisfy" -- both look
+    like a mismatch on readback. This wraps exactly one restart-and-retry
+    around the attempt, because restarting is the only known fix and should
+    not be tried more than once per call: a second mismatch after a fresh
+    process means the request itself cannot be met, not that the process is
+    still stale.
+
+    Without ``restart``, this is drain-then-load and nothing else -- a
+    mismatch is returned rather than silently retried, exactly like a rung
+    :func:`hermes_cli.hussh_one_routing.ladder.walk` already treats as a
+    load error. Pass the real :func:`restart_app` to get the self-healing
+    behaviour in production; tests pass a fake that flips a flag instead of
+    touching the real app.
+    """
+    from .ladder import drain
+
+    loaded: Optional[int] = None
+    for attempt in range(max_restarts + 1):
+        drained = drain(unload=unload, resident=resident)
+        if not drained["empty"]:
+            logger.warning(
+                "could not drain before loading %s; still resident: %s",
+                model, ", ".join(drained["still_resident"]),
+            )
+            return None
+        loaded = load(model, context_length)
+        if loaded == context_length:
+            return loaded
+        if attempt >= max_restarts or restart is None:
+            return loaded
+        logger.warning(
+            "%s loaded at %s instead of the requested %s; restarting LM "
+            "Studio to clear a stale session context (attempt %s/%s)",
+            model, loaded, context_length, attempt + 1, max_restarts,
+        )
+        restart()
+    return loaded
 
 
 def resident() -> list:
