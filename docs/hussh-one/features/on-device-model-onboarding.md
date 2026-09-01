@@ -48,12 +48,46 @@ served.
 The fix is in LM Studio's own config, per the founder's call, so every load
 path agrees without a code-side lock: all three candidate models' default
 `llm.load.contextLength` now reads 262144, equal to the tested window and to
-the server-reported `max_context_length`. Verification of a default load
-(no `-c`) reading back 262144 is part of the run protocol; if LM Studio has
-the old value cached in-app, one restart applies the file. Two standing rules
-fall out: **a model's LM Studio default context must equal the context it was
-examined at**, and **any load that matters must read the context back from the
-server** rather than trusting the number it asked for.
+the server-reported `max_context_length`. Two standing rules fall out: **a
+model's LM Studio default context must equal the context it was examined at**,
+and **any load that matters must read the context back from the server**
+rather than trusting the number it asked for.
+
+**Correction, same day, from directly testing the fix:** the two models that
+survived selection turned out to be immune to this whole lever. Chasing the
+founder's next request (find the right window between 96k and 128k, set
+through LM Studio's config, not a code-side lock) meant genuinely reloading
+`qwen/qwen3.8-27b` and `gemma-4-26b-a4b-qat` at 98,304 and 131,072. All four
+attempts (two windows x two models) came back loaded at 262144 and were
+refused by the script's own readback check. Direct CLI diagnosis nailed down
+why, ruling out config precedence as the cause: with the persisted default
+deliberately set to 40,000, `lms load qwen/qwen3.8-27b -c 98304 -y` still
+loaded at 262144; a bare `lms load qwen/qwen3.8-27b -y` with no `-c` at all,
+same 40,000 default on disk, also loaded at 262144. Neither the CLI flag nor
+the config file nor omitting both can move these two models off their native
+maximum on this LM Studio/MLX build. The mechanism itself is not broken:
+`google/gemma-4-e2b` (131072 max) loaded at exactly the 32,768 it was asked
+for, verbatim, on the same host in the same session. This model-specific
+pinning is a known class of MLX/rope-scaling limitation, not a config bug --
+some conversions bake the long-context rope extension in for one target
+length and the engine will not run them at a shorter one.
+
+Net effect: the "product silently served a smaller window than the exam"
+finding above is **retracted for the two models Puppy One actually ships**.
+Since neither can load below 262144 by any mechanism, the old smaller
+defaults (MoE 64k, qwen 128k) were never actually reachable at runtime either
+-- the product was, and always has been, running these two at full native
+context. The config fix above is still correct practice (the default should
+state the truth, and the lever genuinely works on other catalog models such
+as `gemma-4-e2b` and presumably `gemma-4-12b`), but for the two shipping
+models it changed documentation accuracy, not runtime behaviour.
+
+The practical consequence: **the 96k-vs-128k question cannot be answered by
+loading these two models smaller, because that operating point does not
+exist for them.** The only lever available is prompt-side -- how much of a
+growing conversation is fed to the model at generation time, while it stays
+loaded at its unavoidable 262144. That reframes it as a compaction-budget
+question, not a load-context question, and is covered in the next section.
 
 ## Reasoning levels
 
@@ -271,6 +305,72 @@ after a void names control ids a rebuild's control pass is wiring proof, not
 an independent diligence test. The rates measure per-row content judgment of
 125 real rows. Independent confirmation is a fresh judge session on a fresh
 rebuild, and the machinery for that now exists.
+
+## Final model pick and the context-budget question, 2026-09-01
+
+After the goal-progress result the founder made the call: **ship two models,
+`gemma-4-26b-a4b-qat` (MoE) and `qwen/qwen3.8-27b` (dense). `gemma-4-12b` is
+dropped.** It led only on agreement, the weakest of the three signals by this
+harness's own design, and led nothing once goal progress existed as a number.
+
+The founder then asked the harder question directly: find the right context
+budget for these two models to "function at scale fully", somewhere between
+96k and 128k, informed by what the community recommends, set through LM
+Studio's config rather than a code-side lock. Two things had to be
+established before that question could even be answered, and both changed the
+shape of the answer.
+
+**First, load-time context is not a lever on these two models at all** -- see
+the correction above. Both are pinned to 262144 by the engine itself,
+immune to the CLI flag, the config file, and their combination. There is no
+"load qwen at 96k" to test. Whatever the right budget is, it has to be
+enforced on the prompt, not the load.
+
+**Second, community research says quality tracks well under the advertised
+maximum, and our own real usage never gets close to either number being
+debated.** The RULER benchmark and Chroma's 2025 "context rot" study (18
+frontier models tested) both establish that reliable quality tracks roughly
+50-70% of a model's *advertised* ceiling, not the ceiling itself -- degradation
+starts well before the hard limit, and a 200k-window model can already be
+rotting by 50k. Applied as a generic heuristic to a 262144-max model, that
+puts the "effective" zone at roughly 130k-183k tokens; this is a general
+finding across other model families, not a number measured on these exact two.
+Separately, on real NIAH-style long-context evals the Qwen3 family holds up
+more stably from 8k to 128k than the Gemma 3 family, which shows more visible
+degradation over the same range -- a real analog, not a claim about the exact
+Gemma 4 / Qwen 3.8 curves, which are this harness's own data to produce.
+
+Against that, the **actual replay corpus says the debate is currently moot**:
+of the 45 real session turns used throughout this selection, every single one
+already fits under 96k (max observed prompt: 95,205 tokens; median 51,012;
+p90 64,504). 96k and 128k are numerically indistinguishable on this corpus --
+neither would ever trigger a truncation, so a same-corpus A/B between them
+would trigger zero and report a manufactured "no difference" that reflects
+the corpus, not the models. Running one would burn real inference time to
+learn nothing; it is not proposed for that reason.
+
+**What the evidence supports doing:** treat 96k-128k as a **compaction
+trigger threshold**, not a load parameter -- the point past which the harness
+switches from "send everything" to a recency-window or summarising strategy,
+so a session that keeps growing (the agentic, long-running case Puppy One is
+built for) never has to reach the rot zone in the first place, on a model
+that cannot be loaded smaller to protect itself. The recency-window mechanics
+already exist (`arm64k.py` in the working scratchpad, built and run once
+against a 64k budget before being redirected toward the direct-reload
+question above) and generalise to any threshold. Testing 96k vs 128k as that
+trigger is honestly **not yet answerable** with this corpus -- it needs
+either naturally longer real sessions as they accumulate, or deliberately
+constructed long-horizon cases, since a threshold neither real session has
+ever reached cannot be shown to matter by measurement, only asserted.
+
+One more lever surfaced but not pulled: the LM Studio / MLX default here runs
+an unquantized KV cache (`kvCacheQuantization.enabled: false` in both
+models' configs). Community guidance for Apple Silicon treats 8-bit KV cache
+as the standard default, roughly doubling the usable budget at fixed memory.
+Turning it on is a legitimate way to make more of the native 262144 usable
+without changing anything about the load-context question above, and would
+need its own measurement before being adopted, since it is a quality/memory
+trade, not a free win.
 
 ## Superseded: the 2026-08-31 selection and its defects
 
