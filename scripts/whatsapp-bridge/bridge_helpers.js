@@ -83,8 +83,22 @@ function uniqueStrings(values) {
   return out;
 }
 
-export async function pollUpdateForAggregation({\n  pollUpdateMessage,\n  pollUpdateMessageKey,\n  pollCreation,\n  decryptPollVote,\n  getKeyAuthor,\n  meId = 'me',\n  pollCreatorJids = [],\n  voterJids = [],\n}) {\n  if (!pollUpdateMessage) return null;\n  if (typeof connectionState !== 'undefined' && connectionState !== 'connected') return null;
-  const updateKey = pollUpdateMessage.pollUpdateMessageKey\n    || pollUpdateMessageKey\n    || pollUpdateMessage.key;\n  if (!updateKey) return null;
+export async function pollUpdateForAggregation({
+  pollUpdateMessage,
+  pollUpdateMessageKey,
+  pollCreation,
+  decryptPollVote,
+  getKeyAuthor,
+  meId = 'me',
+  pollCreatorJids = [],
+  voterJids = [],
+}) {
+  if (!pollUpdateMessage) return null;
+  if (typeof connectionState !== 'undefined' && connectionState !== 'connected') return null;
+  const updateKey = pollUpdateMessage.pollUpdateMessageKey
+    || pollUpdateMessageKey
+    || pollUpdateMessage.key;
+  if (!updateKey) return null;
 
   if (pollUpdateMessage.vote?.selectedOptions) {
     return {
@@ -143,7 +157,6 @@ export async function pollUpdateForAggregation({\n  pollUpdateMessage,\n  pollUp
   if (lastError) throw lastError;
   return null;
 }
-
 export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
   const content = { text };
   const options = {};

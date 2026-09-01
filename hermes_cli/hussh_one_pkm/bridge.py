@@ -84,6 +84,8 @@ class HusshVaultBridge:
         self._last_device_sync_at_ms = 0
         self._device_sync_status = "idle"
         self._lock = threading.RLock()
+        self._presence: Any = None
+        self._presence_lock = threading.Lock()
         self._onboarding_status = "idle"
         self._monitor = threading.Thread(
             target=self._monitor_shared_lock_state,
@@ -91,6 +93,27 @@ class HusshVaultBridge:
             daemon=True,
         )
         self._monitor.start()
+
+    @property
+    def presence(self):
+        """Push this device's runtime state to Hussh One on transitions.
+
+        Built lazily and cached: constructing it in ``__init__`` would import
+        the host-metrics and LM Studio probes on every bridge, including the
+        ones in tests that never reach the network.
+        """
+        with self._presence_lock:
+            if self._presence is None:
+                from .presence import PresencePublisher, build_snapshot
+
+                self._presence = PresencePublisher(
+                    publish=self.identity.post_heartbeat,
+                    snapshot=lambda: build_snapshot(
+                        active_sessions=1 if self._vault_key is not None else 0,
+                        busy=self._device_sync_status == "syncing",
+                    ),
+                )
+            return self._presence
 
     def _account(self, kind: str) -> str:
         return f"{self.identity.profile_id}:{kind}"
@@ -434,6 +457,13 @@ class HusshVaultBridge:
             self._clear_vault_key_locked()
             self._vault_key = bytearray(vault_key)
             self._last_activity = time.monotonic()
+        # A transition worth pushing: this device just became usable. Dispatched
+        # in the background so an unlock never waits on the network, and wrapped
+        # because telemetry must not be able to fail an unlock that succeeded.
+        try:
+            self.presence.on_event_background("unlock")
+        except Exception:
+            pass
         return {"unlocked": True}
 
     def _write_lock_state(self, *, locked: bool, reason: str) -> None:
@@ -478,6 +508,13 @@ class HusshVaultBridge:
                     # Never let a poll failure kill the monitor thread; the next
                     # tick retries, and an ambiguous status never seals.
                     pass
+            try:
+                # Dispatched to its own thread: a keepalive is telemetry, and a
+                # hung connection must not delay the revocation poll above it,
+                # which is the one thing in this loop that protects the vault.
+                self.presence.keepalive_background()
+            except Exception:
+                pass
             if self._profile_is_locked():
                 with self._lock:
                     self._clear_vault_key_locked()

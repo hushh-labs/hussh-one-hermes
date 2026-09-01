@@ -14941,11 +14941,12 @@ def _hussh_one_setup_output(arg: str) -> str:
             if not identity.get("connected"):
                 return "This Hermes profile is not connected to Hussh One."
             return (
+                "Nothing has been disconnected yet. This is a preview.\n\n"
                 "Disconnecting revokes this trusted device and removes this profile's "
                 "local vault envelope, encrypted PKM replica, Source Library index, "
                 "and device-only Source Library custody. The remote encrypted vault "
                 "and provider-owned files are not deleted.\n\n"
-                "If that is what you want, run /hussh-one disconnect confirm."
+                "To actually disconnect, run: /hussh-one disconnect confirm"
             )
         if action == "disconnect confirm":
             if not identity.get("connected"):
@@ -14971,8 +14972,13 @@ def _hussh_one_setup_output(arg: str) -> str:
                 return "Reconnect this Hermes profile with /hussh-one connect before vault setup."
             if vault.get("enrolled"):
                 return (
-                    "This Hermes profile already has a local vault envelope. "
-                    "Use /hussh-one status to inspect its lock state."
+                    "This Hermes profile already has a local vault envelope.\n\n"
+                    "  /hussh-one unlock — use the vault that is already here\n"
+                    "  /hussh-one status — inspect its lock state\n"
+                    "  /hussh-one disconnect confirm — remove it and start over\n\n"
+                    "Note: /hussh-one disconnect only previews the impact. "
+                    "'confirm' is what actually removes local custody, so an "
+                    "envelope survives a bare disconnect and blocks enrolment."
                 )
             from hermes_cli.hussh_one_pkm.native_prompt import (
                 disclose_recovery_key,

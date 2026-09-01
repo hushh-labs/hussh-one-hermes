@@ -524,6 +524,32 @@ class HusshIdentityClient:
             return False
         return 200 <= int(getattr(response, "status_code", 0)) < 300
 
+    def post_heartbeat(self, snapshot: dict[str, Any]) -> bool:
+        """Best-effort push of this device's runtime state to Hussh One.
+
+        Advisory: a failure means the dashboard shows a staler reading, never
+        that anything on this machine is wrong. So it returns False rather than
+        raising, and never blocks its caller.
+
+        Deliberately not a status probe. It reads ``read_state`` and does NOT
+        call ``auth_headers``, which refreshes the token and runs the revocation
+        check -- a check that can seal the device. Telemetry must never be able
+        to destroy local data as a side effect of being sent.
+        """
+        state = self.read_state()
+        if state is None or not self._id_token:
+            return False
+        try:
+            response = self.http.post(
+                f"{state.api_base}/api/account/trusted-devices/"
+                f"{state.device_id}/heartbeat",
+                headers={"Authorization": f"Bearer {self._id_token}"},
+                json={"heartbeat": snapshot},
+            )
+        except Exception:
+            return False
+        return 200 <= int(getattr(response, "status_code", 0)) < 300
+
     def sign(self, payload: str) -> str:
         signature = self._device_private_key().sign(
             payload.encode("utf-8"), ec.ECDSA(hashes.SHA256())

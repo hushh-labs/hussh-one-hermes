@@ -47,7 +47,7 @@ def _load_or_create_keypair() -> tuple[X25519PrivateKey, str, str]:
     directory = _state_dir()
     path = directory / _KEYPAIR_FILE
     try:
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding="utf-8"))
         private = X25519PrivateKey.from_private_bytes(_decode(record["private_key_b64"]))
         return private, str(record["public_key_b64"]), str(record["key_id"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -74,7 +74,7 @@ def _load_or_create_keypair() -> tuple[X25519PrivateKey, str, str]:
     os.chmod(directory, stat.S_IRWXU)
     fd, temporary = tempfile.mkstemp(prefix=".connector-key-", dir=directory)
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle)
             handle.flush()
             os.fsync(handle.fileno())

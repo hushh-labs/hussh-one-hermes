@@ -4261,6 +4261,8 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass"),
+    ("pkm_judge", "Puppy One judge", "grades on-device output; must not be local"),
+    ("puppy_reflect", "Puppy One reflector", "writes tactics from graded failures"),
 ]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation.
@@ -12313,7 +12315,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
-        "prompt-size",
+        "prompt-size", "puppy",
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
@@ -13127,6 +13129,13 @@ def main():
     moa_delete = moa_subparsers.add_parser("delete", aliases=["rm"], help="Delete a MoA preset")
     moa_delete.add_argument("name", help="Preset name to delete")
     moa_parser.set_defaults(func=cmd_moa)
+
+    # =========================================================================
+    # puppy command — on-device model exam, learning loop and routing
+    # =========================================================================
+    from hermes_cli.puppy_cmd import build_puppy_parser
+
+    build_puppy_parser(subparsers)
 
     # =========================================================================
     # fallback command — manage the fallback provider chain

@@ -4179,6 +4179,20 @@ async def get_system_stats():
         "cpu_count": os.cpu_count(),
     }
 
+    # Which *machine* this is, not just which OS. stdlib stops at the arch
+    # (platform.processor() is "arm64" on every Mac), so without this an M4
+    # Max and an M1 Air render identically. Additive and optional: a host
+    # that cannot answer simply omits the keys.
+    try:
+        from hermes_cli.hussh_one_host_metrics import host_hardware
+
+        hardware = host_hardware()
+        for key in ("brand", "processor"):
+            if hardware.get(key):
+                info[key] = hardware[key]
+    except Exception:
+        pass
+
     # psutil enriches the picture when present; everything below is optional.
     try:
         import psutil  # type: ignore

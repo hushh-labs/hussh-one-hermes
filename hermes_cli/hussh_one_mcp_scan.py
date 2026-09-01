@@ -188,7 +188,7 @@ def install_server(name: str, cfg: dict) -> bool:
     for k, v in (cfg.get("env") or {}).items():
         args += ["--env", f"{k}={v}"]
     try:
-        proc = subprocess.run(args, capture_output=True, text=True)
+        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             print(f"    ✗ install failed for {name}: {proc.stderr.strip()}")
             return False

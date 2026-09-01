@@ -14,6 +14,29 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## 🐶 Puppy One — on-device edge compute
+
+| Date | Commit | What shipped |
+|------|--------|---------------|
+| 2026-08-28 | `679803f1` | **Fail-closed on-device gate.** Pinning the provider only ever covered the main turn; auxiliary tasks defaulted to `provider: auto` and fell through OpenRouter, Nous and Codex to a paid Gemini. With `hussh_one.on_device_only` set, any non-local provider resolution now refuses instead of reaching for the network. |
+| 2026-08-28 | `ce5db96d` | **LM Studio residency, eviction and real host hardware.** Hermes could load a model and had no unload path at all. Eviction only ever touches IDLE models, prefers the plan surrendering the least memory, and refuses to act when the fit is impossible. Adds brand/processor/cores/RAM, which stdlib cannot answer. |
+| 2026-08-28 | `bd9f3700` | **The PKM 0-to-1 benchmark.** Times model inference and the commit path separately and never sums them, and scores tool-call validity beside latency — a model that answers in prose is not a fast result. Loopback-only by parsed hostname, so a result measured off this machine cannot wear this one's name. |
+| 2026-08-28 | `71bd7cb5` | **Push-on-change presence.** Replaces a fixed poll with transition pushes plus a 600s keepalive, so an idle laptop stops costing anything. `post_heartbeat` deliberately never calls `auth_headers`, because that would run the revocation check and telemetry must not be able to seal the device. |
+| 2026-08-28 | `9a1d1eb1` | **Stronger-model judge for small-model output.** Grades what the local model actually saved, not just its shape. Refuses to run when judge and answerer are the same model, discards uncited failures, and voids the whole run when planted controls are missed. Caught a real hallucination on its first live run. |
+| 2026-08-28 | `58da4a2b` | **Battery state on connect.** A desktop reports absence rather than 0%, since those are the same number and opposite facts. `on_ac` and `charging` are separate, because a laptop held at an 80% limit is plugged in and not charging. |
+| 2026-08-28 | `1ce76a6d` | **Namespaced the edge modules for upstream safety.** `lmstudio_manager.py` and `host_metrics.py` moved under the `hussh_one_` prefix, which is this fork's mechanism for surviving a near-daily upstream sync rather than a naming preference. |
+| 2026-08-28 | `b4ab5b64` | **A truncated turn is indeterminate, not a failure.** Reasoning tokens come from the same budget as the answer and no metadata declares that a model reasons, so a capable model can think past the limit and be scored 0. `finish_reason` and reasoning tokens are recorded, and truncated turns leave the validity rate rather than dragging it down. |
+| 2026-08-28 | `09c1478e` | **Gave the judge a false-positive rate.** Every control was a planted failure, which catches a rubber-stamper and nothing else; a judge that flags everything passed perfectly. Positive controls now void a run that flags known-good output, and a citation may quote the utterance so omission failures stop being forced to "unsure". |
+| 2026-08-28 | `83e61f27` | **Audit of what actually leaves the machine.** Asks the real router where every auxiliary task lands, in both gate states, and can genuinely simulate the gate rather than relabelling a report. Found the true number is one task, `compression`, not the nineteen a rule-reimplementation first claimed. |
+| 2026-08-28 | `81375163ef` | **Restart without cutting anyone off mid-answer.** Quiesce, drain against the per-session lease registry, publish a readable phase for the app and Puppy One, then hand off to the existing SIGUSR1 path. An abandoned drain names what it would interrupt and does not restart unless forced. |
+| 2026-08-28 | `7d2f292361` | **Agent sync against a fleet manifest.** Reuses `distribution.yaml` as the agent manifest and the pod's replace-never-patch semantics. Closes the provenance gap by capturing the resolved ref and a content digest before the swap, refuses user-owned paths at plan time, and never swaps a payload that did not validate. |
+| 2026-08-28 | `dd56fafc` | **A sanctioned write path for the judge.** The judge lane has no Write tool, so verdicts were produced by a raw shell redirect. Replaced with an append-only, validating writer that cannot touch the queue or the manifest and rejects malformed verdicts where the judge can still fix them. |
+| 2026-08-28 | `560a126c` | **The agent hierarchy runs on this machine.** Reads the same `agent.yaml` manifests the cloud and the pod read, treats the model as a preference and resolves the provider per environment. Verified live: `agent_memory_intent`, authored for `gemini-3.7-flash`, ran on `gemma-4-26b-a4b-qat` and returned a valid contract. |
+
+📄 Feature page: [puppy-one-edge-compute.md](./features/puppy-one-edge-compute.md)
+
+---
+
 ## 📋 Cross-Form KYC/KYB & Onboarding Knowledge Base
 
 | Date | Commit | What shipped |
