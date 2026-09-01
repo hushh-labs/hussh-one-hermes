@@ -190,42 +190,6 @@ it was wrong.
 
 ## Superseded: the 2026-08-31 selection and its defects
 
- honest overlap
-
-The founder challenged the earlier qwen result and the audit proved the
-challenge right: the exam had been stripping every tool description (qwen
-depends on them; gemma does not), sending qwen a live think-less instruction
-through the `reasoning_effort` template variable while gemma received a
-think-more token, over-triggering the bounded-scan oracle, and grading qwen on
-a wall-cap-truncated 31-of-45 case set. All four defects are fixed; the
-corrected run below uses identical cases, real descriptions, and per-family
-maximum thinking (`xhigh` for qwen, `<|think|>` for gemma).
-
-| Model | Structural | 95% CI | Agreement | Median | Reasoning mean |
-| --- | --- | --- | --- | --- | --- |
-| `gemma-4-26b-a4b-qat` (MoE) | 0.976 | [0.874, 0.996] | 0.512 | 41.5s | 435 |
-| `gemma-4-12b` (8-bit) | 0.929 | [0.810, 0.975] | 0.595 | 96.5s | 205 |
-| `qwen/qwen3.8-27b` | 0.810 | [0.667, 0.900] | 0.524 | 152.5s | 473 |
-
-What the correction changed, and what it did not:
-
-- **qwen's structural score rose from the unfair 0.714 to 0.810**, and its
-  remaining structural failures are a single oracle: `paths_grounded`, eight
-  times. Under fair conditions its failure mode is specific (referencing paths
-  not established in the conversation), not general brokenness.
-- **No pair of models is separated at 95% on structural validity.** On roughly
-  42 graded cases each, the honest statement is that the three cannot be ranked
-  on structural validity, and the report says so instead of inventing an order.
-- **Latency and agreement still tier them.** The MoE is decisively fastest
-  (41.5s median); the 12b leads agreement (0.595). qwen leads no column and is
-  slowest, so the two-tier gemma recommendation stands, now for stated reasons
-  that survive the audit rather than a ranking that did not.
-
-The prior section is retained below as the record of what was published and why
-it was wrong.
-
-## Superseded: the 2026-08-31 selection and its defects
-
 
 
 45 replayed session turns per model (median 51,012 tokens, max 95,205), drained
