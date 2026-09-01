@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
+
 """LM Studio model residency: what is resident, what it costs, what to evict.
 
 Hermes can *load* an LM Studio model (``ensure_lmstudio_model_loaded`` in

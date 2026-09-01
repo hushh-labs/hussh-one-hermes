@@ -116,7 +116,7 @@ def publish(status: RestartStatus, *, hermes_home: Optional[Path | str] = None) 
         payload["message"] = status.message()
         payload["at"] = int(time.time())
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(path)
     except Exception:
         logger.debug("could not publish restart status", exc_info=True)
@@ -125,7 +125,7 @@ def publish(status: RestartStatus, *, hermes_home: Optional[Path | str] = None) 
 def read_status(hermes_home: Optional[Path | str] = None) -> dict[str, Any]:
     """Current phase, or idle when nothing has published one."""
     try:
-        return json.loads(status_path(hermes_home).read_text())
+        return json.loads(status_path(hermes_home).read_text(encoding="utf-8"))
     except Exception:
         return {"phase": PHASE_IDLE, "message": "Running.", "active_turns": 0}
 
@@ -247,8 +247,19 @@ def restart_now(
     publish(status, hermes_home=hermes_home)
     target = pid if pid is not None else os.getpid()
     send = signaller if signaller is not None else os.kill
+    # SIGUSR1 does not exist on Windows; a bare reference raises AttributeError
+    # at call time there. The gateway supervisor this signals is a POSIX
+    # arrangement anyway, so on a platform without the signal the honest answer
+    # is "this handoff path is unavailable", not a crash.
+    restart_signal = getattr(signal, "SIGUSR1", None)
+    if restart_signal is None:
+        logger.error("SIGUSR1 unavailable on this platform; cannot hand off restart")
+        status.phase = PHASE_IDLE
+        status.reason = "restart signal unsupported on this platform"
+        publish(status, hermes_home=hermes_home)
+        return False
     try:
-        send(target, signal.SIGUSR1)
+        send(target, restart_signal)
         return True
     except Exception:
         logger.error("could not signal restart to pid %s", target, exc_info=True)

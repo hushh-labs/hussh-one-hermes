@@ -266,13 +266,13 @@ def write_seal(seal: Seal, path: Path | str) -> Path:
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(seal.to_dict(), indent=2, sort_keys=True) + "\n")
+    target.write_text(json.dumps(seal.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return target
 
 
 def read_seal(path: Path | str) -> Optional[Seal]:
     try:
-        return Seal.from_dict(json.loads(Path(path).read_text()))
+        return Seal.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
     except Exception:
         return None
 

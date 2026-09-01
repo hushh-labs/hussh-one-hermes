@@ -255,7 +255,7 @@ def write_queue(
         "verdicts_file": VERDICTS_FILENAME,
     }
     manifest_path = out / MANIFEST_FILENAME
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     # Seal the run OUTSIDE its directory. The judge holds Bash, so everything
     # inside the run directory -- the queue, the manifest, the verdicts, and the
@@ -317,12 +317,12 @@ def ingest(
     it was issued, and every row must actually have been graded.
     """
     out = Path(out_dir)
-    manifest = json.loads((out / MANIFEST_FILENAME).read_text())
+    manifest = json.loads((out / MANIFEST_FILENAME).read_text(encoding="utf-8"))
     answerer = str(manifest.get("answerer_model") or "unknown")
     report = JudgeReport(judge_model=judge_label, answerer_model=answerer)
 
     queue: dict[str, dict[str, Any]] = {}
-    for line in (out / QUEUE_FILENAME).read_text().splitlines():
+    for line in (out / QUEUE_FILENAME).read_text(encoding="utf-8").splitlines():
         if line.strip():
             row = json.loads(line)
             queue[row["id"]] = row
@@ -344,7 +344,7 @@ def ingest(
     verdicts: dict[str, dict[str, Any]] = {}
     verdicts_path = out / VERDICTS_FILENAME
     if verdicts_path.exists():
-        for line in verdicts_path.read_text().splitlines():
+        for line in verdicts_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
@@ -506,7 +506,7 @@ def read_ledger(ledger_path: Path | str) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             try:
                 rows.append(json.loads(line))
@@ -582,7 +582,7 @@ def assert_fresh_context(manifest_path: Path | str) -> dict[str, Any]:
     Returning the fact is the honest option. Pretending to check would be
     worse than not checking.
     """
-    manifest = json.loads(Path(manifest_path).read_text())
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     return {
         "run_id": manifest.get("run_id"),
         "created_at": manifest.get("created_at"),

@@ -365,14 +365,14 @@ def write_state(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(target)
     return state
 
 
 def read_state(path: Path | str) -> dict[str, Any]:
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
         return {"schema_version": SCHEMA_VERSION, "agents": {}}
 

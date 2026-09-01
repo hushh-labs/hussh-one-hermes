@@ -95,7 +95,7 @@ CLUSTERS = [
 
 def run_cmd(cmd: list[str], timeout: int = 45) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=True)
         return 0, p.stdout.strip()
     except subprocess.CalledProcessError as e:
         return e.returncode, e.stdout + "\n" + e.stderr

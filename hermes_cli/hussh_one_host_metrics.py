@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
+
 """Real host hardware + memory metrics, for hosts without ``/proc``.
 
 Two Linux-shaped blind spots meet here:

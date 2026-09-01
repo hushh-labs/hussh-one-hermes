@@ -191,7 +191,7 @@ def load_manifests(root: Path | str) -> list[AgentManifest]:
     for path in sorted(Path(root).glob(f"*/{MANIFEST_FILENAME}")):
         try:
             manifests.append(
-                parse_manifest(path.read_text(), source_path=str(path))
+                parse_manifest(path.read_text(encoding="utf-8"), source_path=str(path))
             )
         except (ManifestError, OSError) as exc:
             # A manifest that cannot be read is reported, never skipped

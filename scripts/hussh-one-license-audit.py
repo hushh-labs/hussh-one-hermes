@@ -70,7 +70,7 @@ def _path_in_component(path: Path, component: str) -> bool:
 
 def _git_changes(root: Path, base_commit: str) -> list[tuple[str, Path]]:
     command = ["git", "diff", "--name-status", "--find-renames=100%", base_commit, "--"]
-    result = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
+    result = subprocess.run(command, cwd=root, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
     if result.returncode != 0:
         reason = result.stderr.strip() or "unknown git error"
         raise ValueError(f"cannot compare provenance base {base_commit}: {reason}")

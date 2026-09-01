@@ -54,7 +54,7 @@ def _load_queue(run_dir: Path) -> dict[str, dict]:
     if not path.exists():
         raise VerdictRejected(f"no queue at {path}")
     rows: dict[str, dict] = {}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             row = json.loads(line)
             rows[str(row.get("id"))] = row
@@ -66,7 +66,7 @@ def _existing_ids(run_dir: Path) -> set[str]:
     if not path.exists():
         return set()
     seen = set()
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             try:
                 seen.add(str(json.loads(line).get("id")))

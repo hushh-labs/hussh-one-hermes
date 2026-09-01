@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
+
 """Residency + eviction policy for LM Studio models.
 
 The eviction tests are the load-bearing ones: a wrong plan here unloads the

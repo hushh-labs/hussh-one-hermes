@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for hermes_cli.hussh_one_host_metrics — real hardware/memory on non-/proc hosts.
 
 The host these run on is irrelevant: every probe is mocked, so the macOS

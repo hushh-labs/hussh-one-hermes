@@ -213,7 +213,7 @@ def probe_cron() -> None:
         add(harness, "jobs.json", INFO, f"no cron store at {jobs_path}")
         return
     try:
-        data = json.loads(jobs_path.read_text())
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001
         add(harness, "jobs.json", FAIL, f"unparseable: {e}")
         return
@@ -697,7 +697,7 @@ def main() -> int:
     if args.write:
         out = HERMES_HOME / "health"
         out.mkdir(parents=True, exist_ok=True)
-        (out / "hussh-one-health-index.md").write_text(render_markdown())
+        (out / "hussh-one-health-index.md").write_text(render_markdown(), encoding="utf-8")
         (out / "hussh-one-health-index.json").write_text(
             json.dumps({"generated": time.time(), "findings": _findings, "ok": not has_fail}, indent=2)
         )
