@@ -107,6 +107,21 @@ SUITE_RULES: dict[str, frozenset[str]] = {
             "invented-symbol",   # referenced something that does not exist
         }
     ),
+    # Goal progress: did the chosen action advance the session's goal. The
+    # closed set below is the whole vocabulary on purpose: the founder's
+    # critique was that structural validity was standing in for goal
+    # achievement, and an open rule set would let a judge improvise its way
+    # back to vibes. Every rule names a way an action can be VALID and still
+    # not advance the goal, and every one demands a citation.
+    "goal_progress": frozenset(
+        {
+            "wrong-object",  # acts on an artifact the request never named
+            "dead-end",  # the action cannot yield what the request needs
+            "redundant",  # repeats a step whose result is already in context
+            "destructive-detour",  # mutates state nothing asked to change
+            "stalls",  # asks or idles when context already holds the answer
+        }
+    ),
     "merge": frozenset(
         {
             "kept-wrong-side",   # chose ours where theirs was correct, or vice versa

@@ -1,0 +1,251 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
+"""The goal-progress dimension: judged on-path or off-path, blinded, sealed.
+
+These run the real queue machinery end to end in a temp directory: write the
+blinded queue, grade it through the sanctioned writer, ingest, and report per
+model. The founder's critique this answers: structural validity was standing in
+for goal achievement, and nothing measured whether the action advanced the
+goal.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from hermes_cli.hussh_one_pkm import verdict_cli
+from hermes_cli.hussh_one_routing.exam import goal_progress as GP
+
+
+def artifact(path: Path, model_slug: str, records: list) -> Path:
+    file = path / f"corrected_{model_slug}.jsonl"
+    file.write_text(
+        "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8"
+    )
+    return file
+
+
+def record(case_id, chosen_tool, chosen_args, reference_tool, reference_args,
+           *, indeterminate="", tail="find the config file for the gateway"):
+    return {
+        "case_id": case_id,
+        "user_request_tail": tail,
+        "reference_tool": reference_tool,
+        "reference_args": reference_args,
+        "chosen_tool": chosen_tool,
+        "chosen_args": chosen_args,
+        "assistant_text": "working on it",
+        "indeterminate": indeterminate,
+        "oracles": [],
+        "label_match": chosen_tool == reference_tool,
+    }
+
+
+@pytest.fixture
+def artifacts(tmp_path):
+    model_a = artifact(tmp_path, "alpha_model-a", [
+        record("c1", "search_files", {"pattern": "config"},
+               "search_files", {"pattern": "config"}),          # byte-equal
+        record("c2", "terminal", {"command": "ls /tmp"},
+               "read_file", {"path": "gateway.yaml"}),
+        record("c3", None, None, "read_file", {"path": "gateway.yaml"}),
+        record("c4", "read_file", {"path": "a.py"},
+               "read_file", {"path": "a.py"}, indeterminate="timeout"),
+    ])
+    model_b = artifact(tmp_path, "beta_model-b", [
+        record("c1", "read_file", {"path": "gateway.yaml"},
+               "search_files", {"pattern": "config"}),
+        record("c2", "web_search", {"query": "gateway config"},
+               "read_file", {"path": "gateway.yaml"}),
+    ])
+    return [model_a, model_b]
+
+
+class TestRowsAreBlindAndLabelled:
+    def test_identity_is_held_apart_from_the_rows(self, artifacts):
+        rows, identity = GP.build_rows(artifacts)
+        blob = json.dumps(rows)
+        assert "alpha/model-a" not in blob and "beta/model-b" not in blob
+        assert {v["model"] for v in identity.values()} == {
+            "alpha/model-a", "beta/model-b"
+        }
+
+    def test_indeterminate_rows_are_excluded(self, artifacts):
+        # A timeout says nothing about goal progress.
+        rows, identity = GP.build_rows(artifacts)
+        assert len(rows) == 5
+        assert not any(v["case_id"] == "c4" for v in identity.values())
+
+    def test_the_reference_is_labelled_not_ground_truth(self, artifacts):
+        rows, _ = GP.build_rows(artifacts)
+        assert all("NOT ground truth" in r["utterance"] for r in rows)
+
+    def test_a_no_tool_turn_is_still_a_row(self, artifacts):
+        # Calling nothing is judgeable: the stalls rule exists for it.
+        rows, _ = GP.build_rows(artifacts)
+        assert any("(no tool call" in r["output"]["action"] for r in rows)
+
+
+class TestControls:
+    def test_negative_controls_swap_in_a_different_tool(self, artifacts):
+        rows, _ = GP.build_rows(artifacts)
+        negatives = GP.negative_controls(rows, count=2)
+        assert negatives, "no negative controls built"
+        for control in negatives:
+            base = next(r for r in rows if r["utterance"] == control["utterance"])
+            assert control["output"]["action"].split(" ", 1)[0] != base["output"][
+                "action"
+            ].split(" ", 1)[0]
+            assert "must_catch" in control
+
+    def test_a_donor_equal_to_the_base_reference_is_never_used(self, tmp_path):
+        # Found live: a swapped-in action that happens to equal the base row's
+        # REFERENCE builds a control that is on-path by construction while
+        # labelled must-catch, and it voids the run of any judge diligent
+        # enough to notice. The builder must skip such donors even when they
+        # are the only different-tool candidates.
+        poisoned = artifact(tmp_path, "solo_model", [
+            record("c1", "read_file", {"path": "g.yaml"},
+                   "search_files", {"pattern": "config"}),
+            record("c2", "search_files", {"pattern": "config"},
+                   "read_file", {"path": "g.yaml"}),
+        ])
+        rows, _ = GP.build_rows([poisoned])
+        for control in GP.negative_controls(rows, count=4):
+            base = next(
+                r for r in rows if r["utterance"] == control["utterance"]
+            )
+            assert control["output"]["action"] not in base["utterance"]
+
+    def test_positive_controls_are_byte_equal_to_the_reference(self, artifacts):
+        rows, identity = GP.build_rows(artifacts)
+        positives = GP.positive_controls(rows, identity, artifacts)
+        assert len(positives) == 1  # only c1 on model-a matches byte for byte
+        assert "must_not_flag" in positives[0]
+
+
+class TestTheRuleVocabularyIsClosed:
+    def test_the_suite_rules_are_registered(self):
+        from hermes_cli.hussh_one_pkm.integrity import rules_for
+
+        assert rules_for("goal_progress") == {
+            "wrong-object", "dead-end", "redundant",
+            "destructive-detour", "stalls",
+        }
+
+
+def grade_everything(run, identity_path, *, spare_negatives=False):
+    """Grade like a diligent judge: catch the swaps, pass the rest.
+
+    The queue is blinded, so the test tells reals from controls the way the
+    design intends a judge to be unable to shortcut it: reals are known only
+    via the identity map (which the grader must not have), and the planted
+    swaps are recognisable by content, since a swapped action does not match
+    the reference continuation shown in the utterance.
+    """
+    run_dir = run.queue_path.parent
+    real_ids = set(json.loads(Path(identity_path).read_text(encoding="utf-8")))
+    for line in run.queue_path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        action = row["output"]["action"]
+        is_control = row["id"] not in real_ids
+        looks_on_path = action in row["utterance"]
+        if is_control and not looks_on_path and not spare_negatives:
+            # The writer verifies the citation verbatim against the stored row,
+            # and the stored output is JSON, so a citation containing double
+            # quotes never matches its escaped form. Cite the quote-free head
+            # of the action (the tool name and opening brace).
+            verdict_cli.record(
+                run_dir=run_dir, row_id=row["id"], verdict="wrong",
+                rule="dead-end",
+                citation=action.split('"')[0].strip() or action.split(" ", 1)[0],
+                note="action lifted from an unrelated request",
+            )
+        else:
+            verdict_cli.record(
+                run_dir=run_dir, row_id=row["id"], verdict="correct",
+                rule="", citation="", note="",
+            )
+
+
+class TestEndToEnd:
+    def _queue(self, artifacts, tmp_path):
+        out = tmp_path / "run"
+        seal = tmp_path / "secrets" / "seal.json"
+        identity = tmp_path / "secrets" / "identity.json"
+        run = GP.write_goal_queue(
+            artifact_files=artifacts, out_dir=out,
+            seal_path=seal, identity_path=identity,
+        )
+        return run, seal, identity
+
+    def test_identity_lives_outside_the_run_directory(self, artifacts, tmp_path):
+        run, _seal, identity = self._queue(artifacts, tmp_path)
+        assert identity.exists()
+        assert run.queue_path.parent not in identity.parents
+
+    def test_a_diligent_judge_yields_per_model_rates(self, artifacts, tmp_path):
+        run, seal, identity = self._queue(artifacts, tmp_path)
+        grade_everything(run, identity)
+        result = GP.report(
+            out_dir=run.queue_path.parent, seal_path=seal,
+            identity_path=identity, judge_label="test-judge",
+        )
+        assert result["void"] is False
+        assert result["per_model"]["alpha/model-a"]["graded"] == 3
+        assert result["per_model"]["beta/model-b"]["graded"] == 2
+        for bucket in result["per_model"].values():
+            assert bucket["goal_progress"]["ci95"]
+        assert "never added" in result["caveat"]
+
+    def test_a_missed_negative_control_voids_the_run(self, artifacts, tmp_path):
+        # A judge that waves the planted swap through is rubber-stamping, and
+        # no rate survives that.
+        run, seal, identity = self._queue(artifacts, tmp_path)
+        grade_everything(run, identity, spare_negatives=True)
+        result = GP.report(
+            out_dir=run.queue_path.parent, seal_path=seal,
+            identity_path=identity, judge_label="test-judge",
+        )
+        assert result["void"] is True
+        assert "per_model" not in result
+
+    def test_unsure_counts_against_the_rate(self, artifacts, tmp_path):
+        run, seal, identity = self._queue(artifacts, tmp_path)
+        run_dir = run.queue_path.parent
+        real_ids = set(json.loads(identity.read_text(encoding="utf-8")))
+        first_real = None
+        for line in run.queue_path.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            is_control = row["id"] not in real_ids
+            looks_on_path = row["output"]["action"] in row["utterance"]
+            if is_control and not looks_on_path:
+                action = row["output"]["action"]
+                verdict_cli.record(
+                    run_dir=run_dir, row_id=row["id"], verdict="wrong",
+                    rule="dead-end",
+                    citation=action.split('"')[0].strip() or action.split(" ", 1)[0],
+                    note="swap",
+                )
+            elif first_real is None and not is_control:
+                first_real = row["id"]
+                verdict_cli.record(
+                    run_dir=run_dir, row_id=row["id"], verdict="unsure",
+                    rule="", citation="", note="cannot tell",
+                )
+            else:
+                verdict_cli.record(
+                    run_dir=run_dir, row_id=row["id"], verdict="correct",
+                    rule="", citation="", note="",
+                )
+        result = GP.report(
+            out_dir=run_dir, seal_path=seal,
+            identity_path=identity, judge_label="test-judge",
+        )
+        identity_map = json.loads(identity.read_text(encoding="utf-8"))
+        hedged_model = identity_map[first_real]["model"]
+        bucket = result["per_model"][hedged_model]
+        assert bucket["on_path"] < bucket["graded"]
