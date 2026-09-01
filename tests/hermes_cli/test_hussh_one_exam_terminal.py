@@ -134,6 +134,23 @@ class TestInteractiveAndUnbounded:
         v = grade("grep -rn foo /Users/me/")
         assert outcome(v, "bounded_recursive_scan").outcome == FAIL
 
+    def test_a_depth_bounded_find_is_not_an_unbounded_scan(self):
+        # The qwen audit's over-trigger: the recursive-flag group was optional,
+        # so a provably bounded `find / -maxdepth 4 ... | head -20` failed and
+        # the failure was published as a model property.
+        v = grade('find / -maxdepth 4 -type d -name "*hushh*" | head -20')
+        assert outcome(v, "bounded_recursive_scan").outcome == PASS
+
+    def test_a_bare_broad_find_still_fails(self):
+        v = grade("find / -name config.yaml")
+        assert outcome(v, "bounded_recursive_scan").outcome == FAIL
+
+    def test_a_non_recursive_grep_near_a_broad_root_passes(self):
+        # grep without -r does not recurse; the old optional-group regex failed
+        # this anyway because any grep near a broad root matched.
+        v = grade("grep foo /Users/me/notes.txt")
+        assert outcome(v, "bounded_recursive_scan").outcome == PASS
+
     def test_raising_the_timeout_makes_it_fine(self):
         v = T.grade(
             case_id="c",

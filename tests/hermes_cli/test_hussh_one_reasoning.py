@@ -44,11 +44,26 @@ class TestFamilyDetection:
             R.GEMMA_THINK
         )
 
-    def test_qwen_ids_resolve_to_the_soft_switch(self):
-        assert R.control_for("qwen/qwen3.8-27b", R.MAX) == R.QWEN_THINK
+    def test_qwen_gets_no_prompt_control_because_the_switch_is_dead(self):
+        # Measured 41/41/42 reasoning tokens for no control, system-side and
+        # user-side "/think": the soft switch has no handling in this
+        # generation's template, and it rendered buried after the tools block.
+        assert R.control_for("qwen/qwen3.8-27b", R.MAX) == ""
+        assert R.control_for("qwen/qwen3.8-27b", R.OFF) == ""
 
-    def test_qwen_off_uses_no_think(self):
-        assert R.control_for("qwen/qwen3.8-27b", R.OFF) == R.QWEN_NO_THINK
+    def test_qwen_thinking_is_steered_through_the_effort_parameter(self):
+        # LM Studio maps reasoning_effort into a live template variable for
+        # qwen: "low" injects a keep-it-brief instruction and "high" is invalid
+        # (silently sanitised to the default). The blanket "low" every runner
+        # sent was an active think-less instruction to exactly one model.
+        assert R.effort_for("qwen/qwen3.8-27b", R.MAX) == "xhigh"
+        assert R.effort_for("qwen/qwen3.8-27b", R.BRIEF) == "low"
+
+    def test_inert_families_pass_the_default_through(self):
+        # For gemma the parameter is inert; the value still belongs in the
+        # comparability key, so it goes through untouched.
+        assert R.effort_for("google/gemma-4-31b-qat", R.MAX) == "low"
+        assert R.effort_for("google/gemma-4-31b-qat", R.MAX, default="none") == "none"
 
     def test_an_unknown_family_gets_no_control_rather_than_a_guess(self):
         # Injecting Gemma's token into a model that does not parse it puts a

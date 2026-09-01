@@ -112,6 +112,31 @@ def catalog_schemas(body: dict) -> dict:
     return schemas
 
 
+def catalog_descriptions(body: dict) -> dict:
+    """``{tool_name: description}`` for the offered catalog, both formats.
+
+    This did not exist, and its absence cost a model its ranking. The replay
+    exam rebuilt the catalog with every description hardcoded to the empty
+    string while its docstring claimed the catalog was offered "exactly as
+    originally". The dumps carry real descriptions on every tool (median about
+    400 characters), and qwen3.8-27b turns out to depend on them: on a real
+    failing case, restoring the descriptions alone flipped it from a
+    hallucinated shell scan to the reference tool with clean arguments, while
+    the gemma models tolerate the erasure. An exam that quietly strips signal a
+    model relies on is not measuring the model.
+    """
+    descriptions = {}
+    for tool in body.get("tools") or []:
+        function = tool.get("function") or {}
+        name = tool.get("name") or function.get("name")
+        if not name:
+            continue
+        descriptions[name] = (
+            tool.get("description") or function.get("description") or ""
+        )
+    return descriptions
+
+
 def iter_tool_calls(message: dict) -> Iterator[tuple[str, dict, str]]:
     """``(name, arguments, call_id)`` from one assistant message, both formats.
 

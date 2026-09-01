@@ -64,10 +64,18 @@ _FAMILY_CONTROLS = {
         BRIEF: GEMMA_THINK + " Use minimal reasoning. Answer directly after a short check.",
         OFF: "",
     },
+    # Empty on purpose, corrected during the qwen audit. The "/think" and
+    # "/no_think" soft switches have no handling in this generation's LM Studio
+    # template: measured 41/41/42 reasoning tokens for no control, system-side
+    # and user-side placement. Sending a dead token is not harmless either,
+    # because the template renders system content AFTER the tools block, so the
+    # switch was landing buried mid-prompt while looking like a control. This
+    # family's live lever is the reasoning_effort template variable; see
+    # ``effort_for``.
     "qwen": {
-        MAX: QWEN_THINK,
-        BRIEF: QWEN_THINK + " Keep reasoning short.",
-        OFF: QWEN_NO_THINK,
+        MAX: "",
+        BRIEF: "",
+        OFF: "",
     },
 }
 
@@ -75,6 +83,33 @@ _FAMILY_CONTROLS = {
 # explicit list rather than inferred, and still verified by probing, because a
 # published capability is a claim about someone else's build.
 NATIVE_EFFORT_FAMILIES = ("qwen3.8",)
+
+# What each family's honoured effort values actually are, learned during the
+# qwen audit. For qwen3.8, LM Studio maps reasoning_effort into a live jinja
+# variable that INJECTS AN INSTRUCTION into the system turn: "low" injects
+# "keep your thinking brief ... moving directly to the conclusion", and "high"
+# is not a valid template value at all, silently sanitised to the default
+# "xhigh". So the harness's blanket reasoning_effort="low", believed inert
+# because it was only ever probed on gemma, was actively telling qwen to think
+# less while gemma got a think-more token. Meanwhile qwen's own "/think" soft
+# switch has no handling in this generation's template: measured 41/41/42
+# reasoning tokens for none, system-side and user-side placement. The template
+# variable is the only live up-lever this family has.
+_QWEN_EFFORT = {MAX: "xhigh", BRIEF: "low", OFF: "low"}
+
+
+def effort_for(model: str, mode: str, *, default: str = "low") -> str:
+    """The reasoning_effort value to SEND for this model and thinking mode.
+
+    For families where the parameter is inert the default goes through
+    untouched, because the value still belongs in the comparability key. For
+    qwen it selects the template-valid value that matches the intended mode,
+    so a MAX-thinking run stops shipping a think-less instruction to exactly
+    one model on the ladder.
+    """
+    if "qwen" in model.lower():
+        return _QWEN_EFFORT.get(mode, default)
+    return default
 
 # Headroom multiplier over measured reasoning spend. Generous on purpose: an
 # over-budget call costs seconds, an under-budget one reports a truncation as a

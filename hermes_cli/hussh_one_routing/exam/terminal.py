@@ -283,12 +283,26 @@ def check_scan_is_bounded(command: str, args: dict) -> Outcome:
     set.
     """
     scrubbed = _strip_quoted_and_heredocs(command)
-    recursive = re.search(r"\b(grep|rg|find)\b[^|;]*(-r|-R|--recursive)?", scrubbed)
+    # The recursive indicator must actually be PRESENT. The first version made
+    # the flag group optional (`(-r|-R|--recursive)?`), so any grep, rg or find
+    # near a broad root failed regardless of whether it recursed, and a
+    # provably bounded `find / -maxdepth 4 ... | head -20` was scored as an
+    # unbounded scan. find recurses by default, so it counts as recursive on
+    # its own; grep and rg only with the flag.
+    # Combined short flags count: `grep -rn` is recursive even though no bare
+    # `-r` token appears, so the flag pattern accepts r/R anywhere in a short
+    # flag cluster as well as the long form.
+    recursive = re.search(
+        r"\bfind\b|\b(grep|rg)\b[^|;]*\s(--recursive\b|-[a-zA-Z]*[rR][a-zA-Z]*)",
+        scrubbed,
+    )
     broad = re.search(r"\s(/Users/[\w.-]+|~|/)\s*/?(\s|$|\")", scrubbed)
-    if recursive and broad and not args.get("timeout"):
+    bounded = re.search(r"-maxdepth\s+\d+", scrubbed)
+    if recursive and broad and not bounded and not args.get("timeout"):
         return Outcome(
             "bounded_recursive_scan", FAIL,
-            "recursive scan over a broad root with no raised timeout",
+            "recursive scan over a broad root with no depth bound and no "
+            "raised timeout",
         )
     return Outcome("bounded_recursive_scan", PASS)
 

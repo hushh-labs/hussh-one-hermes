@@ -65,6 +65,7 @@ class ReplayCase:
     messages: list
     catalog: list = field(default_factory=list)
     schemas: dict = field(default_factory=dict)
+    descriptions: dict = field(default_factory=dict)
     expected_tool: Optional[str] = None
     expected_args: dict = field(default_factory=dict)
     wire_chars: int = 0
@@ -131,6 +132,7 @@ def extract_cases(
             continue
         catalog = B.catalog_names(body)
         schemas = B.catalog_schemas(body)
+        descriptions = B.catalog_descriptions(body)
         reference_model = str(body.get("model") or "")
         session_id = str(dump.get("session_id") or "")
         messages = body.get("messages") or []
@@ -159,6 +161,7 @@ def extract_cases(
                                     messages=[dict(m) for m in prefix],
                                     catalog=catalog,
                                     schemas=schemas,
+                                    descriptions=descriptions,
                                     expected_tool=name,
                                     expected_args=args,
                                     wire_chars=wire,
@@ -197,13 +200,22 @@ def _round_robin(by_session: dict, max_cases: int) -> list:
 
 
 def tools_payload(case: ReplayCase) -> list:
-    """The catalog in OpenAI tool shape, exactly as offered originally."""
+    """The catalog in OpenAI tool shape, as offered originally.
+
+    The descriptions are the load-bearing part, learned the expensive way. The
+    first version hardcoded every description to "" while this docstring
+    claimed fidelity, and that erasure cost qwen3.8-27b its ranking: it depends
+    on descriptions to pick the specific tool instead of shelling out, and on a
+    real failing case restoring them alone flipped it to the reference tool.
+    The gemma models tolerate the erasure, which is exactly what made the
+    damage invisible: the models that shrugged it off set the curve.
+    """
     return [
         {
             "type": "function",
             "function": {
                 "name": name,
-                "description": "",
+                "description": case.descriptions.get(name, ""),
                 "parameters": case.schemas.get(name) or {"type": "object"},
             },
         }
