@@ -598,6 +598,78 @@ State these or the number misleads:
    measurable. If the top two models are within noise, report the suite as
    inconclusive rather than ranking them.
 
+## The monthly refresh: what to actually run when a new model drops
+
+On-device models turn over roughly monthly, per the founder. Everything above
+this section was learned by hand, mostly through scratch scripts written and
+discarded during this selection. That is the failure this section exists to
+prevent: the next model refresh should be a checklist against real commands,
+not a re-derivation.
+
+1. **Download the model in LM Studio, then verify its default config matches
+   what you intend to test it at.** `~/.lmstudio/.internal/user-concrete-model-default-config/<publisher>/<model>.json`,
+   field `load.contextLength`. Do not trust the GUI's displayed setting --
+   verify with a readback (`hermes puppy replay <model> --limit 1` prints
+   `context: N (verified by readback)`, or query `/api/v0/models` directly for
+   `loaded_context_length`).
+
+2. **If context pinning fails even after the CLI reports a restart,** this
+   model may share the specific defect found 2026-09-01 on `qwen/qwen3.8-27b`
+   and `gemma-4-26b-a4b-qat`: an MLX conversion that will not load below its
+   own advertised maximum by any mechanism (CLI flag, config file, or their
+   combination), only resolved by `host.ensure_context`'s restart-and-retry.
+   If it fails even with that, check whether a GGUF build of the same base
+   model exists in the catalog (`compatibility_type` in `/api/v0/models`) --
+   GGUF conversions were not observed to have this limitation on this fleet.
+
+3. **Run the replay exam with artifacts, once per candidate model:**
+
+   ```
+   hermes puppy replay <model> --limit 45 \
+     --artifacts /path/corrected_<slug>.jsonl \
+     --out /path/summary_<slug>.json
+   ```
+
+   This is the exam that matters: real session turns, cut just before the
+   agent acted. `--artifacts` writes the per-case detail a surprising result
+   needs to be auditable at all -- the gap that pushed every model comparison
+   before this fix into throwaway scripts.
+
+4. **Build and grade the goal-progress queue, in a DIFFERENT session than the
+   one that ran step 3:**
+
+   ```
+   hermes puppy goal-progress queue \
+     --artifacts /path/corrected_*.jsonl \
+     --out /path/run --seal /path/secrets/seal.json \
+     --identity /path/secrets/identity.json
+   ```
+
+   Grade every row through `verdict_cli`, per the judging contract, without
+   opening the seal or identity files. Then:
+
+   ```
+   hermes puppy goal-progress report \
+     --out /path/run --seal /path/secrets/seal.json \
+     --identity /path/secrets/identity.json --judge "<who graded this>"
+   ```
+
+   A void result means a planted control was missed; no rate survives that,
+   and the fix is to re-grade more carefully, not to re-run the queue.
+
+5. **Report all three numbers, never summed**: structural validity (from the
+   replay summary), agreement with the reference (`reference_match`, an
+   imitation measure, not a truth measure), and judged goal progress. State
+   Wilson confidence intervals and say "not separated" when they overlap
+   rather than inventing a ranking.
+
+6. **Only replace a shipping model if it wins decisively**, per the same bar
+   this selection used: no pair of `google/gemma-4-26b-a4b-qat` and
+   `qwen/qwen3.8-27b` was separated at 95% on structural validity, and the
+   decision still rested on defensible secondary signals (latency, which
+   model's failures are teachable). A new candidate needs the same kind of
+   stated reason, not just a higher point estimate.
+
 ## Sources
 
 - LM Studio API changelog: <https://lmstudio.ai/docs/developer/api-changelog>
