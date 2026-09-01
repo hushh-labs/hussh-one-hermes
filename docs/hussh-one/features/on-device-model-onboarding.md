@@ -30,6 +30,31 @@ Every claim below was wrong at least once when it was assumed:
 Architecture comes from `expert_count` (GGUF) or `num_experts` (MLX), never from
 the model id.
 
+### The context window must be pinned in LM Studio's config, not only in the harness
+
+Found 2026-09-01 on a founder prompt: the exam and the product were loading the
+same models at different context windows. The exam path pins explicitly
+(`lms load <model> -c <ctx> -y`, then reads `loaded_context_length` back from
+`/api/v0/models` and refuses a clamped load), and live queries confirmed
+262144. But the gateway's cold-load path (`ensure_lmstudio_model_loaded`)
+deliberately omits `context_length` unless a caller passes one, and no caller
+does (`run_agent.py` reads `_config_context_length`, which nothing sets). A
+cold load therefore inherits LM Studio's per-model default config at
+`~/.lmstudio/.internal/user-concrete-model-default-config/`, and those
+defaults said: MoE 64,000, qwen 128,000, `gemma-4-12b` no file at all (global
+default). Every exam number would have described a window the product never
+served.
+
+The fix is in LM Studio's own config, per the founder's call, so every load
+path agrees without a code-side lock: all three candidate models' default
+`llm.load.contextLength` now reads 262144, equal to the tested window and to
+the server-reported `max_context_length`. Verification of a default load
+(no `-c`) reading back 262144 is part of the run protocol; if LM Studio has
+the old value cached in-app, one restart applies the file. Two standing rules
+fall out: **a model's LM Studio default context must equal the context it was
+examined at**, and **any load that matters must read the context back from the
+server** rather than trusting the number it asked for.
+
 ## Reasoning levels
 
 This is the part that most recently cost a run, so it comes before the ladder.
