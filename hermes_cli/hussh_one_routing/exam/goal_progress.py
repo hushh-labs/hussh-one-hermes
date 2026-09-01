@@ -41,6 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
+import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -120,6 +122,64 @@ def build_rows(
     return rows, identity
 
 
+# Corpus-generic tokens that appear in half of all requests and actions; an
+# overlap on one of these says nothing about the donor fitting the base.
+_GENERIC_TOKENS = frozenset(
+    {
+        "http", "https", "file", "files", "path", "list", "view", "true",
+        "false", "null", "name", "command", "pattern", "target", "limit",
+        "query", "user", "users", "content", "action", "add", "head", "echo",
+    }
+)
+
+
+def _tool_family(tool: str) -> str:
+    """skills_list and skill_view are one family; terminal is another."""
+    return tool.rstrip("s").split("_", 1)[0].rstrip("s")
+
+
+def _entity_tokens(text: str) -> set:
+    """Identifier-ish tokens, with compound names split into their parts.
+
+    ``board-sync.py`` must collide with ``hushh-engineering-board-sync``: the
+    judge reads them as the same entity, so the builder has to as well.
+    """
+    tokens: set = set()
+    for raw in re.split(r"[^a-z0-9_-]+", text.casefold()):
+        for part in {raw, *re.split(r"[-_]+", raw)}:
+            if len(part) >= 4 and part not in _GENERIC_TOKENS:
+                tokens.add(part)
+    return tokens
+
+
+def _corpus_frequent(rows: Sequence[dict]) -> set:
+    """Tokens too common in this corpus to say anything about domain fit.
+
+    A token in a third of all request tails (or donor actions -- repo paths,
+    the org name) cannot discriminate one request's domain from another's, and
+    counting it as an entity collision would empty the donor pool. Computed
+    from the corpus rather than hand-curated so the list tracks whatever the
+    corpus is actually about.
+    """
+    floor = max(3, len(rows) // 5)
+    from collections import Counter
+
+    tail_counts: Counter = Counter()
+    action_counts: Counter = Counter()
+    for row in rows:
+        for token in _entity_tokens(_request_tail(row["utterance"])):
+            tail_counts[token] += 1
+        for token in _entity_tokens(row["output"]["action"]):
+            action_counts[token] += 1
+    return {t for t, c in tail_counts.items() if c >= floor} | {
+        t for t, c in action_counts.items() if c >= floor
+    }
+
+
+def _request_tail(utterance: str) -> str:
+    return utterance.split("One known-good continuation", 1)[0]
+
+
 def negative_controls(rows: Sequence[dict], *, count: int = NEGATIVE_CONTROL_COUNT) -> list:
     """Real requests wearing another case's action: valid, off-path by build.
 
@@ -127,26 +187,56 @@ def negative_controls(rows: Sequence[dict], *, count: int = NEGATIVE_CONTROL_COU
     and these are exactly that: every swapped action is a real model output
     that passed the structural oracles somewhere else. A judge that waves them
     through is rubber-stamping, and the run voids.
+
+    "Off-path by construction" has now failed twice, and each failure is a
+    donor exclusion here:
+
+      * A donor whose action equals the base's REFERENCE (printed in the
+        utterance) is on-path by byte equality. Found when a correct grader
+        was voided by control c006.
+      * A donor that stays inside the base request's own domain is on-path by
+        semantics: a ``skill_view`` of a skill the request itself lists,
+        planted on a skills-curation request, advances that request no matter
+        where it was lifted from. Found when control c128 voided a grader who
+        had correctly passed the same action shape on the real curation rows.
+        Hence two more exclusions: the donor's tool family must differ from
+        both the base's own action and the base's reference, and the donor's
+        action must share no entity token with the base's request tail.
+
+    Base rows are picked by a content-seeded shuffle rather than in queue
+    order, so not even the session that authored the queue can predict which
+    requests carry the swaps.
     """
     donors = [r for r in rows if "(no tool call" not in r["output"]["action"]]
+    seed = hashlib.sha256(
+        "\x1f".join(sorted(r["id"] for r in rows)).encode("utf-8")
+    ).hexdigest()
+    rng = random.Random(int(seed[:12], 16))
+    bases = rng.sample(donors, k=min(count, len(donors)))
+    frequent = _corpus_frequent(rows)
+
     controls: list = []
-    for index in range(min(count, max(0, len(donors) - 1))):
-        base = donors[index]
-        # Two exclusions make "off-path by construction" actually true. The
-        # donor must use a different tool than the base's own action, and its
-        # action must not appear anywhere in the base's utterance -- which is
-        # exactly where the reference continuation is printed. Without the
-        # second check, a donor whose action equals the base's REFERENCE builds
-        # a control that is on-path by construction while labelled must-catch,
-        # and it voids the run of any judge diligent enough to notice. Found
-        # when a correct grader was voided by control c006.
+    for index, base in enumerate(bases):
+        base_tool = base["output"]["action"].split(" ", 1)[0]
+        base_families = {_tool_family(base_tool)}
+        reference = base["utterance"].rsplit("on-path:", 1)[-1].strip()
+        if reference:
+            base_families.add(_tool_family(reference.split(" ", 1)[0]))
+        request_tokens = (
+            _entity_tokens(_request_tail(base["utterance"])) - frequent
+        )
+
+        candidates = [d for d in donors if d is not base]
+        rng.shuffle(candidates)
         donor = None
-        for candidate in donors[index + 1 :]:
-            different_tool = candidate["output"]["action"].split(" ", 1)[0] != base[
-                "output"
-            ]["action"].split(" ", 1)[0]
-            not_the_reference = candidate["output"]["action"] not in base["utterance"]
-            if different_tool and not_the_reference:
+        for candidate in candidates:
+            action = candidate["output"]["action"]
+            cross_family = _tool_family(action.split(" ", 1)[0]) not in base_families
+            not_the_reference = action not in base["utterance"]
+            no_shared_entity = not (
+                (_entity_tokens(action) - frequent) & request_tokens
+            )
+            if cross_family and not_the_reference and no_shared_entity:
                 donor = candidate
                 break
         if donor is None:

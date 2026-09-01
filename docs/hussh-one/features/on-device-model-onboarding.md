@@ -181,12 +181,71 @@ What the correction changed, and what it did not:
   42 graded cases each, the honest statement is that the three cannot be ranked
   on structural validity, and the report says so instead of inventing an order.
 - **Latency and agreement still tier them.** The MoE is decisively fastest
-  (41.5s median); the 12b leads agreement (0.595). qwen leads no column and is
-  slowest, so the two-tier gemma recommendation stands, now for stated reasons
-  that survive the audit rather than a ranking that did not.
+  (41.5s median); the 12b leads agreement (0.595). qwen leads no column in this
+  table and is slowest, so the two-tier gemma recommendation stands, now for
+  stated reasons that survive the audit rather than a ranking that did not.
+  (qwen does lead the judged goal-progress number in the next section.)
 
 The prior section is retained below as the record of what was published and why
 it was wrong.
+
+## The third number, 2026-08-31: goal progress, judged
+
+Structural validity and agreement are proxies. The founder's exact critique
+("were the tests goal oriented, validating that a goal was really achieved")
+named what neither measures: whether the chosen action advanced the goal the
+user actually had. The `goal_progress` suite closes that gap. Every fair-run
+turn from all three models went into one blinded queue: request tail, the
+frontier continuation labelled "NOT ground truth", the model's action with its
+prose, no model names anywhere. Grading went through the review-queue
+discipline: planted swapped-action controls, byte-equal positive controls, a
+closed five-rule vocabulary (wrong-object, dead-end, redundant,
+destructive-detour, stalls), citations verified verbatim at write time,
+`unsure` counted against, seal and identity map held outside the run
+directory.
+
+The first grading attempt VOIDED, and the void is part of the record: the
+judge (a frontier session) passed two planted swaps. One was a fair control
+missed through inconsistent leniency (the identical action had been ruled
+wrong on another request). One was a builder defect: a same-domain donor (a
+`skill_view` of a skill the request itself listed, planted on the
+skills-curation request) is on-path by semantics, the c006 class of unwinnable
+control one level up. The builder now refuses same-family and shared-entity
+donors and picks control bases by a content-seeded shuffle, with regression
+tests; the regrade carried every per-row content judgment, flipped the one
+recalibrated row, and passed all six controls.
+
+| Model | Goal progress | 95% CI | Off-path rules |
+| --- | --- | --- | --- |
+| `qwen/qwen3.8-27b` | 0.929 (39/42) | [0.810, 0.975] | 2 wrong-object, 1 dead-end |
+| `gemma-4-12b` (8-bit) | 0.905 (38/42) | [0.779, 0.962] | 2 dead-end, 1 stalls, 1 wrong-object |
+| `gemma-4-26b-a4b-qat` (MoE) | 0.854 (35/41) | [0.716, 0.931] | 3 wrong-object, 1 stalls, 1 dead-end, 1 redundant |
+
+No pair is separated at 95%, the intervals overlap heavily, and this number is
+never added to the other two. What it reframes even so:
+
+- **The goal ranking inverts the structural ranking.** qwen, last on
+  structural validity, is first on judged goal progress; the MoE, structurally
+  pristine, wanders off-goal most. A model can format perfect tool calls at
+  the wrong object, and a model can cite an unestablished path while driving
+  at exactly the right goal.
+- **qwen's deficit is the teachable kind.** Its structural failures are one
+  rule (`paths_grounded`: cite only what the context established), which is
+  precisely what a playbook loop teaches. Its goal comprehension, the hard
+  thing to teach, leads. The MoE's commonest fault (acting on the wrong object
+  under a clear request) is the hard kind.
+- **The off-path modes are few and named.** Across 125 graded rows there were
+  13 off-path actions in four modes. The commonest was answering a
+  service-connectivity question with git repo metadata (five of the six
+  wrong-object verdicts); the starkest was asking the user to provide a file
+  the context said to search for (stalls).
+
+Same-session disclosure: the queue author and the judge were the same session,
+so the contract's independent-judge requirement is not met by this run, and
+after a void names control ids a rebuild's control pass is wiring proof, not
+an independent diligence test. The rates measure per-row content judgment of
+125 real rows. Independent confirmation is a fresh judge session on a fresh
+rebuild, and the machinery for that now exists.
 
 ## Superseded: the 2026-08-31 selection and its defects
 

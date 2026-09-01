@@ -120,6 +120,46 @@ class TestControls:
             )
             assert control["output"]["action"] not in base["utterance"]
 
+    def test_a_same_domain_donor_is_never_used(self, tmp_path):
+        # Found live: control c128 planted a skill_view of a skill the base
+        # request itself listed onto a skills-curation request. On a curation
+        # task, viewing any listed skill IS on-path, so the control voided a
+        # grader who had correctly passed the same action shape on the real
+        # curation rows. Same-family and shared-entity donors must be skipped.
+        curation_tail = (
+            "curate the skills inventory: - hushh-engineering-board-sync "
+            "state=active - xurl state=active - yuanbao state=active"
+        )
+        poisoned = artifact(tmp_path, "solo_model", [
+            record("c1", "skills_list", {}, "skills_list", {},
+                   tail=curation_tail),
+            record("c2", "skill_view", {"name": "hushh-engineering-board-sync"},
+                   "read_file", {"path": "b.md"}, tail="compare the branches"),
+            record("c3", "terminal", {"command": "python3 board-sync.py"},
+                   "read_file", {"path": "c.md"}, tail="run the report"),
+            record("c4", "web_search", {"query": "weather in kirkland"},
+                   "read_file", {"path": "d.md"}, tail="what is the weather"),
+        ])
+        rows, _ = GP.build_rows([poisoned])
+        base_utterance = next(
+            r["utterance"] for r in rows if "curate the skills" in r["utterance"]
+        )
+        for control in GP.negative_controls(rows, count=8):
+            if control["utterance"] != base_utterance:
+                continue
+            action = control["output"]["action"]
+            # skill_view is the same tool family as the base's own skills_list,
+            # and the terminal donor names board-sync, an entity the request
+            # lists. Neither may be planted on the curation request.
+            assert not action.startswith("skill_view"), action
+            assert "board-sync" not in action, action
+
+    def test_control_bases_are_content_seeded_and_deterministic(self, artifacts):
+        rows, _ = GP.build_rows(artifacts)
+        first = GP.negative_controls(rows, count=3)
+        second = GP.negative_controls(rows, count=3)
+        assert first == second
+
     def test_positive_controls_are_byte_equal_to_the_reference(self, artifacts):
         rows, identity = GP.build_rows(artifacts)
         positives = GP.positive_controls(rows, identity, artifacts)
