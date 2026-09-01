@@ -139,3 +139,74 @@ class TestRestartAppIsDarwinOnly:
             assert "macOS" in str(exc)
         else:
             raise AssertionError("expected a RuntimeError on non-darwin")
+
+
+class TestRestartAppClearsTheStaleLock:
+    """The real defect, not a stand-in for it.
+
+    SIGKILL is the only way to stop this app (it ignores SIGTERM), and
+    SIGKILL skips the shutdown path that removes Electron's SingletonLock
+    file. Left behind, every subsequent launch silently no-ops -- no error,
+    no process, nothing on the port -- which is indistinguishable from "LM
+    Studio crashed" from the outside. Found live: this exact lock was removed
+    by hand once, never encoded into restart_app, so every kill after that
+    first manual fix recreated the same trap for the next call. These pin the
+    fix by exercising the real function end to end, with only subprocess and
+    the network faked -- a reimplementation of the lock-removal logic here
+    would prove nothing about whether restart_app itself does it.
+    """
+
+    def _patch_io(self, monkeypatch, *, server_up=True):
+        calls = []
+        monkeypatch.setattr(
+            H.subprocess, "run",
+            lambda cmd, **kw: calls.append(cmd) or type("R", (), {"returncode": 0})(),
+        )
+        if server_up:
+            monkeypatch.setattr(
+                H.urllib.request, "urlopen", lambda *a, **kw: object()
+            )
+        else:
+            def _refuse(*a, **kw):
+                raise OSError("connection refused")
+            monkeypatch.setattr(H.urllib.request, "urlopen", _refuse)
+        monkeypatch.setattr(H.time, "sleep", lambda _s: None)
+        return calls
+
+    def test_a_stale_lock_from_an_earlier_kill_is_removed(self, monkeypatch, tmp_path):
+        lock = tmp_path / "SingletonLock"
+        lock.symlink_to("Mac-99999")  # points at a pid that no longer exists
+        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", lock)
+        self._patch_io(monkeypatch)
+
+        H.restart_app(timeout=5)
+        assert not lock.exists()
+
+    def test_no_lock_present_is_not_an_error(self, monkeypatch, tmp_path):
+        # The common case: a clean quit already removed it. unlink() on a
+        # missing path must not raise past this point.
+        lock = tmp_path / "SingletonLock"
+        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", lock)
+        self._patch_io(monkeypatch)
+
+        H.restart_app(timeout=5)  # must not raise
+
+    def test_the_lock_is_removed_before_the_relaunch_is_attempted(self, monkeypatch, tmp_path):
+        lock = tmp_path / "SingletonLock"
+        lock.symlink_to("Mac-99999")
+        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", lock)
+        calls = self._patch_io(monkeypatch)
+
+        H.restart_app(timeout=5)
+        # 'open -a LM Studio' is the second subprocess call, after the pkill;
+        # by then the lock must already be gone, or the relaunch it triggers
+        # inherits the exact silent no-op this fix exists to prevent.
+        assert lock.exists() is False
+        assert any(cmd[:2] == ["open", "-a"] for cmd in calls)
+
+    def test_the_default_timeout_has_real_headroom_over_the_measured_cold_start(self):
+        # Measured on this machine: ~128s from kill to the server answering.
+        # 120s (the old default) was BELOW that -- three restarts this
+        # session were misdiagnosed as crashes because of exactly this gap.
+        measured_cold_start_s = 128
+        assert H.DEFAULT_RESTART_TIMEOUT_S > measured_cold_start_s * 2

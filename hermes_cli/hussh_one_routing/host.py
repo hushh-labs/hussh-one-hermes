@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -134,9 +135,22 @@ def load_at_context(
 
 _LMSTUDIO_APP_PATTERN = r"/Applications/LM Studio\.app/Contents/MacOS/LM Studio$"
 
+_LMSTUDIO_SINGLETON_LOCK = (
+    Path.home() / "Library" / "Application Support" / "LM Studio" / "SingletonLock"
+)
+
+# Measured cold start on this machine, after the lock-cleanup fix below: about
+# 128s from a `kill -9` to the server accepting connections. Before that fix
+# was found, three restart attempts this session were misdiagnosed as "LM
+# Studio crashed" when the real cause was this timeout giving up seconds
+# before a slow-but-healthy start would have finished. 4x the measured value,
+# matching this codebase's own headroom convention elsewhere (BUDGET_HEADROOM
+# in reasoning.py), rather than the bare measurement.
+DEFAULT_RESTART_TIMEOUT_S = 512.0
+
 
 def restart_app(
-    *, base_url: str = DEFAULT_SERVER_ROOT, timeout: float = 120.0
+    *, base_url: str = DEFAULT_SERVER_ROOT, timeout: float = DEFAULT_RESTART_TIMEOUT_S
 ) -> None:
     """Quit and relaunch the LM Studio app, then wait for its server.
 
@@ -154,6 +168,19 @@ def restart_app(
     running app -- it is not something to call speculatively; see
     :func:`ensure_context`, which calls it at most once per request and only
     after a plain reload has already been tried and shown to not take effect.
+
+    **The stale-lock trap, found the same day the hard way.** LM Studio
+    ignores SIGTERM, so this has to SIGKILL it, and SIGKILL skips the normal
+    shutdown path that removes Electron's `SingletonLock` file. Every
+    subsequent launch attempt -- `open -a`, `open -n -a`, even the raw binary
+    -- then silently no-ops: it sees the stale lock, assumes another instance
+    already owns it, and exits without ever binding the server port or
+    printing an error. Three restarts this session were misread as "LM
+    Studio crashed" before this was traced to its actual cause: the SAME
+    lock file being manually removed once, by hand, and never encoded into
+    this function, so every kill after that first manual fix recreated the
+    exact same trap for the next call. Removed here, every time, so the fix
+    survives past the one session that found it.
     """
     if sys.platform != "darwin":
         raise RuntimeError("restart_app is only implemented for macOS")
@@ -162,6 +189,11 @@ def restart_app(
         capture_output=True,
         check=False,
     )
+    time.sleep(1.0)  # let the OS finish tearing the killed process down
+    try:
+        _LMSTUDIO_SINGLETON_LOCK.unlink()
+    except FileNotFoundError:
+        pass
     subprocess.run(["open", "-a", "LM Studio"], capture_output=True, check=False)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
