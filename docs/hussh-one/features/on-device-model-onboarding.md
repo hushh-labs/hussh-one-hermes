@@ -53,41 +53,19 @@ model's LM Studio default context must equal the context it was examined at**,
 and **any load that matters must read the context back from the server**
 rather than trusting the number it asked for.
 
-**Correction, same day, from directly testing the fix:** the two models that
-survived selection turned out to be immune to this whole lever. Chasing the
-founder's next request (find the right window between 96k and 128k, set
-through LM Studio's config, not a code-side lock) meant genuinely reloading
-`qwen/qwen3.8-27b` and `gemma-4-26b-a4b-qat` at 98,304 and 131,072. All four
-attempts (two windows x two models) came back loaded at 262144 and were
-refused by the script's own readback check. Direct CLI diagnosis nailed down
-why, ruling out config precedence as the cause: with the persisted default
-deliberately set to 40,000, `lms load qwen/qwen3.8-27b -c 98304 -y` still
-loaded at 262144; a bare `lms load qwen/qwen3.8-27b -y` with no `-c` at all,
-same 40,000 default on disk, also loaded at 262144. Neither the CLI flag nor
-the config file nor omitting both can move these two models off their native
-maximum on this LM Studio/MLX build. The mechanism itself is not broken:
-`google/gemma-4-e2b` (131072 max) loaded at exactly the 32,768 it was asked
-for, verbatim, on the same host in the same session. This model-specific
-pinning is a known class of MLX/rope-scaling limitation, not a config bug --
-some conversions bake the long-context rope extension in for one target
-length and the engine will not run them at a shorter one.
-
-Net effect: the "product silently served a smaller window than the exam"
-finding above is **retracted for the two models Puppy One actually ships**.
-Since neither can load below 262144 by any mechanism, the old smaller
-defaults (MoE 64k, qwen 128k) were never actually reachable at runtime either
--- the product was, and always has been, running these two at full native
-context. The config fix above is still correct practice (the default should
-state the truth, and the lever genuinely works on other catalog models such
-as `gemma-4-e2b` and presumably `gemma-4-12b`), but for the two shipping
-models it changed documentation accuracy, not runtime behaviour.
-
-The practical consequence: **the 96k-vs-128k question cannot be answered by
-loading these two models smaller, because that operating point does not
-exist for them.** The only lever available is prompt-side -- how much of a
-growing conversation is fed to the model at generation time, while it stays
-loaded at its unavoidable 262144. That reframes it as a compaction-budget
-question, not a load-context question, and is covered in the next section.
+**Correction of the correction (superseded 2026-09-02; the paragraph that
+used to sit here claimed the two shipping models were "immune to the lever"
+by an MLX rope-scaling limitation -- that was wrong):** the real mechanism is
+session-stickiness in LM Studio, documented under "restart_app" in
+`host.py`: a model already loaded once at some context inside one running LM
+Studio process cannot be moved to another context by any flag or config file
+until the app restarts, and the earlier "impossible" tests were all
+contaminated by that. Verified the other way round afterwards: the `lmstudio`
+Python SDK loaded the MoE at 32,768 and then at 262,144 on demand, read back
+from the server. The 96k-vs-128k question is still best treated as a
+prompt-side compaction-trigger question (next section), but for the honest
+reason -- the corpus never exceeds 96k -- not because a smaller window is
+unreachable.
 
 ## Reasoning levels
 
