@@ -622,6 +622,32 @@ not a re-derivation.
    model exists in the catalog (`compatibility_type` in `/api/v0/models`) --
    GGUF conversions were not observed to have this limitation on this fleet.
 
+2b. **A second downloaded variant (e.g. a GGUF build alongside an MLX one,
+   sharing a single catalog id) IS loadable programmatically -- but only over
+   the websocket SDK channel, the same one the GUI uses.** Everything else
+   refuses it, and was tested exhaustively before this was found: `lms load`
+   with the `@quant` suffix, the full indexed identifier, the concrete file
+   path, and every alias the model index itself registers, plus the same
+   keys against REST `POST /api/v1/models/load` -- all "model not found".
+   The index cache (`~/.lmstudio/.internal/model-index-cache.json`) registers
+   per-artifact aliases (`autoIdentifiers`) such as `gemma-4-26b-a4b-it-qat`
+   for the GGUF file, and the `lmstudio` Python SDK resolves those:
+
+   ```python
+   import lmstudio as lms
+   client = lms.Client("localhost:1234")
+   model = client.llm.load_new_instance(
+       "gemma-4-26b-a4b-it-qat",           # artifact alias from the index cache
+       config=lms.LlmLoadModelConfig(context_length=262144),
+   )
+   ```
+
+   Pass the config explicitly: an SDK load without one lands at a small
+   default (32768 observed), not the model's maximum. The instance then
+   serves under that alias as its API id -- run the exam against it with
+   `hermes puppy replay <alias> --assume-loaded`, which trusts the resident
+   instance and never loads or evicts anything itself.
+
 3. **Run the replay exam with artifacts, once per candidate model:**
 
    ```
