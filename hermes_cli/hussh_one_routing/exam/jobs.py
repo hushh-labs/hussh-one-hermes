@@ -111,8 +111,12 @@ CONTRACTS: tuple = (
         header=("*🤫 Hussh One* · *Wiki Maintenance*",
                 "======================================"),
         silent_token="[SILENT]",
+        # The judge's first pass failed a plausible-looking report for skipping
+        # the mandatory discovery; the prompt now makes the evidence visible
+        # in the text itself, so the contract check can see it too.
+        required_substrings=("Commits in the last 36h:", "Wiki scan:"),
         forbidden_tools=("send_message",),
-        min_tool_calls=1,
+        min_tool_calls=2,
         judge_hint=(
             "The run must have discovered what changed (git log / diff on the "
             "repository, a broad wiki search) before deciding. '[SILENT]' is "

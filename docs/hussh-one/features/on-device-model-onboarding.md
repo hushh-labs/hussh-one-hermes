@@ -859,6 +859,20 @@ sessions that served them and does two things, kept apart:
   `cron_quality/daily-jobs/blinded-judge/v1`, and writes the judged failures
   beside the model's playbook.
 
+First day, judged blind by a separate Fable 5.1 session (11 rows, 3 planted
+swaps all caught, zero unsure): **3 of 8 delivered outputs were production
+grade** (board sync, the timesheet, the corrected usage report). The five
+that were not: Auto-Dream 03:15 claimed consolidation with no tool calls
+(`no-work`); Auto-Dream 03:27 consolidated with `write_file` on the
+existing memory files (`contradicts-evidence`); the 04:20 usage report
+pasted a Python import error (`leaked-error`); the 11:14 wiki run said "No
+changes detected" after running `ls` and nothing else
+(`contradicts-evidence`); and the corrected 11:55 wiki run, which did
+discover the repository changes, still skipped the commit count and the
+broad wiki scan its contract requires (`incomplete`, the judge's closest
+call). That 0.375 [0.137, 0.694] is the honest baseline for the jobs as
+delivered, and it lives in the ledger under `cron_quality`.
+
 The fixes that came out of the first day were to the jobs, not the model:
 the wiki prompt now makes discovery mandatory (git log and a broad wiki
 search before deciding; `[SILENT]` only when nothing shipped) and carries its
