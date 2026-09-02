@@ -215,6 +215,47 @@ def jobs_section(
     return section
 
 
+#: How long a link check is reused. The check costs a token refresh against
+#: Hussh One, and a monitor polling every 20 seconds must not turn into a
+#: request storm; a link state does not change faster than this anyway.
+_LINK_TTL_SECONDS = 60.0
+_link_cache: Dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def link_section(*, ttl: float = _LINK_TTL_SECONDS, now: Optional[float] = None) -> Dict[str, Any]:
+    """Whether this machine is still reaching Hussh One, and the repair if not.
+
+    The identity stored on disk stays "connected" after the login behind it
+    dies, so a monitor that reads only that reports a healthy link for a
+    machine One has not heard from in weeks. This asks the question the owner
+    means, and names the fix rather than leaving them to find it.
+    """
+    moment = now if now is not None else time.time()
+    cached = _link_cache.get("value")
+    if cached is not None and moment - float(_link_cache.get("at") or 0.0) < ttl:
+        return dict(cached)
+
+    def _probe() -> Dict[str, Any]:
+        from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
+
+        bridge = get_profile_bridge()
+        identity = bridge.identity_status()
+        health = bridge.session_health()
+        return {
+            "connected": bool(identity.get("connected")),
+            "account_email": identity.get("account_email"),
+            "environment": identity.get("environment"),
+            "session": health.get("session"),
+            "heartbeat_live": health.get("heartbeat_live"),
+            "remedy": health.get("remedy"),
+        }
+
+    value = _safe("link", _probe, {}) or {}
+    _link_cache["at"] = moment
+    _link_cache["value"] = value
+    return dict(value)
+
+
 def collect_resources(
     *,
     config: Optional[dict] = None,
@@ -234,4 +275,5 @@ def collect_resources(
         "machine": _safe("machine", machine_section, {}) or {},
         "models": _safe("models", lambda: models_section(agent.get("model")), {}) or {},
         "jobs": _safe("jobs_section", jobs_section, {}) or {},
+        "link": _safe("link_section", link_section, {}) or {},
     }

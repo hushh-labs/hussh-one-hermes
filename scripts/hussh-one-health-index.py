@@ -441,6 +441,37 @@ def probe_puppy_one() -> None:
     except Exception as e:  # noqa: BLE001
         add(harness, "host", WARN, f"host probe failed: {e}")
 
+    # The Hussh One link. A device's login ages out on its own (and dies when
+    # the account's sessions are reset), and nothing on this machine notices:
+    # the presence heartbeat deliberately never refreshes a token, so a stale
+    # login just stops reporting, and One shows the machine as gone while
+    # everything here looks healthy. It went unnoticed for weeks exactly
+    # because no probe asked. Expired is a WARN with the repair named, never a
+    # FAIL: the device is still trusted and nothing local is at risk.
+    try:
+        from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
+
+        health = get_profile_bridge().session_health()
+        session = str(health.get("session") or "indeterminate")
+        if session == "ok":
+            add(harness, "hussh-one-link", OK, "signed in; presence heartbeat is live")
+        elif session == "not_connected":
+            add(harness, "hussh-one-link", INFO, "not connected to Hussh One")
+        elif session == "expired":
+            add(
+                harness,
+                "hussh-one-link",
+                WARN,
+                "device session expired -- One shows this machine as gone; "
+                "repair with /hussh-one reconnect (keeps the vault)",
+            )
+        elif session == "revoked":
+            add(harness, "hussh-one-link", WARN, "device revoked in One; local copy sealed")
+        else:
+            add(harness, "hussh-one-link", INFO, "link state could not be checked")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "hussh-one-link", INFO, f"link probe unavailable: {e}")
+
 
 def probe_source_library() -> None:
     """Report Source Library harness readiness without opening vault custody.

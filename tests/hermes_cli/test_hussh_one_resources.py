@@ -206,6 +206,73 @@ class TestJobsSection:
         assert section == {}
 
 
+class TestLinkSection:
+    """A stored identity outlives the login behind it; the monitor must not."""
+
+    def setup_method(self) -> None:
+        resources._link_cache.update({"at": 0.0, "value": None})
+
+    def _bridge(self, monkeypatch: pytest.MonkeyPatch, *, session: str, calls: list) -> None:
+        class _Bridge:
+            def identity_status(self_inner):
+                calls.append("identity")
+                return {
+                    "connected": True,
+                    "account_email": "owner@example.com",
+                    "environment": "uat",
+                }
+
+            def session_health(self_inner):
+                return {
+                    "session": session,
+                    "heartbeat_live": session == "ok",
+                    "remedy": "/hussh-one reconnect" if session == "expired" else "",
+                }
+
+        import hermes_cli.hussh_one_pkm.bridge as bridge_module
+
+        monkeypatch.setattr(bridge_module, "get_profile_bridge", lambda *a, **k: _Bridge())
+
+    def test_an_expired_login_is_reported_with_its_repair(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._bridge(monkeypatch, session="expired", calls=[])
+
+        section = resources.link_section(now=1000.0)
+
+        assert section["connected"] is True
+        # Connected and not reaching One are both true at once. Reporting only
+        # the first is what let a machine sit unheard-from for weeks.
+        assert section["session"] == "expired"
+        assert section["heartbeat_live"] is False
+        assert section["remedy"] == "/hussh-one reconnect"
+
+    def test_the_check_is_cached_so_a_polling_monitor_is_not_a_request_storm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list = []
+        self._bridge(monkeypatch, session="ok", calls=calls)
+
+        resources.link_section(now=1000.0)
+        resources.link_section(now=1030.0)
+        assert len(calls) == 1
+
+        resources.link_section(now=1000.0 + 61.0)
+        assert len(calls) == 2
+
+    def test_an_unavailable_bridge_drops_the_section(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import hermes_cli.hussh_one_pkm.bridge as bridge_module
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("bridge unavailable")
+
+        monkeypatch.setattr(bridge_module, "get_profile_bridge", _boom)
+
+        assert resources.link_section(now=2000.0) == {}
+
+
 class TestCollectResources:
     def test_the_snapshot_carries_every_section_and_the_runtime_counters(
         self, monkeypatch: pytest.MonkeyPatch
@@ -213,6 +280,9 @@ class TestCollectResources:
         monkeypatch.setattr(resources, "machine_section", lambda: {"brand": "Mac16,5"})
         monkeypatch.setattr(resources, "models_section", lambda model: {"resident": [], "asked": model})
         monkeypatch.setattr(resources, "jobs_section", lambda: {"enabled": 11})
+        # Pinned: the real one talks to Hussh One, which has no place in a
+        # snapshot-shape test.
+        monkeypatch.setattr(resources, "link_section", lambda: {"session": "ok"})
 
         snapshot = resources.collect_resources(
             config={"model": {"provider": "lmstudio", "default": "m"}},
@@ -237,10 +307,12 @@ class TestCollectResources:
         monkeypatch.setattr(resources, "machine_section", _boom)
         monkeypatch.setattr(resources, "models_section", _boom)
         monkeypatch.setattr(resources, "jobs_section", _boom)
+        monkeypatch.setattr(resources, "link_section", _boom)
 
         snapshot = resources.collect_resources(config={"model": {"provider": "lmstudio"}})
 
         assert snapshot["machine"] == {}
         assert snapshot["models"] == {}
         assert snapshot["jobs"] == {}
+        assert snapshot["link"] == {}
         assert snapshot["agent"]["on_device"] is True
