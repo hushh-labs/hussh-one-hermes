@@ -319,23 +319,51 @@ def _cmd_replay(args) -> int:
     print(f"  prompt tokens: median {sizes[len(sizes)//2]:,} max {sizes[-1]:,}")
     print(f"  catalog size: max {max(c.catalog_size for c in cases)}")
 
-    pinned = args.context or H.common_max_context([args.model])
-    if not pinned:
-        print(f"could not determine a context length for {args.model}",
-              file=sys.stderr)
-        return EXIT_ERROR
-    loaded = H.ensure_context(
-        args.model, pinned,
-        unload=H.unload, resident=H.resident, load=H.load_at_context,
-        restart=None if args.no_restart else H.restart_app,
-    )
-    if loaded != pinned:
-        print(f"asked for context {pinned:,}, server holds {loaded!r}; "
-              "refusing to run a benchmark whose window is not what it "
-              "claims" + ("" if args.no_restart else
-                          " (even after a restart)"), file=sys.stderr)
-        return EXIT_ERROR
-    print(f"  context: {loaded:,} (verified by readback)")
+    if args.assume_loaded:
+        # For a model this harness cannot load itself: found 2026-09-01 with
+        # a GGUF variant that shares its catalog id with an already-resident
+        # MLX build. LM Studio assigns the second one a disambiguating
+        # ":N" suffix, but that suffix is a display label for an EXISTING
+        # instance, not a loadable target -- a fresh `lms load "<id>:N"`
+        # from empty returns "model not found", confirmed by direct test.
+        # Only the GUI's own variant picker can create that instance, and
+        # only for the one load action, not as a persistent default. Calling
+        # ensure_context here would drain the very instance this mode exists
+        # to test before ever using it. So: read-only. Trust what is already
+        # loaded, or refuse -- never try to load or evict anything.
+        loaded = H.loaded_context(args.model)
+        if not loaded:
+            print(f"{args.model} is not currently loaded, and --assume-loaded "
+                  "refuses to load or evict anything; load it first (the GUI "
+                  "variant picker, for a model this harness cannot load "
+                  "itself)", file=sys.stderr)
+            return EXIT_ERROR
+        if args.context and loaded != args.context:
+            print(f"asked for context {args.context:,}, {args.model} is "
+                  f"already loaded at {loaded:,}; --assume-loaded will not "
+                  "reload it to match", file=sys.stderr)
+            return EXIT_ERROR
+        pinned = loaded
+        print(f"  context: {pinned:,} (already loaded; trusted as-is, "
+              "not managed by this run)")
+    else:
+        pinned = args.context or H.common_max_context([args.model])
+        if not pinned:
+            print(f"could not determine a context length for {args.model}",
+                  file=sys.stderr)
+            return EXIT_ERROR
+        loaded = H.ensure_context(
+            args.model, pinned,
+            unload=H.unload, resident=H.resident, load=H.load_at_context,
+            restart=None if args.no_restart else H.restart_app,
+        )
+        if loaded != pinned:
+            print(f"asked for context {pinned:,}, server holds {loaded!r}; "
+                  "refusing to run a benchmark whose window is not what it "
+                  "claims" + ("" if args.no_restart else
+                              " (even after a restart)"), file=sys.stderr)
+            return EXIT_ERROR
+        print(f"  context: {loaded:,} (verified by readback)")
 
     profile = RZ.ReasoningProfile(
         model=args.model, family=RZ.family_of(args.model),
@@ -636,6 +664,12 @@ def build_puppy_parser(subparsers) -> None:
     replay.add_argument("--no-restart", action="store_true",
                         help="Refuse a context mismatch rather than "
                              "restarting LM Studio to try to clear it")
+    replay.add_argument("--assume-loaded", action="store_true",
+                        help="Trust whatever is already loaded under this "
+                             "id; never load, evict, or restart. For a "
+                             "model this harness cannot load itself (e.g. "
+                             "a non-default catalog variant reachable only "
+                             "through the LM Studio GUI's own picker)")
 
     goal_progress = sub.add_parser(
         "goal-progress",

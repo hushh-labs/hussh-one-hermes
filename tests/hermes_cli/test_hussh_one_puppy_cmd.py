@@ -37,6 +37,7 @@ class TestReplayParsing:
         assert args.artifacts is None
         assert args.context is None
         assert args.no_restart is False
+        assert args.assume_loaded is False
 
     def test_context_and_artifacts_and_no_restart_parse(self):
         args = _parser().parse_args([
@@ -46,6 +47,12 @@ class TestReplayParsing:
         assert args.context == 98304
         assert args.artifacts == "out.jsonl"
         assert args.no_restart is True
+
+    def test_assume_loaded_parses(self):
+        args = _parser().parse_args(
+            ["puppy", "replay", "some/model", "--assume-loaded"]
+        )
+        assert args.assume_loaded is True
 
 
 class TestGoalProgressParsing:
