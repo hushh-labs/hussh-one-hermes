@@ -678,6 +678,36 @@ report` drops their rows from the rate (probe mode bumped to
 ledger counted every graded row and are not comparable). Both arms of the
 learning pair were rerun on the active-only frozen corpus.
 
+## A cron job on the on-device model: the Auto-Dream nine-night failure, 2026-09-02
+
+The nightly Auto-Dream job failed nine nights running with "Context length
+exceeded (146,707 tokens). Cannot compress further." while the model it ran
+on was loaded at 262,144. The config-map fix (the default model's
+`context_length` entry) was real but not the cause. The request was:
+
+| Part | Size | Why |
+| --- | --- | --- |
+| `auto_dream.py` stdout, one user message | 572K chars, about 188K real tokens | 7 days of logs (400K-char cap that kept the OLDEST turns), all of `MEMORY.md`, `procedures.md`, and 149K chars of raw `index.json` |
+| tool schemas | 232 tools, about 75K real tokens | the job had no `enabled_toolsets`, so it carried 213 MCP tools it never uses |
+
+LM Studio rejects a prompt longer than the loaded context ("the number of
+tokens to keep from the initial prompt is greater than the context length"),
+Hermes classifies that as a context overflow, and a single-message prompt has
+no middle to summarise, so the run dies. Hermes's own estimate (chars / 4)
+undercounts mixed prose and JSON by about a third against the real
+tokenizer, which is why 146,707 "estimated" tokens overflowed a 262,144
+window.
+
+Fix, on the founder's machine (the script is not in this repository): the
+dump has a budget of about 290K chars (140K of logs kept NEWEST first, 40K
+each for the two memory files with a note saying where the rest is, and a
+one-line-per-entry compact view of the index when the raw JSON is over 40K),
+and the job is scoped to `enabled_toolsets: [terminal, file, no_mcp]` like
+the other cron jobs. Measured after: 293K chars, about 96K real tokens, plus
+a dozen native tools. General rule for any cron job on the device: a
+monolith prompt must fit on its own, so budget the script output and scope
+the toolsets; the compactor cannot help a one-message request.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above
