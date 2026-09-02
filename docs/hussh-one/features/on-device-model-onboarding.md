@@ -708,6 +708,13 @@ a dozen native tools. General rule for any cron job on the device: a
 monolith prompt must fit on its own, so budget the script output and scope
 the toolsets; the compactor cannot help a one-message request.
 
+Live result: a manual run right after the fix (`hermes cron run
+2e5aee0849fb`) succeeded, 03:15:34 to 03:25:09, six native tools in the
+request (verified in LM Studio's server log, which is also where to check
+the tool count of any cron request; it truncates message contents), while a
+learning-loop arm was sharing the same model. The failure streak reset from
+nine to zero.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above
