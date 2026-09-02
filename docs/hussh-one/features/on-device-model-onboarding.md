@@ -701,7 +701,34 @@ construction. Both arms moving by exactly 0.0 is the metric saying so, not
 the loop failing. The measurement that can see those tactics is a judged
 with/without pair: `hermes puppy replay --playbook` on the same frozen
 cases, both artifact sets in one blinded queue, graded by a session that
-did not write it. That pair is the next number to record here.
+did not write it.
+
+### The with/without pair, judged blind (gp_run8)
+
+Same 45 frozen active-corpus cases, replayed without and then with the
+three tactics the judged-evidence round accepted (2,121 characters of
+playbook), both artifact sets in one queue of 82 rows with 6 planted
+controls, graded by a separate Fable 5.1 session that never opened the seal
+or the identity map. Valid run: every control caught, zero `unsure`, zero
+writer rejections.
+
+| Arm | Structural | Agreement | Goal progress (judged) | Off-path |
+| --- | --- | --- | --- | --- |
+| without playbook | 0.974 | 0.500 | 0.842 [0.696, 0.926], n=38 | 4 dead-end, 1 stalls, 1 destructive-detour |
+| with playbook | 1.000 | 0.447 | 0.947 [0.827, 0.985], n=38 | 2 dead-end |
+
+Four more of the same 38 cases were judged on-path with the playbook, and
+the two behaviours the tactics named (asking for an attachment it could
+locate; acting on a runtime question with a repository command) are the
+ones that disappeared. The intervals overlap, so the pair does not separate
+at 95%, and one pair on one night is not a learning claim: the with arm ran
+second, sampling is not deterministic, and a second pair on fresh sessions
+(and on qwen) is what would turn this into one. It is, however, the first
+time any number this harness owns moved in the direction the loop is
+supposed to move it, measured the only way that number can be measured.
+Both arms are in the evolution ledger under probe mode
+`goal_progress/replay/blinded-judge/active-sessions/v2` as
+`google/gemma-4-26b-a4b-qat` and `google/gemma-4-26b-a4b-qat+playbook`.
 
 ## A cron job on the on-device model: the Auto-Dream nine-night failure, 2026-09-02
 
