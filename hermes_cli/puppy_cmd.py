@@ -701,9 +701,16 @@ def _cmd_freeze(args) -> int:
         Path(args.to) if getattr(args, "to", None)
         else B.sessions_dir().parent / "puppy-corpus" / _time.strftime("%Y-%m-%d")
     )
-    files = sorted(source.glob(B.DUMP_GLOB))
+    # Only active sessions are frozen: a disabled cron job's turns are not
+    # goals for the model. The active set is recorded so the frozen corpus
+    # reads the same way later, whatever happens to the jobs file.
+    active_jobs = B.active_cron_job_ids()
+    files, excluded = [], []
+    for path in sorted(source.glob(B.DUMP_GLOB)):
+        session = path.name[len("request_dump_"):]
+        (files if B.session_is_active(session, active_jobs) else excluded).append(path)
     if not files:
-        print(f"no request dumps under {source}", file=sys.stderr)
+        print(f"no request dumps of active sessions under {source}", file=sys.stderr)
         return EXIT_ERROR
     target.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -717,11 +724,14 @@ def _cmd_freeze(args) -> int:
         "source": str(source),
         "count": len(files),
         "dumps": [path.name for path in files],
+        "active_cron_jobs": sorted(active_jobs),
+        "excluded_inactive_cron": [path.name for path in excluded],
     }
     (target / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
-    print(f"frozen: {target} ({len(files)} dumps, {copied} newly copied)")
+    print(f"frozen: {target} ({len(files)} dumps, {copied} newly copied, "
+          f"{len(excluded)} dumps of inactive cron jobs left out)")
     print(f"pin it with: hermes puppy replay <model> --dumps {target}")
     return EXIT_OK
 

@@ -44,6 +44,59 @@ class TestTruncationIsDetectedPerValue:
         assert B.is_truncated({"a": {"b": ["x", "y ...[truncated]"]}})
 
 
+class TestOnlyActiveSessionsCount:
+    """A disabled cron job's turns are not goals for the model.
+
+    The founder disabled the PR-train jobs on purpose; their sessions were the
+    only learnable failures the loop ever saw. Interactive sessions always
+    count, a cron session only while its job is enabled.
+    """
+
+    def _jobs(self, tmp_path):
+        path = tmp_path / "jobs.json"
+        path.write_text(json.dumps({"jobs": [
+            {"id": "29a6e1247b31", "enabled": True},
+            {"id": "8a9375e7bf7c", "enabled": False},
+            {"id": "2a991952bbf3", "enabled": True, "paused": True},
+            {"id": "bab9a640fcb5"},  # no flag: enabled by default
+            {"name": "no id"},
+        ]}), encoding="utf-8")
+        return path
+
+    def test_only_enabled_unpaused_jobs_are_active(self, tmp_path):
+        assert B.active_cron_job_ids(self._jobs(tmp_path)) == {
+            "29a6e1247b31", "bab9a640fcb5",
+        }
+
+    def test_a_missing_or_broken_jobs_file_means_no_active_jobs(self, tmp_path):
+        assert B.active_cron_job_ids(tmp_path / "absent.json") == set()
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        assert B.active_cron_job_ids(broken) == set()
+
+    def test_interactive_sessions_always_count(self):
+        assert B.session_is_active("20260610_165051_314e17", set())
+        assert B.session_is_active("20260610_165#1", None)
+
+    def test_cron_sessions_count_only_while_their_job_is_active(self, tmp_path):
+        active = B.active_cron_job_ids(self._jobs(tmp_path))
+        assert B.session_is_active("cron_29a6e1247b31_20260630_051615", active)
+        assert not B.session_is_active("cron_8a9375e7bf7c_20260618_045000", active)
+        assert not B.session_is_active("cron_2a991952bbf3_20260620_045000", active)
+        # Case ids built from those sessions, old 7-character and new 26-character.
+        assert B.session_is_active("cron_29a6e12#0", active)
+        assert not B.session_is_active("cron_8a9375e#1", active)
+        assert not B.session_is_active("cron_8a9375e7bf7c_20260618#0", active)
+        # No active set at all: every cron session is out, interactive stays.
+        assert not B.session_is_active("cron_29a6e1247b31_20260630_051615", set())
+
+    def test_a_frozen_corpus_reads_with_the_set_it_was_frozen_with(self, tmp_path):
+        (tmp_path / "manifest.json").write_text(
+            json.dumps({"active_cron_jobs": ["8a9375e7bf7c"]}), encoding="utf-8"
+        )
+        assert B.active_jobs_for(tmp_path) == {"8a9375e7bf7c"}
+
+
 class TestAPaginatedReadIsNotTheFile:
     def test_offset_marks_a_partial_read(self):
         assert B.is_partial_read({"path": "a.py", "offset": 200})

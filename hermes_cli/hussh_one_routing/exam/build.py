@@ -64,6 +64,74 @@ def sessions_dir() -> Path:
     return get_hermes_home() / "sessions"
 
 
+def cron_jobs_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "cron" / "jobs.json"
+
+
+# A cron session id (or a case id built from one) starts with the JOB id:
+# ``cron_<hex>_<date>_<time>`` for a session, ``cron_<hex>#<n>`` for a case.
+# Older case ids kept only 7 characters of the job id, hence prefix matching.
+CRON_SESSION = re.compile(r"^cron_([0-9a-f]+)(?:[_#]|$)")
+
+
+def active_cron_job_ids(path: Optional[Path] = None) -> set:
+    """Ids of the cron jobs that are enabled right now; empty when unknown.
+
+    A disabled job's sessions are not the owner's live work. The founder
+    disabled the PR-train jobs on purpose, and their turns kept teaching the
+    loop to fix a workflow nobody runs (every learnable failure in the first
+    replay-suite rounds was an ungrounded ``/pr-train`` path from those jobs).
+    Only active jobs and interactive sessions belong in the exam, the loop and
+    the goal-progress numbers. A missing or unreadable jobs file means no job
+    is known to be active, so every cron session is excluded: the safe side.
+    """
+    target = Path(path) if path is not None else cron_jobs_path()
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return set()
+    active = set()
+    for job in payload.get("jobs") or []:
+        if not isinstance(job, dict) or not job.get("id"):
+            continue
+        if job.get("enabled", True) and not job.get("paused"):
+            active.add(str(job["id"]))
+    return active
+
+
+def session_is_active(session_id: str, active_jobs: Optional[set]) -> bool:
+    """Interactive sessions always count; a cron session only if its job is active."""
+    match = CRON_SESSION.match(session_id or "")
+    if not match:
+        return True
+    job = match.group(1)
+    return any(
+        active.startswith(job) or job.startswith(active)
+        for active in (active_jobs or ())
+    )
+
+
+def active_jobs_for(root: Optional[Path]) -> set:
+    """The active-job set a corpus root should be read with.
+
+    A frozen corpus carries the set that was active when it was frozen in its
+    manifest, so re-reading it months later yields the same cases; the live
+    sessions directory is read against the live jobs file.
+    """
+    if root is not None:
+        manifest = Path(root) / "manifest.json"
+        if manifest.exists():
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                if isinstance(payload.get("active_cron_jobs"), list):
+                    return {str(j) for j in payload["active_cron_jobs"]}
+            except Exception:  # noqa: BLE001
+                logger.warning("unreadable corpus manifest at %s", manifest)
+    return active_cron_job_ids()
+
+
 def iter_dumps(root: Optional[Path] = None) -> Iterator[dict]:
     """Yield each parsed dump. A dump that will not parse is skipped, loudly."""
     base = Path(root) if root is not None else sessions_dir()

@@ -128,6 +128,58 @@ class TestSamplingIsRoundRobinNotSequential:
         assert RP._round_robin({}, 10) == []
 
 
+def _dump(root, session_id):
+    """One minimal OpenAI-style request dump with a single decision."""
+    body = {
+        "model": "reference-model",
+        "tools": [{"type": "function", "function": {
+            "name": "terminal", "description": "run a command",
+            "parameters": {"type": "object",
+                           "properties": {"command": {"type": "string"}}},
+        }}],
+        "messages": [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": f"list the files for {session_id}"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_1",
+                "function": {"name": "terminal", "arguments": "{\"command\": \"ls\"}"},
+            }]},
+        ],
+    }
+    import json as _json
+    (root / f"request_dump_{session_id}_x.json").write_text(
+        _json.dumps({"session_id": session_id, "request": {"body": body}}),
+        encoding="utf-8",
+    )
+
+
+class TestInactiveCronSessionsAreExcluded:
+    SESSIONS = (
+        "20260610_165051_314e17",              # interactive: always counts
+        "cron_29a6e1247b31_20260630_051615",   # active job
+        "cron_8a9375e7bf7c_20260618_045000",   # disabled PR-train job
+    )
+
+    def test_an_explicit_active_set_filters_the_corpus(self, tmp_path):
+        for sid in self.SESSIONS:
+            _dump(tmp_path, sid)
+        cases = RP.extract_cases(root=tmp_path, active_jobs={"29a6e1247b31"})
+        assert sorted(c.session_id for c in cases) == sorted(self.SESSIONS[:2])
+
+    def test_a_frozen_manifest_decides_when_no_set_is_given(self, tmp_path):
+        import json as _json
+
+        for sid in self.SESSIONS:
+            _dump(tmp_path, sid)
+        (tmp_path / "manifest.json").write_text(
+            _json.dumps({"active_cron_jobs": ["8a9375e7bf7c"]}), encoding="utf-8"
+        )
+        cases = RP.extract_cases(root=tmp_path)
+        assert sorted(c.session_id for c in cases) == sorted(
+            [self.SESSIONS[0], self.SESSIONS[2]]
+        )
+
+
 class TestKnownPathsComeFromTheRealPrefix:
     def test_paths_mentioned_in_the_conversation_are_collected(self):
         # A model is only faulted for inventing a path nobody mentioned, not for

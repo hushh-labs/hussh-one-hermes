@@ -127,8 +127,15 @@ def extract_cases(
     root=None,
     max_cases: int = 400,
     max_wire_chars: int = 900_000,
+    active_jobs: Optional[set] = None,
 ) -> list:
     """Cut every session at each point the agent acted.
+
+    **Only active sessions count.** Interactive sessions always do; a cron
+    session only while its job is enabled (``build.session_is_active``). The
+    founder disabled the PR-train jobs on purpose, and their turns were the
+    only learnable failures the loop ever saw. ``active_jobs`` defaults to the
+    frozen corpus's manifest when ``root`` has one, else the live jobs file.
 
     Deduped on the prefix plus the catalog, because the dumps replay full
     history and one decision therefore appears in several of them. Counting the
@@ -143,10 +150,16 @@ def extract_cases(
     """
     by_session: dict = {}
     seen = set()
+    if active_jobs is None:
+        active_jobs = B.active_jobs_for(root)
+    excluded: set = set()
 
     for dump in B.iter_dumps(root):
         body = B.request_body(dump)
         if not body:
+            continue
+        if not B.session_is_active(str(dump.get("session_id") or ""), active_jobs):
+            excluded.add(str(dump.get("session_id") or ""))
             continue
         catalog = B.catalog_names(body)
         schemas = B.catalog_schemas(body)
@@ -190,6 +203,11 @@ def extract_cases(
                             )
             prefix.append(message)
 
+    if excluded:
+        logger.info(
+            "excluded %d session(s) of inactive cron jobs from the corpus",
+            len(excluded),
+        )
     return _round_robin(by_session, max_cases)
 
 

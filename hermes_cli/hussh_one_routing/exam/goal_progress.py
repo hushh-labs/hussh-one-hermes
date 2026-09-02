@@ -401,6 +401,7 @@ def report(
     seal_path: Path | str,
     identity_path: Path | str,
     judge_label: str,
+    active_jobs: Optional[set] = None,
 ) -> dict:
     """Ingest the graded queue and report goal progress per model.
 
@@ -408,10 +409,18 @@ def report(
     control. ``unsure`` counts against the rate, per the contract, and the
     denominator is every graded row for that model, so hedging and being wrong
     cost the same.
+
+    Rows whose case comes from an inactive cron job are excluded from the
+    rate (``build.session_is_active``): a disabled job's turns are not goals
+    for the model. They still count as graded rows for the control check,
+    which is about the judge, not the model.
     """
     from hermes_cli.hussh_one_pkm.judge_queue import ingest
     from hermes_cli.hussh_one_routing import stats
+    from hermes_cli.hussh_one_routing.exam import build as B
 
+    if active_jobs is None:
+        active_jobs = B.active_cron_job_ids()
     identity = json.loads(Path(identity_path).read_text(encoding="utf-8"))
     graded = ingest(
         out_dir=Path(out_dir), judge_label=judge_label, seal_path=Path(seal_path)
@@ -425,9 +434,13 @@ def report(
         }
 
     per_model: dict = {}
+    excluded = 0
     for case in graded.cases:
         who = identity.get(case.case_id)
         if not who or case.control is not None or not case.counted:
+            continue
+        if not B.session_is_active(str(who.get("case_id") or ""), active_jobs):
+            excluded += 1
             continue
         bucket = per_model.setdefault(
             who["model"],
@@ -458,6 +471,8 @@ def report(
         "suite": SUITE_ID,
         "judge": judge_label,
         "models": _models_in(identity),
+        "active_cron_jobs": sorted(active_jobs),
+        "excluded_inactive_cron_cases": excluded,
         "per_model": per_model,
         "caveat": (
             "Goal progress is a judged number over blinded rows. It is the "
@@ -469,8 +484,9 @@ def report(
 
 # How a goal-progress run was asked. The ledger refuses to compare rows whose
 # probe mode differs, so this string changes whenever the queue's shape, the
-# control policy or the counting rule changes.
-PROBE_MODE = "goal_progress/replay/blinded-judge/v1"
+# control policy or the counting rule changes. v2: rows from inactive cron
+# jobs no longer count (v1 rows counted every graded row).
+PROBE_MODE = "goal_progress/replay/blinded-judge/active-sessions/v2"
 
 JUDGED_FAILURES_FILE = "judged_failures.jsonl"
 

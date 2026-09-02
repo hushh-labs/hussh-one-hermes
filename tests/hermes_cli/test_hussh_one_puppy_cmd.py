@@ -222,6 +222,10 @@ class TestGoalProgressCommandDispatch:
                     "search_files", {"pattern": "x"}),
             _record("c2", "terminal", {"command": "ls"},
                     "read_file", {"path": "a.py"}),
+            # A turn from a cron job that is not active (no jobs file under
+            # this HERMES_HOME): graded like any row, excluded from the rate.
+            _record("cron_deadbeef0000_20260101#0", "read_file", {"path": "b.py"},
+                    "read_file", {"path": "b.py"}),
         ])
         model_b = _artifact(tmp_path, "beta_model-b", [
             _record("c1", "read_file", {"path": "a.py"},
@@ -289,6 +293,8 @@ class TestGoalProgressCommandDispatch:
         # ledger (one row per model, comparable by probe mode) and into the
         # file the learning loop reads for exactly this model.
         alpha = printed["per_model"]["alpha/model-a"]
+        assert printed["excluded_inactive_cron_cases"] == 1
+        assert alpha["graded"] == 2
         assert [f["case_id"] for f in alpha["judged_failures"]] == ["c2"]
         assert alpha["judged_failures"][0]["rule"] == "dead-end"
         rows = [json.loads(line) for line in
@@ -351,10 +357,23 @@ class TestTheCorpusCanBeFrozenAndPinned:
             ["puppy", "replay", "m", "--dumps", "/frozen"]
         ).dumps == "/frozen"
 
-    def test_freeze_copies_every_dump_and_writes_a_manifest(self, tmp_path, capsys):
+    def test_freeze_copies_active_dumps_and_writes_a_manifest(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "cron").mkdir()
+        (tmp_path / "cron" / "jobs.json").write_text(json.dumps({"jobs": [
+            {"id": "29a6e1247b31", "enabled": True},
+            {"id": "8a9375e7bf7c", "enabled": False},
+        ]}), encoding="utf-8")
         source = tmp_path / "sessions"
         source.mkdir()
-        for name in ("request_dump_a.json", "request_dump_b.json"):
+        for name in (
+            "request_dump_a.json",
+            "request_dump_b.json",
+            "request_dump_cron_29a6e1247b31_20260630_051615_x.json",
+            "request_dump_cron_8a9375e7bf7c_20260618_045000_x.json",
+        ):
             (source / name).write_text("{}", encoding="utf-8")
         (source / "sessions.json").write_text("{}", encoding="utf-8")  # not a dump
         target = tmp_path / "frozen"
@@ -364,10 +383,17 @@ class TestTheCorpusCanBeFrozenAndPinned:
         assert PC._cmd_freeze(args) == PC.EXIT_OK
         assert sorted(p.name for p in target.glob("request_dump_*.json")) == [
             "request_dump_a.json", "request_dump_b.json",
+            "request_dump_cron_29a6e1247b31_20260630_051615_x.json",
         ]
         assert not (target / "sessions.json").exists()
         manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
-        assert manifest["count"] == 2 and manifest["source"] == str(source)
+        assert manifest["count"] == 3 and manifest["source"] == str(source)
+        # The disabled job's dump is left out, and the set used is recorded so
+        # the frozen corpus reads the same way whatever the jobs file says later.
+        assert manifest["active_cron_jobs"] == ["29a6e1247b31"]
+        assert manifest["excluded_inactive_cron"] == [
+            "request_dump_cron_8a9375e7bf7c_20260618_045000_x.json",
+        ]
         assert "--dumps" in capsys.readouterr().out
         # Freezing again is idempotent: nothing is re-copied or clobbered.
         assert PC._cmd_freeze(args) == PC.EXIT_OK

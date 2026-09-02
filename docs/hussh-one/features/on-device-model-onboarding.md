@@ -658,8 +658,25 @@ What changed so it cannot recur: `hermes puppy freeze` copies every request
 dump to `$HERMES_HOME/puppy-corpus/<date>/` with a manifest, `replay` and
 `loop` take `--dumps <dir>` to read that copy instead of the live directory,
 and a round result now records `train_ids`, `held_out_ids` and `corpus`, so a
-comparison whose arms disagree on those lists is visibly void. Both arms of
-the rerun read the frozen 2026-09-02 corpus (115 dumps).
+comparison whose arms disagree on those lists is visibly void.
+
+### Only active sessions count
+
+The rerun's baseline then offered exactly two learnable failures, both an
+ungrounded `/pr-train` path, both from cron sessions of the two PR-train jobs
+the founder had disabled on purpose. A disabled job's turns are not goals for
+the model, and teaching the model to run a workflow nobody runs is the
+opposite of the harness's job. The policy is now code
+(`build.session_is_active`): interactive sessions always count, a cron
+session only while its job is enabled in `~/.hermes/cron/jobs.json` (a
+missing jobs file means no cron session counts). It applies in three places:
+`freeze` leaves those dumps out and records the active set in the manifest
+(so a frozen corpus reads the same way later, whatever happens to the jobs
+file), `extract_cases` skips them when reading live, and `goal-progress
+report` drops their rows from the rate (probe mode bumped to
+`goal_progress/replay/blinded-judge/active-sessions/v2`; the v1 rows in the
+ledger counted every graded row and are not comparable). Both arms of the
+learning pair were rerun on the active-only frozen corpus.
 
 ## The monthly refresh: what to actually run when a new model drops
 
@@ -724,7 +741,8 @@ not a re-derivation.
 
    Never compare two runs that read different `--dumps` directories: the
    live sessions directory changes under a run (see "The corpus must be
-   frozen" above).
+   frozen" above). `freeze` leaves out the sessions of disabled cron jobs;
+   if a job was disabled on purpose, its turns are not goals for the model.
 
    This is the exam that matters: real session turns, cut just before the
    agent acted. `--artifacts` writes the per-case detail a surprising result
