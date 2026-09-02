@@ -153,8 +153,25 @@ contract, writes a pushed safety tag, reconciles in a short-lived
 guard, and only then pushes `origin/main` and restarts from clean `main`.
 
 It never force-pushes, never pushes upstream, and never changes `main` for a
-merge conflict, guard failure, or concurrent `origin/main` change. Inspect or
-manage it with:
+merge conflict, guard failure, or concurrent `origin/main` change.
+
+On macOS the launchd job runs through the repo's own `.venv/bin/python`,
+which changes into the checkout and runs the script, rather than through
+`/bin/bash` directly: macOS privacy (TCC) decides per launched binary whether
+a background job may read a protected folder such as `~/Documents`, and the
+first scheduled run on 2026-09-02 exited 126 ("Operation not permitted")
+before it could read this script, while the gateway job launched through the
+same interpreter reads the checkout fine. The job also starts from
+`HERMES_HOME`, so the shell never has to stand inside a folder it may not
+enter. Until the upstream conflict backlog has a resolver, a nightly run
+fetches, pushes a safety tag, fast-forwards the fork, attempts the upstream
+merge, aborts on the conflicts with `main` untouched, and exits 1 without
+restarting anything; `--restart` only fires after a fully successful merge.
+Its logs are `$HERMES_HOME/logs/hussh-one-upstream-update.log` and
+`.error.log`; the contract also requires a clean tree, so uncommitted work in
+the checkout at 07:00 makes the run refuse.
+
+Inspect or manage it with:
 
 ```bash
 scripts/hussh-one-upstream-update.sh --status
