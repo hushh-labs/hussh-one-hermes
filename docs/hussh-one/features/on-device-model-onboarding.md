@@ -910,6 +910,16 @@ the evidence. The collector grades script jobs that have a contract from
 the scheduler's saved stdout, so the apply job's brief is judged as the
 message the owner receives.
 
+First run of the rebuilt pipeline, 12:31 to 12:39: the model half answered
+with one valid JSON object (five dated facts, two procedures, five index
+entries with relations that all resolved, a dream, a vision, a brief); the
+apply step appended every layer and delivered the brief with "• Memory: +5
+facts, +2 procedures, +5 index entries, 0 archived, dream recorded"; the
+wiki job copied its injected facts ("Commits in the last 36h: 1", "Wiki
+scan: wiki_list → 551 pages") and the evidence shows the `wiki_list` call.
+All three passed every contract check; the third blinded judge pass is the
+number to record next.
+
 On the founder's machine the deterministic half runs by itself: a
 script-only cron job (`Puppy One Job Audit`, 07:30, after the last daily
 job) runs `collect --since 26h` into `~/.hermes/puppy-jobs/<date>/`, stays
