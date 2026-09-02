@@ -14935,7 +14935,17 @@ def _hussh_one_setup_output(arg: str) -> str:
                 f"  owner capability: {capability}\n"
                 f"  encrypted sync: {sync_status} (cursor {sync_cursor})\n\n"
                 f"  setup: {onboarding}\n\n"
-                "Use /hussh-one connect to repair or start browser approval, or /hussh-one enroll to securely configure this local device. "
+                + (
+                    # Point at the command that actually applies. `connect` on
+                    # a profile that already has an account only prints a menu,
+                    # so telling an expired device to "connect to repair" sent
+                    # the owner in a circle that ended at the destructive
+                    # disconnect.
+                    "Repair this device's sign-in with /hussh-one reconnect; it keeps the vault, replica and Source Library custody. "
+                    if session.get("reconnect_required")
+                    else "Use /hussh-one connect to repair or start browser approval, or /hussh-one enroll to securely configure this local device. "
+                )
+                +
                 "Use /hussh-one disconnect before connecting a different account."
             )
         if action == "lock":
