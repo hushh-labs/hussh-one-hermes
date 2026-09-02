@@ -154,6 +154,30 @@ class TestControls:
             assert not action.startswith("skill_view"), action
             assert "board-sync" not in action, action
 
+    def test_a_generic_recon_donor_is_never_used(self, tmp_path):
+        # Found live: a locate-the-repo `find`, the real correct opening move
+        # on one request, was planted on a different request and voided a
+        # grader whose reasoned verdict was on-path -- generic bootstrap
+        # recon advances MOST requests, so it makes an unwinnable control.
+        # The measurable signature: the same byte-identical action produced
+        # for more than one distinct request.
+        recon = ("terminal", {"command": "find ~ -name repo -type d"})
+        poisoned = artifact(tmp_path, "solo_model", [
+            record("c1", *recon, "read_file", {"path": "a.md"},
+                   tail="catalog the components"),
+            record("c2", *recon, "read_file", {"path": "b.md"},
+                   tail="gather context on the items board"),
+            record("c3", "web_search", {"query": "weather in kirkland"},
+                   "read_file", {"path": "c.md"}, tail="what is the weather"),
+            record("c4", "skill_view", {"name": "some-skill"},
+                   "read_file", {"path": "d.md"}, tail="inspect that skill"),
+        ])
+        rows, _ = GP.build_rows([poisoned])
+        for control in GP.negative_controls(rows, count=8):
+            assert "find ~ -name repo" not in control["output"]["action"], (
+                "a request-agnostic recon action was planted as a control"
+            )
+
     def test_control_bases_are_content_seeded_and_deterministic(self, artifacts):
         rows, _ = GP.build_rows(artifacts)
         first = GP.negative_controls(rows, count=3)

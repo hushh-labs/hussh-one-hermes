@@ -124,11 +124,16 @@ def build_rows(
 
 # Corpus-generic tokens that appear in half of all requests and actions; an
 # overlap on one of these says nothing about the donor fitting the base.
+# The second group is shell/tool syntax: words that describe HOW a command
+# scans rather than WHAT it is looking for, so they never count as the
+# entity that makes an action specific to one request.
 _GENERIC_TOKENS = frozenset(
     {
         "http", "https", "file", "files", "path", "list", "view", "true",
         "false", "null", "name", "command", "pattern", "target", "limit",
         "query", "user", "users", "content", "action", "add", "head", "echo",
+        "find", "grep", "type", "maxdepth", "mindepth", "sort", "tail",
+        "terminal", "search", "read", "write", "json", "yaml", "timeout",
     }
 )
 
@@ -147,6 +152,10 @@ def _entity_tokens(text: str) -> set:
     tokens: set = set()
     for raw in re.split(r"[^a-z0-9_-]+", text.casefold()):
         for part in {raw, *re.split(r"[-_]+", raw)}:
+            # A shell flag is its word, not its dashes: without this strip,
+            # "-maxdepth" dodges the stoplist entry for "maxdepth" and an
+            # entity-free find command reads as if it named something.
+            part = part.strip("-_")
             if len(part) >= 4 and part not in _GENERIC_TOKENS:
                 tokens.add(part)
     return tokens
@@ -188,8 +197,8 @@ def negative_controls(rows: Sequence[dict], *, count: int = NEGATIVE_CONTROL_COU
     that passed the structural oracles somewhere else. A judge that waves them
     through is rubber-stamping, and the run voids.
 
-    "Off-path by construction" has now failed twice, and each failure is a
-    donor exclusion here:
+    "Off-path by construction" has now failed three times, and each failure
+    is a donor exclusion here:
 
       * A donor whose action equals the base's REFERENCE (printed in the
         utterance) is on-path by byte equality. Found when a correct grader
@@ -202,6 +211,20 @@ def negative_controls(rows: Sequence[dict], *, count: int = NEGATIVE_CONTROL_COU
         Hence two more exclusions: the donor's tool family must differ from
         both the base's own action and the base's reference, and the donor's
         action must share no entity token with the base's request tail.
+      * A donor whose action is GENERIC BOOTSTRAP RECON (locate the repo,
+        list a directory, check auth) is on-path for most requests in this
+        corpus, whatever request it is planted on. Found when a
+        locate-the-repo ``find`` -- the real, correct opening move on the
+        components-catalog request -- was planted on the action-items
+        request and voided a grader whose reasoned, precedent-consistent
+        verdict was on-path. Two signatures catch it, both required because
+        the first alone missed a donor that appeared for only one request:
+        the same byte-identical action produced as the real output for more
+        than one distinct request, and an action carrying NO informative
+        entity at all once corpus-frequent and shell-syntax tokens are
+        stripped -- an action that names nothing specific advances almost
+        anything, so it can never anchor an "off-path by construction"
+        claim.
 
     Base rows are picked by a content-seeded shuffle rather than in queue
     order, so not even the session that authored the queue can predict which
@@ -214,6 +237,15 @@ def negative_controls(rows: Sequence[dict], *, count: int = NEGATIVE_CONTROL_COU
     rng = random.Random(int(seed[:12], 16))
     bases = rng.sample(donors, k=min(count, len(donors)))
     frequent = _corpus_frequent(rows)
+
+    # Actions that multiple DIFFERENT requests each produced for real are
+    # request-agnostic recon; see the third exclusion above.
+    action_requests: dict = {}
+    for row in rows:
+        action_requests.setdefault(row["output"]["action"], set()).add(
+            _request_tail(row["utterance"])
+        )
+    generic_actions = {a for a, reqs in action_requests.items() if len(reqs) > 1}
 
     controls: list = []
     for index, base in enumerate(bases):
@@ -236,7 +268,13 @@ def negative_controls(rows: Sequence[dict], *, count: int = NEGATIVE_CONTROL_COU
             no_shared_entity = not (
                 (_entity_tokens(action) - frequent) & request_tokens
             )
-            if cross_family and not_the_reference and no_shared_entity:
+            not_generic_recon = action not in generic_actions
+            # The donor must name something specific: with frequent and
+            # syntax tokens stripped, an entity-free action is generic recon
+            # no matter how many requests produced it.
+            names_an_entity = bool(_entity_tokens(action) - frequent)
+            if (cross_family and not_the_reference and no_shared_entity
+                    and not_generic_recon and names_an_entity):
                 donor = candidate
                 break
         if donor is None:
