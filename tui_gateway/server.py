@@ -14859,19 +14859,12 @@ def _hussh_one_setup_output(arg: str) -> str:
     never in the dashboard chat or model context.
     """
     action = " ".join((arg or "").strip().lower().split())
-    if action not in {
-        "",
-        "connect",
-        "reconnect",
-        "enroll",
-        "status",
-        "unlock",
-        "lock",
-        "disconnect",
-        "disconnect confirm",
-        "help",
-    }:
-        return "usage: /hussh-one [connect|reconnect|enroll|status|unlock|lock|disconnect|help]"
+    # One source of truth with the completion picker: an action this handler
+    # accepts but the picker does not offer is a command nobody can find.
+    from hermes_cli.commands import HUSSH_ONE_ACTIONS
+
+    if action not in {"", "disconnect confirm", *HUSSH_ONE_ACTIONS}:
+        return f"usage: /hussh-one [{'|'.join(HUSSH_ONE_ACTIONS)}]"
     if action == "help":
         return (
             "Hussh One trusted-device setup:\n"

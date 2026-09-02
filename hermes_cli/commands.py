@@ -79,6 +79,28 @@ except ImportError:  # pragma: no cover
     Completion = None     # type: ignore[assignment]
 
 
+#: Every action ``/hussh-one`` accepts, in the order the picker offers them.
+#:
+#: One tuple, two consumers: this module builds the completion list and the
+#: args hint from it, and ``tui_gateway.server`` validates against it and
+#: prints it as the usage line. They were separate lists once, and ``reconnect``
+#: shipped in the handler while the picker kept offering the old seven -- a
+#: repair for an expired device login that no owner could find, sitting next to
+#: ``disconnect``, which destroys the vault envelope, the encrypted replica and
+#: Source Library custody. A discoverability gap is a data-loss risk here, so
+#: the two cannot be allowed to drift again.
+HUSSH_ONE_ACTIONS: tuple[str, ...] = (
+    "connect",
+    "reconnect",
+    "enroll",
+    "status",
+    "unlock",
+    "lock",
+    "disconnect",
+    "help",
+)
+
+
 # ---------------------------------------------------------------------------
 # CommandDef dataclass
 # ---------------------------------------------------------------------------
@@ -237,8 +259,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
         "hussh-one",
         "Connect or inspect this Hussh One trusted device",
         "Hussh One",
-        args_hint="[connect|enroll|status|unlock|lock|disconnect|help]",
-        subcommands=("connect", "enroll", "status", "unlock", "lock", "disconnect", "help"),
+        args_hint=f"[{'|'.join(HUSSH_ONE_ACTIONS)}]",
+        subcommands=HUSSH_ONE_ACTIONS,
     ),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),

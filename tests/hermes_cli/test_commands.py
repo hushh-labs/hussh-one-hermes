@@ -395,8 +395,19 @@ class TestSubcommands:
 
 
     def test_hussh_one_exposes_the_full_trusted_device_lifecycle(self):
+        """The picker is the only place most owners find these actions.
+
+        `reconnect` once shipped in the handler while this list still offered
+        the old seven, so the repair for an expired device login existed and
+        could not be discovered -- and the neighbour an owner reaches for
+        instead is `disconnect`, which destroys the vault envelope, the
+        encrypted replica and Source Library custody. Both the picker list and
+        the handler's usage line are now built from HUSSH_ONE_ACTIONS, so they
+        cannot drift apart again; this pins what that tuple contains.
+        """
         assert SUBCOMMANDS["/hussh-one"] == [
             "connect",
+            "reconnect",
             "enroll",
             "status",
             "unlock",
