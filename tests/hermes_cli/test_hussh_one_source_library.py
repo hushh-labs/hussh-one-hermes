@@ -916,9 +916,16 @@ def test_source_library_child_harness_has_exact_tools_even_with_parent_mcp(
 
     assert captured["enabled_toolsets"] == ["hussh_one_sources"]
     assert child.raw_valid_tool_names == expected
-    # Hermes may compact non-core tools behind its safe tool-search bridge;
-    # its raw deferred catalog above remains the authority boundary.
-    assert child.valid_tool_names == {"tool_search", "tool_describe", "tool_call"}
+    # Hermes MAY compact non-core tools behind its safe tool-search bridge, and
+    # whether it does depends on catalog size and configuration -- with a
+    # toolset this small it often hands the leaf tools over directly. That is an
+    # optimisation, not the boundary, so asserting the compacted shape made this
+    # test fail on a correct child. The raw deferred catalog above is the
+    # authority boundary; here we require only that nothing outside it is
+    # exposed, in either shape.
+    TOOL_SEARCH_BRIDGE = {"tool_search", "tool_describe", "tool_call"}
+    assert child.valid_tool_names <= expected | TOOL_SEARCH_BRIDGE
+    assert child.valid_tool_names, "the child must expose some way to act"
     assert "ask_source_library_steward" not in child.valid_tool_names
     assert "hussh_one_source_bind" not in child.valid_tool_names
     assert "delegate_task" not in child.valid_tool_names

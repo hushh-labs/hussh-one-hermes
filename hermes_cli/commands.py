@@ -1405,7 +1405,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     on — without this entry it tips the registry past the 50-cap and
 #     silently clamps /insights, breaking Telegram parity for an upstream
 #     command instead.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "hussh-one"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "hussh-one", "insights"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

@@ -51,8 +51,19 @@ class TestComposition:
         assert h.display_model_name("acme/whizbang-7b") == "whizbang-7b"
 
     def test_none_model_defaults_to_gemini(self):
+        """Named after the model that would actually answer, not a copy of it.
+
+        This was a third independent literal of the same default. The catalog
+        moved to 3.7 Flash and these did not, so the header would have shown a
+        model that was not the one being routed to.
+        """
+        from hermes_cli.models import get_default_model_for_provider
+
         h = _h()
-        assert h.display_model_name(None) == "Gemini 3.6 Flash"
+        catalog_default = get_default_model_for_provider("gemini")
+
+        assert h.display_model_name(None) == h.display_model_name(catalog_default)
+        assert h.display_model_name(None).startswith("Gemini ")
 
     def test_mode_token(self):
         h = _h()
