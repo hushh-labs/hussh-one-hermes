@@ -867,6 +867,15 @@ is $0 and states an unavailable source plainly; the usage script no longer
 pastes an import error into the owner's chat. The loop this closes: every
 morning, collect, judge, fix the job or the prompt, re-run, re-judge.
 
+On the founder's machine the deterministic half runs by itself: a
+script-only cron job (`Puppy One Job Audit`, 07:30, after the last daily
+job) runs `collect --since 26h` into `~/.hermes/puppy-jobs/<date>/`, stays
+silent when every run was within its contract, and otherwise sends one
+short note naming the runs that were not, with the path of the queue a
+judge should grade. The judge half stays with a separate session on
+purpose: the same on-device model grading its own daily work would be the
+answerer judging itself.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above
