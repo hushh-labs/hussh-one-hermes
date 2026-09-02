@@ -324,10 +324,23 @@ def _script_output(output_dir: Path, job_id: str, claimed: float, finished: Opti
     for path in sorted(folder.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
         mtime = path.stat().st_mtime
         if low <= mtime <= high:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return _strip_saved_output_preamble(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
         if mtime < low:
             break
     return ""
+
+
+def _strip_saved_output_preamble(text: str) -> str:
+    """The scheduler prefixes a saved output with a '# Cron Job:' block and a
+    '---' rule before the stdout it delivered. The owner never sees that block;
+    the contract must not grade it."""
+    if text.lstrip().startswith("# Cron Job:"):
+        head, sep, rest = text.partition("\n---\n")
+        if sep:
+            return rest.strip("\n")
+    return text
 
 
 def collect_runs(

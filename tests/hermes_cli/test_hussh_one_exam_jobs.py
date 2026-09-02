@@ -220,7 +220,10 @@ def _databases(tmp_path):
     output = tmp_path / "output" / "j4"
     output.mkdir(parents=True)
     saved = output / "2026-09-02_05-30-03.md"
-    saved.write_text("*🤫 Hussh One* · *Auto-Dream Daemon*\n====\n\n• Memory: +2 facts", encoding="utf-8")
+    # The scheduler's saved output carries a preamble the owner never sees.
+    saved.write_text("# Cron Job: Auto-Dream Apply\n\n**Job ID:** j4\n**Mode:** no_agent (script)\n\n---\n\n"
+                     "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• Memory: +2 facts",
+                     encoding="utf-8")
     import os
     stamp = datetime.fromisoformat("2026-09-02T05:30:02-07:00").timestamp()
     os.utime(saved, (stamp, stamp))
@@ -246,7 +249,7 @@ class TestCollection:
         apply = runs[2]
         assert apply.model == "script" and apply.tool_calls == []
         assert apply.final_text.startswith("*🤫 Hussh One* · *Auto-Dream Daemon*")
-        assert "has:• Memory:" not in _fails(J.grade(apply))
+        assert _fails(J.grade(apply)) == {}  # the preamble is not the message
         board = runs[0]
         assert board.session_id == "cron_j1_20260902_031002"
         assert board.tool_names == ["patch", "patch"]
