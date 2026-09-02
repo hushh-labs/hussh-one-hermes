@@ -14862,6 +14862,7 @@ def _hussh_one_setup_output(arg: str) -> str:
     if action not in {
         "",
         "connect",
+        "reconnect",
         "enroll",
         "status",
         "unlock",
@@ -14870,11 +14871,12 @@ def _hussh_one_setup_output(arg: str) -> str:
         "disconnect confirm",
         "help",
     }:
-        return "usage: /hussh-one [connect|enroll|status|unlock|lock|disconnect|help]"
+        return "usage: /hussh-one [connect|reconnect|enroll|status|unlock|lock|disconnect|help]"
     if action == "help":
         return (
             "Hussh One trusted-device setup:\n"
             "  /hussh-one connect — open browser approval\n"
+            "  /hussh-one reconnect — repair an expired login, keeping this device's vault\n"
             "  /hussh-one enroll — secure this device or create your first vault\n"
             "  /hussh-one status — inspect this profile\n\n"
             "  /hussh-one unlock — open this profile's Keychain-bound vault envelope\n"
@@ -14890,7 +14892,15 @@ def _hussh_one_setup_output(arg: str) -> str:
         vault = bridge.vault_status()
         if action == "status":
             remote_vault = "not checked"
+            session = {"session": "not_connected", "remedy": "", "reconnect_required": False}
             if identity.get("connected"):
+                # Asked before the vault preflight: when the login is dead the
+                # preflight fails too, and "vault unavailable" is a confusing
+                # way to say "this device needs to sign in again".
+                try:
+                    session = bridge.session_health()
+                except Exception:
+                    session = {"session": "indeterminate", "remedy": "", "reconnect_required": False}
                 try:
                     remote_vault = (
                         "available"
@@ -14907,9 +14917,17 @@ def _hussh_one_setup_output(arg: str) -> str:
             )
             sync_status = str(vault.get("device_sync_status") or "idle").replace("_", " ")
             sync_cursor = max(0, int(vault.get("encrypted_replica_cursor") or 0))
+            session_line = {
+                "ok": "signed in; presence heartbeat is live",
+                "expired": "EXPIRED — this device stopped reporting to One. Repair with /hussh-one reconnect (keeps your vault)",
+                "revoked": "revoked in One; local copy sealed",
+                "indeterminate": "could not be checked just now",
+                "not_connected": "not connected",
+            }.get(str(session.get("session")), "unknown")
             return (
                 "Hussh One status for this Hermes profile:\n"
                 f"  identity: {account if account else ('reconnect required to verify account email' if identity.get('connected') else 'not connected')}\n"
+                f"  session: {session_line}\n"
                 f"  remote vault: {remote_vault}\n"
                 f"  vault envelope: {'enrolled' if vault.get('enrolled') else 'not enrolled'}\n"
                 f"  vault: {'unlocked locally' if vault.get('unlocked') else 'locked'}\n"
@@ -15010,19 +15028,40 @@ def _hussh_one_setup_output(arg: str) -> str:
                 "Hussh One vault is secured and unlocked locally for this Hermes profile. "
                 "Start a new chat before asking the private agent for an approved PKM write."
             )
-        if identity.get("connected") and str(identity.get("account_email") or "").strip():
+        connected_account = str(identity.get("account_email") or "").strip()
+        if action == "reconnect":
+            if not identity.get("connected"):
+                return "This Hermes profile is not connected. Use /hussh-one connect."
+            # Repair in place. Nothing local is removed: the vault envelope,
+            # encrypted replica and Source Library custody all survive, and the
+            # approval must come back for this same account or it is refused.
+            bridge.begin_onboarding(
+                device_name="Hussh One Hermes dashboard", reconnect=True
+            )
+            return (
+                f"A browser window was opened to sign this device back in{f' as {connected_account}' if connected_account else ''}.\n\n"
+                "Approve it in One. Nothing on this machine is removed: your vault, "
+                "encrypted PKM replica and Source Library custody stay exactly as they "
+                "are, and an approval for a different account is refused rather than "
+                "written over them.\n\n"
+                "Use /hussh-one status once you have approved; the presence heartbeat "
+                "resumes on its own."
+            )
+        if identity.get("connected") and connected_account:
             if vault.get("enrolled"):
                 return (
                     "Hussh One is connected for this Hermes profile.\n"
-                    "  /hussh-one status — inspect the account and vault\n"
+                    "  /hussh-one status — inspect the account, session and vault\n"
+                    "  /hussh-one reconnect — sign back in if the session expired (keeps your vault)\n"
                     "  /hussh-one unlock — open the local vault envelope\n"
                     "  /hussh-one lock — clear local vault memory\n"
                     "  /hussh-one disconnect — review account-switch cleanup"
                 )
             return (
-                f"Hussh One is connected as {str(identity.get('account_email') or '').strip()}.\n"
+                f"Hussh One is connected as {connected_account}.\n"
                 "  /hussh-one enroll — secure this device or create the first vault\n"
                 "  /hussh-one status — inspect the account and vault\n"
+                "  /hussh-one reconnect — sign back in if the session expired\n"
                 "  /hussh-one disconnect — review account-switch cleanup"
             )
         if identity.get("connected") and action != "connect":

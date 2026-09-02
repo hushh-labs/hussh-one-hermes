@@ -141,11 +141,33 @@ that, not a naming preference.
 Keep the two exceptions small and obvious, so a sync conflict is a two-minute read
 rather than an investigation.
 
+## The resource monitor
+
+`GET /api/hussh-one/resources` on the loopback API server (bearer-authed, same
+key as every other route there) answers the four questions an owner of an edge
+machine actually has. It is not a CPU graph, and each question has been a real
+incident here:
+
+| Question | What it reports | Why it earns the space |
+| --- | --- | --- |
+| Is the answer generated here? | `model`, `provider`, `on_device`, `on_device_gate` | The pin covers the main turn; the gate is what stops an auxiliary task reaching a vendor. Collapsing the two is how a PKM save came to think on Gemini while the config said otherwise. |
+| Is there room? | resident models with size, `resident_gb`, `available_gb` | Models are tens of gigabytes and eviction is conservative, so this is the number that predicts whether the next load fits or drives the host into swap. `available_gb` comes from the same conservative source eviction uses. |
+| Will it survive tonight? | `ram_used_pct`, disk free and used percent, battery | A laptop at 27% and discharging runs the same jobs and fails them by thermal throttling rather than by any traceable error. The vault, the replica and every session live on the disk. |
+| Is the work landing? | enabled and disabled job counts, next run, last 24h outcomes | The scheduled jobs are the product. Disabled jobs are counted, not hidden: the owner disables them on purpose and a monitor that drops them cannot explain why something it used to show no longer runs. |
+
+Every probe is bounded and independently fallible, and a section that cannot be
+answered is **omitted**. A machine with no battery is `{"present": false}` with
+no percentage at all, exactly as the heartbeat allow-list does it: a zero would
+read as a measurement, and nothing downstream could tell a desktop from a
+laptop about to die. The probes shell out (`lms ps`, `pmset`, `sysctl`) and read
+sqlite, so the handler runs them off the event loop.
+
 ## What is deliberately NOT here
 
 `gateway/memory_status.py` is not wired to real host memory. `/api/status` is an
 unauthenticated public endpoint, so publishing live host memory there would leak
-machine detail to any caller.
+machine detail to any caller. The resources endpoint above is the authenticated
+answer to the same question, which is why it is not on the public route.
 
 The 22-agent hierarchy in consent-protocol is **still Gemini-bound**. The manifests
 already declare a provider and the code ignores it, calling

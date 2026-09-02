@@ -310,6 +310,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/api/model/options", adapter._handle_model_options)
     app.router.add_post("/api/model/set", adapter._handle_model_set)
+    app.router.add_get("/api/hussh-one/resources", adapter._handle_hussh_one_resources)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -3260,6 +3261,71 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestHusshOneResources:
+    """GET /api/hussh-one/resources — the owner's view of their own machine."""
+
+    @pytest.mark.asyncio
+    async def test_it_returns_the_snapshot_with_the_live_runtime_counters(
+        self, adapter, monkeypatch
+    ):
+        from hermes_cli import hussh_one_resources
+
+        seen = {}
+
+        def fake_collect(**kwargs):
+            seen.update(kwargs)
+            return {"agent": {"model": "google/gemma-4-26b-a4b-qat"}, "machine": {}}
+
+        monkeypatch.setattr(hussh_one_resources, "collect_resources", fake_collect)
+
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value={
+            "gateway_state": "running",
+            "active_agents": 3,
+        }):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/hussh-one/resources")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["agent"]["model"] == "google/gemma-4-26b-a4b-qat"
+        # Served BY the gateway, so busy/active come from the same shared
+        # contract /health/detailed uses; the two surfaces cannot disagree.
+        assert seen["active_agents"] == 3
+        assert seen["busy"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_probe_failure_is_a_500_not_a_hung_request(self, adapter, monkeypatch):
+        from hermes_cli import hussh_one_resources
+
+        def _boom(**_kwargs):
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(hussh_one_resources, "collect_resources", _boom)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/hussh-one/resources")
+            assert resp.status == 500
+
+    @pytest.mark.asyncio
+    async def test_it_requires_the_api_key(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/hussh-one/resources")
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_the_route(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            data = await (await cli.get("/v1/capabilities")).json()
+        assert data["features"]["hussh_one_resources"] is True
+        assert data["endpoints"]["hussh_one_resources"] == {
+            "method": "GET",
+            "path": "/api/hussh-one/resources",
+        }
 
 
 class TestModelSet:

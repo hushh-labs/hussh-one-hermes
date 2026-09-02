@@ -13609,6 +13609,11 @@ class MCPServersReplace(BaseModel):
 class HusshOneConnectRequest(BaseModel):
     device_name: str = "Hermes on Mac"
     profile: Optional[str] = None
+    # Repair a device whose login expired, keeping its vault envelope,
+    # encrypted replica and Source Library custody. The approval must return
+    # the same account; a different one is refused rather than written over
+    # custody that belongs to the account being left.
+    reconnect: bool = False
 
 
 class HusshOneNativeVaultEnrollRequest(BaseModel):
@@ -13786,6 +13791,12 @@ async def hussh_one_connect(body: HusshOneConnectRequest, request: Request):
     try:
         with _config_profile_scope(body.profile):
             bridge = _hussh_one_bridge()
+            if body.reconnect:
+                return await run_in_threadpool(
+                    bridge.begin_onboarding,
+                    device_name=body.device_name,
+                    reconnect=True,
+                )
             return await run_in_threadpool(
                 bridge.identity.start_authorization,
                 device_name=body.device_name,

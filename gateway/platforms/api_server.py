@@ -2321,6 +2321,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("POST", "/api/model/set", self._handle_model_set),
+            ("GET", "/api/hussh-one/resources", self._handle_hussh_one_resources),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             # Authenticated browser-control surface: POST registration
             # mints a short-lived ticket; the controller then opens the WS with
@@ -3534,6 +3535,49 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    async def _handle_hussh_one_resources(self, request: "web.Request") -> "web.Response":
+        """GET /api/hussh-one/resources — what this Puppy One machine has left.
+
+        The owner's questions, not a CPU graph: is the answer being generated
+        here, is there memory for another model, will the machine survive
+        tonight's jobs, and did the last day's work land. Every probe is
+        bounded and independently fallible, so a section that cannot be
+        answered is omitted rather than zero-filled.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from gateway.status import derive_gateway_busy, parse_active_agents, read_runtime_status
+            from hermes_cli.hussh_one_resources import collect_resources
+
+            runtime = read_runtime_status() or {}
+            active = parse_active_agents(runtime.get("active_agents", 0))
+            busy = derive_gateway_busy(
+                gateway_running=True,
+                gateway_state=runtime.get("gateway_state"),
+                active_agents=active,
+            )
+            # Probes shell out (lms ps, pmset, sysctl) and read sqlite. None of
+            # that belongs on aiohttp's event loop.
+            payload = await asyncio.to_thread(
+                collect_resources,
+                active_agents=active,
+                busy=busy,
+                version=_hermes_version(),
+            )
+            return web.json_response(payload)
+        except Exception:
+            logger.exception("[%s] GET /api/hussh-one/resources failed", self.name)
+            return web.json_response(
+                _openai_error(
+                    "Failed to read this machine's resources.",
+                    code="resources_unavailable",
+                ),
+                status=500,
+            )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -3579,6 +3623,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_resources": True,
                 "model_options": True,
                 "model_set": True,
+                "hussh_one_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
@@ -3625,6 +3670,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "models": {"method": "GET", "path": "/v1/models"},
                 "model_options": {"method": "GET", "path": "/api/model/options"},
                 "model_set": {"method": "POST", "path": "/api/model/set"},
+                "hussh_one_resources": {
+                    "method": "GET",
+                    "path": "/api/hussh-one/resources",
+                },
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},

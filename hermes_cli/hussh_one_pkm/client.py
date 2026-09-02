@@ -40,6 +40,19 @@ class HusshIdentityError(RuntimeError):
     pass
 
 
+class HusshSessionExpiredError(HusshIdentityError):
+    """The device's login expired; the device itself is still trusted.
+
+    Distinct from revocation on purpose. Revocation means the owner took this
+    device's access away and the local copy must be sealed. An expired refresh
+    token means only that a login aged out (or the account's sessions were
+    reset), which a fresh browser approval repairs in place -- no vault
+    envelope, PKM replica or Source Library custody has to be destroyed to fix
+    it. Conflating the two is what made an expired session look like a reason
+    to disconnect.
+    """
+
+
 def _profile_id(profile_home: Path) -> str:
     return hashlib.sha256(str(profile_home.resolve()).encode("utf-8")).hexdigest()[:24]
 
@@ -164,7 +177,16 @@ class HusshIdentityClient:
         device_name: str,
         replaces_device_id: str | None = None,
         on_connected: Callable[[bytes | None], None] | None = None,
+        expected_account_email: str | None = None,
     ) -> dict[str, Any]:
+        """Open a browser approval, optionally to repair an existing device.
+
+        ``expected_account_email`` makes this a *repair*: the approval must
+        come back for that same account, or the exchange is refused and no
+        local state is overwritten. Without it, a repair could silently rebind
+        a machine that still holds one account's vault envelope and encrypted
+        replica to a different account's identity.
+        """
         verifier = secrets.token_urlsafe(64)[:86]
         challenge = (
             base64
@@ -207,6 +229,7 @@ class HusshIdentityClient:
                 "error": None,
                 "on_connected": on_connected,
                 "vault_handoff_private_key": vault_handoff_private_key,
+                "expected_account_email": (expected_account_email or "").strip().lower(),
             }
 
         request_params = {
@@ -242,11 +265,13 @@ class HusshIdentityClient:
         device_name: str,
         replaces_device_id: str | None = None,
         on_connected: Callable[[bytes | None], None] | None = None,
+        expected_account_email: str | None = None,
     ) -> dict[str, Any]:
         result = self.start_authorization(
             device_name=device_name,
             replaces_device_id=replaces_device_id,
             on_connected=on_connected,
+            expected_account_email=expected_account_email,
         )
         webbrowser.open(result["authorization_url"])
         return result
@@ -313,6 +338,23 @@ class HusshIdentityClient:
             if not state.account_email:
                 raise HusshIdentityError(
                     "The trusted-device exchange did not provide a verified account email."
+                )
+            with self._pending_lock:
+                expected = (
+                    str(self._pending.get("expected_account_email") or "")
+                    if self._pending is not None
+                    else ""
+                )
+            if expected and state.account_email.strip().lower() != expected:
+                # A repair may only re-approve the account this machine is
+                # already holding custody for. Writing a different account's
+                # identity over an existing vault envelope and encrypted
+                # replica would leave one account's data under another
+                # account's login; switching accounts is the explicit
+                # disconnect path, which removes that custody first.
+                raise HusshIdentityError(
+                    "This device is connected to a different Hussh One account. "
+                    "Disconnect it before connecting another account."
                 )
             with self._pending_lock:
                 if self._pending is None or self._pending.get("server") is not server:
@@ -420,7 +462,7 @@ class HusshIdentityClient:
         )
         if response.status_code == 400:
             self.lock_identity()
-            raise HusshIdentityError(
+            raise HusshSessionExpiredError(
                 "The Hussh device session expired. Connect it again."
             )
         response.raise_for_status()
@@ -448,6 +490,31 @@ class HusshIdentityClient:
             self._handle_revoked()
             raise HusshIdentityError("This Hussh trusted device was revoked.")
         return self._id_token
+
+    def session_state(self) -> str:
+        """Classify this device's login: the question a status read must answer.
+
+        Returns ``not_connected`` | ``ok`` | ``expired`` | ``revoked`` |
+        ``indeterminate``. ``identity_status`` reports the stored identity, so
+        a device whose refresh token died still reads there as "connected" --
+        true of the enrollment and useless as an answer to "is my agent
+        reaching Hussh One right now?". A stale login stops the presence
+        heartbeat silently, which is what makes a live machine read as gone.
+
+        Never raises. ``revoked`` comes from the token path's own device check,
+        which seals; every other failure is reported, not acted on.
+        """
+        if self.read_state() is None:
+            return "not_connected"
+        try:
+            self.id_token()
+        except HusshSessionExpiredError:
+            return "expired"
+        except HusshIdentityError as exc:
+            return "revoked" if "revoked" in str(exc).lower() else "indeterminate"
+        except Exception:
+            return "indeterminate"
+        return "ok"
 
     def _handle_revoked(self) -> None:
         """Seal on revocation, falling back to a credential-only disconnect.

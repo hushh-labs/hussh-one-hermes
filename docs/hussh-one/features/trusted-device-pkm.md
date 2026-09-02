@@ -335,6 +335,50 @@ shell arguments, logs, or MCP configuration.
 - Existing Hermes approval and Hussh PKM validation/store regression
   suites remain the integration owners.
 
+## Reconnecting a device whose login expired
+
+A trusted device holds two different things, and until 2026-09-02 the product
+treated them as one. **Trust** is the device row in One, revoked only when the
+owner says so. **A login** is a Firebase refresh token that ages out on its own,
+and dies outright when the account's sessions are reset.
+
+When the login died, the symptom was silent and the remedy was catastrophic.
+Silent, because `post_heartbeat` deliberately does not refresh the token (so
+telemetry can never trigger a seal): no token, no heartbeat, and One shows the
+machine as gone while everything on the machine looks healthy. `/hussh-one
+status` still read "connected", which was true of the enrollment and useless as
+an answer. Catastrophic, because `begin_onboarding` refused to run while an
+account email was stored, so the only route out was `/hussh-one disconnect
+confirm`, which removes the vault envelope, the encrypted PKM replica and
+Source Library custody. Local data destroyed to fix a token.
+
+`/hussh-one reconnect` is the repair:
+
+- It re-approves **the same account** in the browser. The client carries the
+  stored email as an expectation and refuses the exchange if a different
+  account comes back, before writing anything, because the custody already on
+  this machine belongs to the account being replaced.
+- It passes `replaces_device_id`, so the server swaps the device row atomically
+  instead of leaving an orphan behind.
+- It removes nothing. The vault envelope, the encrypted replica and Source
+  Library custody survive, and the native passphrase ceremony is skipped
+  because the envelope is already there.
+- The presence heartbeat resumes on its own once a token exists again.
+
+Switching to a *different* account is still the explicit disconnect path, and
+that is the point of the split: only an account change should cost you custody.
+
+`session_state()` names what a status read should have answered all along:
+`not_connected`, `ok`, `expired`, `revoked`, or `indeterminate`. Expired and
+revoked are deliberately distinct. Revoked means the owner took access away and
+the local copy is sealed; expired means a token aged out. Every ambiguous
+outcome is `indeterminate`, which nothing acts on, because the caller of this
+information destroys user data on `revoked`.
+
+The same repair is available as `POST /api/hussh-one/connect {"reconnect": true}`
+on the dashboard, and to any second machine: the flow is per device, so each
+one repairs itself without touching the others.
+
 ## Status
 
 🧪 UAT-only, feature-flagged, allowlisted, macOS MVP.

@@ -174,24 +174,66 @@ class HusshVaultBridge:
             "onboarding_status": onboarding_status,
         }
 
-    def begin_onboarding(self, *, device_name: str) -> dict[str, Any]:
+    def begin_onboarding(
+        self, *, device_name: str, reconnect: bool = False
+    ) -> dict[str, Any]:
         """Open One's browser approval and continue vault setup locally.
 
         A legacy state without a verified email is deliberately repaired by a
         fresh browser approval. It is not trusted for vault access while the
         repair is pending, and the server atomically replaces its device row.
+
+        ``reconnect`` repairs a device whose login died -- an expired refresh
+        token, or an account whose sessions were reset -- without destroying
+        anything. Before this existed the only route out of an expired session
+        was ``disconnect confirm``, which removes the vault envelope, the
+        encrypted PKM replica and Source Library custody: losing local data to
+        fix a token. The repair keeps all of it, re-approves the *same*
+        account (the client refuses the exchange if the browser returns a
+        different one), and passes ``replaces_device_id`` so the server swaps
+        the device row atomically rather than leaving an orphan behind.
+
+        Switching accounts is still the explicit disconnect path, because that
+        custody belongs to the account being left.
         """
         state = self.identity.read_state()
-        if state is not None and state.account_email:
+        connected = state is not None and bool(state.account_email)
+        if connected and not reconnect:
             raise VaultCryptoError(
                 "This Hermes profile is already connected. Disconnect it before choosing another account."
             )
         self._onboarding_status = "waiting_for_browser_approval"
-        return self.identity.open_authorization(
+        result = self.identity.open_authorization(
             device_name=device_name,
             replaces_device_id=state.device_id if state is not None else None,
             on_connected=self._continue_native_enrollment,
+            expected_account_email=state.account_email if connected else None,
         )
+        return {**result, "mode": "reconnect" if connected else "connect"}
+
+    def session_health(self) -> dict[str, Any]:
+        """Whether this device's login still reaches Hussh One, and what to do.
+
+        ``identity_status`` answers "is an enrollment stored here", which stays
+        true after the login behind it dies. This answers the question the
+        owner is actually asking, and names the repair: a stale login stops the
+        presence heartbeat silently, so the device reads as gone in One while
+        everything on the machine looks healthy.
+        """
+        session = self.identity.session_state()
+        remedies = {
+            "not_connected": "/hussh-one connect",
+            "expired": "/hussh-one reconnect",
+            "revoked": "/hussh-one connect",
+            "indeterminate": "",
+            "ok": "",
+        }
+        return {
+            "session": session,
+            "reconnect_required": session in {"expired", "revoked"},
+            "heartbeat_live": session == "ok",
+            "remedy": remedies.get(session, ""),
+        }
 
     def _continue_native_enrollment(self, passkey_vault_key: bytes | None = None) -> None:
         """Run the password/recovery ceremony outside chat after browser approval."""
