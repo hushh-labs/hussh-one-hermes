@@ -213,13 +213,16 @@ class HusshIdentityClient:
         server.completion_event = threading.Event()  # type: ignore[attr-defined]
         server.completion_status = "pending"  # type: ignore[attr-defined]
 
+        superseded = None
         with self._pending_lock:
             if self._pending is not None:
-                if self._pending.get("status") == "waiting":
-                    server.server_close()
-                    raise HusshIdentityError(
-                        "A trusted-device authorization is already in progress."
-                    )
+                # A waiting authorization used to make this refuse. That turned
+                # an abandoned approval into a five-minute lockout: the browser
+                # tab had been closed or never opened, and every retry answered
+                # "already in progress" with no way to clear it. Asking to
+                # connect IS the request to start over, so the older attempt is
+                # superseded rather than allowed to block the newer one.
+                superseded = self._pending
                 self._pending = None
             self._pending = {
                 "server": server,
@@ -231,6 +234,16 @@ class HusshIdentityClient:
                 "vault_handoff_private_key": vault_handoff_private_key,
                 "expected_account_email": (expected_account_email or "").strip().lower(),
             }
+
+        if superseded is not None and superseded.get("status") == "waiting":
+            # Close the stale listener outside the lock: its handler thread may
+            # be mid-callback and takes the same lock.
+            stale_server = superseded.get("server")
+            if stale_server is not None:
+                try:
+                    stale_server.server_close()
+                except Exception:
+                    pass
 
         request_params = {
             "redirect_uri": redirect_uri,

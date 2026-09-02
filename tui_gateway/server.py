@@ -15085,14 +15085,22 @@ def _hussh_one_setup_output(arg: str) -> str:
             "Use /hussh-one status at any time; no passphrase, recovery key, or approval URL is shown in chat."
         )
     except Exception as exc:
+        from hermes_cli.hussh_one_pkm.client import HusshIdentityError
         from hermes_cli.hussh_one_pkm.crypto import VaultCryptoError
 
-        if isinstance(exc, VaultCryptoError):
-            return str(exc)
+        # These carry messages written for the owner and naming the actual
+        # blocker. Replacing them with the generic line below is what produced
+        # a closed loop: connect failed with unrelated UAT jargon that pointed
+        # at `enroll`, and `enroll` answers "connect first". Neither message
+        # named what was wrong, so there was no way out of the pair.
+        if isinstance(exc, (VaultCryptoError, HusshIdentityError)):
+            return f"{exc}\n\nUse /hussh-one status to see where this profile stands."
         return (
-            "Hussh One setup could not complete; no vault material was retained. "
-            "For UAT, verify the trusted-device owner-capability release is available, "
-            "then retry /hussh-one enroll."
+            "Hussh One setup could not complete; no vault material was retained.\n\n"
+            f"  reason: {type(exc).__name__}: {exc}\n\n"
+            "Use /hussh-one status to see where this profile stands. If it reports "
+            "not connected, /hussh-one connect starts a fresh browser approval; an "
+            "earlier approval that was never completed no longer blocks a new one."
         )
 
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})

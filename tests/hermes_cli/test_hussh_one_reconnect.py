@@ -298,6 +298,67 @@ class TestBeginOnboardingRepairPath:
         assert call["replaces_device_id"] == "tdv_original"
 
 
+class TestAnAbandonedApprovalNeverLocksTheOwnerOut:
+    """Asking to connect again means "start over", not "you are locked out".
+
+    A waiting authorization used to make ``start_authorization`` refuse. When
+    the browser tab was closed, never opened, or simply ignored, that turned
+    into a five-minute lockout with no command to clear it: every retry
+    answered "already in progress", the generic handler rewrote that as advice
+    to run ``enroll``, and ``enroll`` answers "connect first". A closed loop.
+    """
+
+    def _client(self, tmp_path: Path):
+        return HusshIdentityClient(
+            profile_home=tmp_path, keychain=FakeKeychain()  # type: ignore[arg-type]
+        )
+
+    def test_a_second_request_supersedes_the_first_instead_of_refusing(
+        self, tmp_path: Path
+    ) -> None:
+        client = self._client(tmp_path)
+
+        first = client.start_authorization(device_name="Mac")
+        first_pending = client._pending
+        assert first["status"] == "waiting"
+
+        # The owner asks again. This must not raise.
+        second = client.start_authorization(device_name="Mac")
+
+        assert second["status"] == "waiting"
+        assert second["authorization_url"] != first["authorization_url"]
+        assert client._pending is not first_pending
+        assert client._pending["status"] == "waiting"
+
+        client.cancel_pending_authorization()
+
+    def test_the_superseded_listener_is_closed_so_its_port_is_released(
+        self, tmp_path: Path
+    ) -> None:
+        client = self._client(tmp_path)
+        client.start_authorization(device_name="Mac")
+        stale_server = client._pending["server"]
+
+        client.start_authorization(device_name="Mac")
+
+        # A closed socket reports fileno() -1; a live listener reports its fd.
+        assert stale_server.socket.fileno() == -1
+
+        client.cancel_pending_authorization()
+
+    def test_a_finished_attempt_also_leaves_the_next_one_free(
+        self, tmp_path: Path
+    ) -> None:
+        client = self._client(tmp_path)
+        client.start_authorization(device_name="Mac")
+        client._pending["status"] = "error"
+
+        result = client.start_authorization(device_name="Mac")
+
+        assert result["status"] == "waiting"
+        client.cancel_pending_authorization()
+
+
 class TestSessionHealth:
     def test_it_names_the_remedy_for_an_expired_login(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
