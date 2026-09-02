@@ -715,6 +715,31 @@ the tool count of any cron request; it truncates message contents), while a
 learning-loop arm was sharing the same model. The failure streak reset from
 nine to zero.
 
+### The success that did nothing, and the one that destroyed data
+
+That first successful run made zero tool calls: one 297K-character user
+message in, a 720-character brief out. The memory layers had last been
+written on Aug 24. A tool-use contract was added to the job prompt (write
+the four layers before composing the brief; a brief with no tool calls is a
+failed run) and the job run again. The second run did the work, and did it
+with `write_file`: it read all four files, then replaced `MEMORY.md` (72K),
+`procedures.md` (90K) and the dream journal (82K) with a few hundred bytes
+each. `index.json` survived only because its `patch` hunk failed to apply.
+
+Recovered within the hour from two sources the run itself had produced: the
+`read_file` results stored in the session (exact, line-numbered; complete
+for `MEMORY.md` and the journal, cut at 500 lines for `procedures.md`) and
+the pre-run `auto_dream.py` dump captured while measuring the request
+(complete, with invisible characters stripped). Tonight's new sections were
+re-appended after the originals. Two guards now stand: `auto_dream.py`
+snapshots the five memory files and the episodes directory into
+`memory/.auto-dream-backups/<stamp>/` before every run (last 14 kept), and
+the contract forbids `write_file` on an existing file (patch-only appends,
+read first, never fall back to a whole-file write). The general lesson for
+any on-device cron job that edits the owner's files: a small model treats
+"write or patch" as "write", so give it one safe verb, and take a backup
+before it runs.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above
