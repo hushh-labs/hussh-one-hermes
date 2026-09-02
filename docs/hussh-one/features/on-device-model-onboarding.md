@@ -881,6 +881,35 @@ is $0 and states an unavailable source plainly; the usage script no longer
 pastes an import error into the owner's chat. The loop this closes: every
 morning, collect, judge, fix the job or the prompt, re-run, re-judge.
 
+### Second pass: the model thinks, the script writes
+
+Re-running the two jobs the judge had failed produced a wiki report that
+carried the required discovery lines and an Auto-Dream brief that claimed
+consolidation; judged blind again (4 rows, the planted swap caught), both
+were still wrong. The wiki run had reported "wiki_list → 236 pages" after
+calling only `list_prompts` twice; the Auto-Dream run had patched only the
+dream journal after two patch calls failed on the tool's own argument
+contract, and a third run read two lines of each file, called no tool, and
+still wrote "Consolidation Complete". A 4B-active model does not reliably
+drive a multi-step file-editing workflow, and no prompt wording changed
+that in four attempts.
+
+So the mechanics left the model. Auto-Dream is now two jobs: the model job
+has no file tools and must answer with ONE JSON object (facts, procedures,
+index entries, archive ids, dream, vision, brief), delivered locally only;
+`auto_dream_apply.py`, a script job fifteen minutes later, snapshots the
+memory layers, appends the facts and procedures as dated sections, adds
+index entries with fresh ids and validated relations, archives what was
+named, appends the dream and vision to the journal, records which output it
+applied so a re-run is idempotent, and delivers the brief with one line
+stating exactly what was applied. The wiki job gets its repository facts
+(commit count, log, diff stat, page total) injected by a pre-run script so
+the report copies numbers it cannot invent, and its contract requires an
+actual `wiki_search` or `wiki_list` call: the name of the tool called is
+the evidence. The collector grades script jobs that have a contract from
+the scheduler's saved stdout, so the apply job's brief is judged as the
+message the owner receives.
+
 On the founder's machine the deterministic half runs by itself: a
 script-only cron job (`Puppy One Job Audit`, 07:30, after the last daily
 job) runs `collect --since 26h` into `~/.hermes/puppy-jobs/<date>/`, stays
