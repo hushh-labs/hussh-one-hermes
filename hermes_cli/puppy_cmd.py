@@ -253,12 +253,20 @@ def _cmd_loop(args) -> int:
 
     print(f"\n{len(cases)} real session turns | "
           f"{'SHUFFLED CONTROL' if args.control else 'matched evidence'}")
+    # The replay suite's own scorer and failure filter, not run_round's
+    # generic defaults: the generic `score` counts disagreement with the
+    # reference as a failure, which once reported a 0.952-structural model
+    # as 0.357 held-out. The signal the loop is measured on must be the
+    # signal it is allowed to learn from (run_round's docstring says so; this
+    # call site simply never passed them).
     result, book = L.run_round(
         model=args.model + ("::control" if args.control else ""),
         suite=LR.SUITE_ID,
         cases=cases,
         answer=answer,
         reflect=reflect,
+        score_fn=LR.score,
+        failures_fn=LR.learnable_failures,
         on_progress=print,
     )
     print("\n=== round ===")

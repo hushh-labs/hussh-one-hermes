@@ -265,3 +265,18 @@ class TestDefaultLadderReflectsTheFinalPick:
         assert PC.DEFAULT_LADDER == (
             "google/gemma-4-26b-a4b-qat", "qwen/qwen3.8-27b",
         )
+
+
+class TestLoopUsesTheReplaySuiteScorer:
+    def test_run_round_is_called_with_the_replay_scorer_and_failure_filter(self):
+        # Regression: the CLI once let run_round fall back to its generic
+        # scorer, which counts reference-disagreement as failure and reported
+        # a 0.952-structural model as 0.357 held-out. Pin the wiring by reading
+        # the call site itself -- the round needs a live model to execute.
+        import inspect
+        from hermes_cli.hussh_one_routing import loop_replay as LR
+
+        src = inspect.getsource(PC._cmd_loop)
+        assert "score_fn=LR.score" in src
+        assert "failures_fn=LR.learnable_failures" in src
+        assert callable(LR.score) and callable(LR.learnable_failures)
