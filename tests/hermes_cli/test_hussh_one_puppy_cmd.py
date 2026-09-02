@@ -340,6 +340,38 @@ class TestLoopUsesTheReplaySuiteScorer:
         assert callable(LR.score) and callable(LR.learnable_failures)
 
 
+class TestReplayCanServeThePlaybook:
+    """`hermes puppy replay --playbook` answers with what the device serves.
+
+    Held-out structural validity cannot see a tactic about stalling or dead
+    ends; a judged with/without pair on one blinded queue can. This is the
+    with-playbook half of that pair.
+    """
+
+    def test_the_flag_parses_and_defaults_off(self):
+        assert _parser().parse_args(["puppy", "replay", "m"]).playbook is False
+        assert _parser().parse_args(
+            ["puppy", "replay", "m", "--playbook"]
+        ).playbook is True
+
+    def test_the_section_lands_in_front_of_the_system_message(self):
+        messages = [{"role": "system", "content": "You are Hermes."},
+                    {"role": "user", "content": "list files"}]
+        out = PC._with_playbook(messages, "# Learned\n- quote paths")
+        assert out[0]["content"].startswith("# Learned\n- quote paths")
+        assert out[0]["content"].endswith("You are Hermes.")
+        assert messages[0]["content"] == "You are Hermes."  # not mutated
+
+    def test_a_case_without_a_system_message_gets_one(self):
+        out = PC._with_playbook([{"role": "user", "content": "hi"}], "- tactic")
+        assert out[0] == {"role": "system", "content": "- tactic"}
+        assert out[1]["role"] == "user"
+
+    def test_no_playbook_means_no_change(self):
+        messages = [{"role": "user", "content": "hi"}]
+        assert PC._with_playbook(messages, "") == messages
+
+
 class TestTheCorpusCanBeFrozenAndPinned:
     """The exam reads the live sessions directory, which changes under a run.
 

@@ -467,6 +467,20 @@ def _cmd_replay(args) -> int:
     )
     budget = args.max_tokens or profile.max_tokens
     effort = RZ.effort_for(args.model, RZ.MAX)
+
+    # The served playbook, rendered by the same plugin the live gateway uses,
+    # so a `--playbook` run answers exactly what the device would answer. A
+    # judged with/without pair on one blinded queue is the only measurement
+    # that can show whether learned tactics move goal progress; held-out
+    # structural validity cannot see a tactic about stalling or dead ends.
+    playbook_text = ""
+    if getattr(args, "playbook", False):
+        from plugins.puppy_playbook import render as render_playbook
+
+        playbook_text = render_playbook({"model": args.model})
+        print(f"  playbook: {len(playbook_text):,} chars injected"
+              if playbook_text else
+              "  playbook: nothing on file for this model; running without")
     print(f"  thinking: {profile.mode} | budget {budget} | effort {effort}")
 
     compressor = None
@@ -528,7 +542,7 @@ def _cmd_replay(args) -> int:
                       file=sys.stderr)
                 continue
 
-        messages = profile.apply(case.messages)
+        messages = _with_playbook(profile.apply(case.messages), playbook_text)
         started = time.time()
         turn = complete(
             model=args.model,
@@ -569,6 +583,7 @@ def _cmd_replay(args) -> int:
             # per-case detail a surprising result needs to be checked at all.
             artifact_rows.append({
                 "case_id": case.case_id,
+                "playbook": bool(playbook_text),
                 "prompt_tokens": case.tokens,
                 "catalog_size": case.catalog_size,
                 "user_request_tail": last_user(case),
@@ -604,6 +619,8 @@ def _cmd_replay(args) -> int:
     summary = RP.summarize(verdicts)
     summary["context_length"] = pinned
     summary["reasoning_effort"] = effort
+    summary["playbook_chars"] = len(playbook_text)
+    summary["dumps_root"] = dumps
     summary["environment_interference"] = interfered
     if compressor is not None:
         compacted = [r for r in artifact_rows if r.get("compacted")]
@@ -734,6 +751,24 @@ def _cmd_freeze(args) -> int:
           f"{len(excluded)} dumps of inactive cron jobs left out)")
     print(f"pin it with: hermes puppy replay <model> --dumps {target}")
     return EXIT_OK
+
+
+def _with_playbook(messages: list, playbook_text: str) -> list:
+    """Prepend the served playbook section to the system message.
+
+    The live plugin section sits after memory in the system prompt; here it
+    goes in front of the case's own system message, the same position the
+    learning loop's answerer uses, so a replay with the playbook matches what
+    the loop measured. Returns a new list; the case is never mutated.
+    """
+    if not playbook_text:
+        return messages
+    out = [dict(m) for m in messages]
+    for message in out:
+        if message.get("role") == "system":
+            message["content"] = f"{playbook_text}\n\n{message.get('content', '')}"
+            return out
+    return [{"role": "system", "content": playbook_text}] + out
 
 
 def _top_tools(cases, limit: int = 6):
@@ -873,6 +908,11 @@ def build_puppy_parser(subparsers) -> None:
                         help="Directory of FROZEN request dumps (see `hermes "
                              "puppy freeze`); default is the live sessions "
                              "directory, which changes under a run")
+    replay.add_argument("--playbook", action="store_true",
+                        help="Prepend the model's served playbook section (what "
+                             "the puppy-playbook plugin injects live) to every "
+                             "case, so a with/without pair can be judged for "
+                             "goal progress")
     replay.add_argument("--max-tokens", type=int, dest="max_tokens",
                         help="Generation budget (default: measured)")
     replay.add_argument("--timeout", type=float, default=600.0)
