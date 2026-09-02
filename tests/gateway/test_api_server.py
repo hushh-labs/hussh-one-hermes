@@ -309,6 +309,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/api/model/options", adapter._handle_model_options)
+    app.router.add_post("/api/model/set", adapter._handle_model_set)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -724,6 +725,11 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_drainable"] is True
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
+                # The configured model is named at the top level: readiness
+                # only carries a status per check, and a client showing
+                # "connected, running <model>" had nothing to read before.
+                assert data["model"] == "test/model"
+                assert "provider" in data
 
 
     @pytest.mark.asyncio
@@ -3254,3 +3260,112 @@ class TestCreateAgentModelRecovery:
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestModelSet:
+    """POST /api/model/set on the loopback API server.
+
+    The route lived only in the dashboard until 2026-09-02, so a client that
+    could list the inventory could never pin a model. It reuses the dashboard's
+    synchronous body so both doors write identical config.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pins_the_main_model_through_the_dashboard_body(self, adapter, monkeypatch):
+        from hermes_cli import web_server as dashboard
+
+        seen: dict = {}
+
+        def fake_apply(scope, provider, model, task, base_url, api_key):
+            seen.update(scope=scope, provider=provider, model=model, task=task)
+            return {"ok": True, "scope": scope, "provider": provider, "model": model}
+
+        class _Scope:
+            def __init__(self, profile):
+                seen["profile"] = profile
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(dashboard, "_apply_model_assignment_sync", fake_apply)
+        monkeypatch.setattr(dashboard, "_profile_scope", _Scope)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/model/set",
+                json={
+                    "scope": "main",
+                    "provider": "lmstudio",
+                    "model": "google/gemma-4-26b-a4b-qat",
+                    "confirm_expensive_model": True,
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["ok"] is True
+        assert seen == {
+            "scope": "main",
+            "provider": "lmstudio",
+            "model": "google/gemma-4-26b-a4b-qat",
+            "task": "",
+            "profile": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_expensive_model_comes_back_as_a_question(self, adapter, monkeypatch):
+        from hermes_cli import model_selection_guards, web_server as dashboard
+
+        class _Warning:
+            message = "gpt-5 bills per token."
+
+        monkeypatch.setattr(
+            model_selection_guards,
+            "combined_selection_warning",
+            lambda model, provider="", base_url="": _Warning(),
+        )
+        applied = []
+        monkeypatch.setattr(
+            dashboard,
+            "_apply_model_assignment_sync",
+            lambda *args: applied.append(args) or {"ok": True},
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/model/set", json={"provider": "openai", "model": "gpt-5"}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["confirm_required"] is True
+        assert data["confirm_message"] == "gpt-5 bills per token."
+        assert applied == []  # nothing written until the caller confirms
+
+    @pytest.mark.asyncio
+    async def test_main_scope_requires_provider_and_model(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/model/set", json={"provider": "lmstudio"})
+            assert resp.status == 400
+            resp = await cli.post("/api/model/set", json={"scope": "sideways", "provider": "a", "model": "b"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_requires_the_api_key(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/model/set", json={"provider": "a", "model": "b"})
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_the_route(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            data = await resp.json()
+        assert data["features"]["model_set"] is True
+        assert data["endpoints"]["model_set"] == {"method": "POST", "path": "/api/model/set"}

@@ -2320,6 +2320,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/health", self._handle_health),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
+            ("POST", "/api/model/set", self._handle_model_set),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             # Authenticated browser-control surface: POST registration
             # mints a short-lived ticket; the controller then opens the WS with
@@ -3299,10 +3300,16 @@ class APIServerAdapter(BasePlatformAdapter):
         # alive — gateway_running is True. Derive busy/drainable from the same
         # shared contract /api/status uses so the two surfaces never disagree.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
-        from gateway.run import _resolve_gateway_model
+        from gateway.run import _load_gateway_config, _resolve_gateway_model
 
+        gateway_config = _load_gateway_config()
+        configured_model = _resolve_gateway_model(gateway_config)
+        model_cfg = gateway_config.get("model") if isinstance(gateway_config, dict) else None
+        configured_provider = (
+            str(model_cfg.get("provider") or "").strip() if isinstance(model_cfg, dict) else ""
+        )
         readiness = collect_runtime_readiness(
-            configured_model=_resolve_gateway_model(),
+            configured_model=configured_model,
             runtime_status=runtime,
             active_api_runs=active_api_runs,
             process_completion_queue_depth=process_depth,
@@ -3313,6 +3320,12 @@ class APIServerAdapter(BasePlatformAdapter):
             "readiness": readiness,
             "platform": "hermes-agent",
             "version": _hermes_version(),
+            # The configured main model and provider, by name. Readiness only
+            # carries a status per check, so a client that wanted to show
+            # "connected, running <model>" had nothing to read here and showed
+            # a connected agent with no model.
+            "model": configured_model or None,
+            "provider": configured_provider or None,
             "gateway_state": gw_state,
             "platforms": runtime.get("platforms", {}),
             "active_agents": gw_active,
@@ -3421,6 +3434,106 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    async def _handle_model_set(self, request: "web.Request") -> "web.Response":
+        """POST /api/model/set — pin the main (or an auxiliary) model.
+
+        Until 2026-09-02 this route lived only in the dashboard
+        (``hermes_cli.web_server``), so a client holding ``API_SERVER_KEY``
+        could list the inventory through ``/api/model/options`` but never act
+        on it: the Hussh One picker answered "could not change the model" on
+        every try. Same body, same expensive-model confirmation, same
+        next-session semantics, and the dashboard's own synchronous body is
+        reused so the two doors write identical config.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response(
+                _openai_error("Request body must be a JSON object.", code="invalid_request"),
+                status=400,
+            )
+
+        scope = str(body.get("scope") or "main").strip().lower()
+        provider = str(body.get("provider") or "").strip()
+        model = str(body.get("model") or "").strip()
+        task = str(body.get("task") or "").strip().lower()
+        base_url = str(body.get("base_url") or "").strip()
+        api_key = str(body.get("api_key") or "").strip()
+        confirm_expensive = _coerce_request_bool(
+            body.get("confirm_expensive_model"), default=False
+        )
+        profile = body.get("profile")
+        if scope not in {"main", "auxiliary"}:
+            return web.json_response(
+                _openai_error("scope must be 'main' or 'auxiliary'.", code="invalid_scope"),
+                status=400,
+            )
+        if scope == "main" and (not provider or not model):
+            return web.json_response(
+                _openai_error(
+                    "provider and model are required for the main slot.",
+                    code="invalid_model_assignment",
+                ),
+                status=400,
+            )
+
+        try:
+            if model and not confirm_expensive:
+                try:
+                    from hermes_cli.model_selection_guards import combined_selection_warning
+
+                    warning = await asyncio.to_thread(
+                        combined_selection_warning, model, provider=provider, base_url=base_url
+                    )
+                except Exception:
+                    warning = None
+                if warning is not None:
+                    return web.json_response({
+                        "ok": False,
+                        "scope": scope,
+                        "provider": provider,
+                        "model": model,
+                        "confirm_required": True,
+                        "confirm_message": warning.message,
+                    })
+
+            # Lazy: the dashboard module builds a FastAPI app on import, and
+            # only a pin needs it.
+            from hermes_cli import web_server as dashboard
+
+            def _apply() -> Dict[str, Any]:
+                with dashboard._profile_scope(profile or None):
+                    return dashboard._apply_model_assignment_sync(
+                        scope, provider, model, task, base_url, api_key
+                    )
+
+            result = await asyncio.to_thread(_apply)
+            return web.json_response(result)
+        except Exception as exc:
+            # The dashboard body raises FastAPI's HTTPException for validation
+            # errors; read its fields rather than importing fastapi here.
+            status = getattr(exc, "status_code", None)
+            detail = getattr(exc, "detail", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                return web.json_response(
+                    _openai_error(
+                        str(detail or "Invalid model assignment."),
+                        code="invalid_model_assignment",
+                    ),
+                    status=status,
+                )
+            logger.exception("[%s] POST /api/model/set failed", self.name)
+            return web.json_response(
+                _openai_error("Failed to save model assignment.", code="model_set_failed"),
+                status=500,
+            )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -3465,6 +3578,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "approval_events": True,
                 "session_resources": True,
                 "model_options": True,
+                "model_set": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
@@ -3510,6 +3624,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
                 "model_options": {"method": "GET", "path": "/api/model/options"},
+                "model_set": {"method": "POST", "path": "/api/model/set"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
