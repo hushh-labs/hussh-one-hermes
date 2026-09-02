@@ -598,6 +598,27 @@ State these or the number misleads:
    measurable. If the top two models are within noise, report the suite as
    inconclusive rather than ranking them.
 
+## Independent judge, 2026-09-02: the contract met, and the number to quote
+
+Every earlier goal-progress round disclosed the same limitation: the session
+that wrote the queue also graded it. This round closes that. A fresh sealed
+queue (both shipping models, 89 rows, 6 planted controls) was graded by a
+separate Claude Fable 5.1 session that never opened the seal or the identity
+map; the orchestrator ingested afterwards.
+
+| Model | Goal progress | 95% CI | n | Off-path rules |
+| --- | --- | --- | --- | --- |
+| `google/gemma-4-26b-a4b-qat` (MLX) | 0.927 | [0.806, 0.975] | 41 | 1 stalls, 1 dead-end, 1 redundant |
+| `qwen/qwen3.8-27b` | 0.952 | [0.842, 0.987] | 42 | 2 dead-end |
+
+Valid run: all six controls caught, zero `unsure`, zero writer rejections.
+No pair separated. The independent judge marked 9 rows off-path where the
+same-session rounds marked 17 on identical content; the recurring modes are
+the same ones (answering "is hermes connected" with git repo metadata,
+writing the request itself into memory, asking the user for an audio file
+the context said to search for). This is the goal-progress number to quote;
+the earlier same-session rounds remain in the record as history.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above
