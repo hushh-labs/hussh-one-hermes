@@ -22,7 +22,7 @@ from hermes_cli import puppy_cmd as PC
 from hermes_cli.hussh_one_pkm import verdict_cli
 from hermes_cli.hussh_one_pkm.integrity import rules_for
 from hermes_cli.hussh_one_routing.exam import jobs as J
-from hermes_cli.hussh_one_routing.exam.model import FAIL, PASS
+from hermes_cli.hussh_one_routing.exam.model import FAIL, PASS, SKIP
 
 HEADER = "*🤫 Hussh One* · *Board Sync*\n======================================\n\n"
 
@@ -125,6 +125,24 @@ class TestContractChecks:
                                         ("mcp__hushh_wiki__wiki_list", {})]))
         assert _fails(real) == {}
 
+    def test_injected_discovery_facts_must_be_copied_exactly(self):
+        # The pre-run script hands the wiki job its numbers; a report that
+        # changes them is inventing. Verified by the collector, not on faith.
+        base = ("*🤫 Hussh One* · *Wiki Maintenance*\n======================================\n\n"
+                "• Commits in the last 36h: {c} (theme)\n• Wiki scan: wiki_list → {p} pages\n• ok")
+        calls = [("terminal", {}), ("mcp__hushh_wiki__wiki_list", {})]
+        run = _run(name="Hushh Wiki Maintenance Follow-on", text=base.format(c=1, p=551), tool_calls=calls)
+        run.discovery = {"commits_36h": "1", "wiki_pages": "551"}
+        assert _fails(J.grade(run)) == {}
+        run.discovery = {"commits_36h": "7", "wiki_pages": "551"}
+        assert "copied:commits_36h" in _fails(J.grade(run))
+        run.discovery = {}
+        skipped = {o.name for o in J.grade(run).outcomes if o.outcome == SKIP}
+        assert "copied:commits_36h" in skipped
+        assert J._discovery_lines("x\nDISCOVERY: commits_36h=3\n DISCOVERY: wiki_pages=551 \nDISCOVERY: broken") == {
+            "commits_36h": "3", "wiki_pages": "551",
+        }
+
     def test_auto_dream_model_half_is_json_without_tools(self):
         good = _run(name="Auto-Dream Consolidated Suite",
                     text='```json\n{"long_term": ["a"], "procedures": [], "index_entries": [], '
@@ -205,7 +223,7 @@ def _databases(tmp_path):
         {"id": "t2", "call_id": "t2", "function": {"name": "patch", "arguments": json.dumps({"path": "/tmp/index.json"})}},
     ])
     con.executemany("insert into messages (session_id, role, content, tool_calls, tool_call_id, timestamp) values (?,?,?,?,?,?)", [
-        ("cron_j1_20260902_031002", "user", "prompt...", "", "", claimed + 2),
+        ("cron_j1_20260902_031002", "user", "prompt...\nDISCOVERY: commits_36h=4\n", "", "", claimed + 2),
         ("cron_j1_20260902_031002", "assistant", "", calls, "", claimed + 10),
         ("cron_j1_20260902_031002", "tool", '{"success": true}', "", "t1", claimed + 11),
         ("cron_j1_20260902_031002", "tool", '{"error": "hunk did not apply"}', "", "t2", claimed + 12),
@@ -255,6 +273,8 @@ class TestCollection:
         assert board.tool_names == ["patch", "patch"]
         # Only the patch whose result reported success counts as written.
         assert board.files_written == ["/tmp/MEMORY.md"]
+        assert board.discovery == {"commits_36h": "4"}
+        assert "commits_36h=4" in J._evidence(board)
         assert board.final_text.startswith(HEADER)
         assert board.duration_s == 120.0
         failed = runs[1]

@@ -917,8 +917,15 @@ apply step appended every layer and delivered the brief with "• Memory: +5
 facts, +2 procedures, +5 index entries, 0 archived, dream recorded"; the
 wiki job copied its injected facts ("Commits in the last 36h: 1", "Wiki
 scan: wiki_list → 551 pages") and the evidence shows the `wiki_list` call.
-All three passed every contract check; the third blinded judge pass is the
-number to record next.
+All three passed every contract check, and the third blinded judge pass
+(6 rows, all 3 planted swaps caught, zero unsure) graded all three
+production grade: the JSON hand-off complete and specific, the wiki report
+with its evidenced scan, the applied brief with counts matching its source.
+The day's arc, judged the same way each time: 3 of 8, then 0 of 2, then 3
+of 3. The judge's two remaining requests are now contract checks: the
+injected discovery facts travel with the evidence and the report must copy
+them exactly (`copied:commits_36h`, `copied:wiki_pages`), and script jobs
+say in their evidence that the message itself states what was applied.
 
 On the founder's machine the deterministic half runs by itself: a
 script-only cron job (`Puppy One Job Audit`, 07:30, after the last daily

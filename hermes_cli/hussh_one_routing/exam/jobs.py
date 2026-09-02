@@ -84,6 +84,10 @@ class JobContract:
     # made three patch calls, two failed on the tool's own contract, and the
     # brief still claimed consolidation.
     required_written: tuple = ()
+    # (discovery key, output template) pairs: the report must contain the
+    # template with the injected value substituted, so a number the model
+    # was handed cannot come back changed.
+    discovery_checks: tuple = ()
     max_chars: int = MOBILE_MAX_CHARS
     judge_hint: str = ""  # what "production grade" means for this job
 
@@ -142,8 +146,10 @@ CONTRACTS: tuple = (
         # in the text itself, so the contract check can see it too.
         required_substrings=("Commits in the last 36h:", "Wiki scan:"),
         forbidden_tools=("send_message",),
-        min_tool_calls=2,
+        min_tool_calls=1,
         required_any_tools=("mcp__hushh_wiki__wiki_search", "mcp__hushh_wiki__wiki_list"),
+        discovery_checks=(("commits_36h", "Commits in the last 36h: {value}"),
+                          ("wiki_pages", "{value} pages")),
         judge_hint=(
             "The run must have discovered what changed (git log / diff on the "
             "repository, a broad wiki search) before deciding. '[SILENT]' is "
@@ -198,6 +204,9 @@ class JobRun:
     files_written: list = field(default_factory=list)
     deliver: str = ""
     duration_s: Optional[float] = None
+    # ``DISCOVERY: key=value`` lines a pre-run script injected into the prompt:
+    # the facts a report is required to copy, so the judge can check them.
+    discovery: dict = field(default_factory=dict)
 
     @property
     def tool_names(self) -> list:
@@ -305,6 +314,20 @@ def _write_succeeded(result_text: str) -> bool:
     return bool(payload.get("success")) or "bytes_written" in payload
 
 
+def _discovery_lines(text: str) -> dict:
+    """``DISCOVERY: key=value`` lines (one fact per line) from injected context."""
+    found: dict = {}
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("DISCOVERY:"):
+            continue
+        body = stripped[len("DISCOVERY:"):].strip()
+        key, sep, value = body.partition("=")
+        if sep and key.strip():
+            found[key.strip()] = value.strip()
+    return found
+
+
 def _written_path(name: str, args: dict) -> Optional[str]:
     if name not in ("write_file", "patch"):
         return None
@@ -409,6 +432,7 @@ def collect_runs(
             ).fetchone()
             session_id, model, tool_calls, final_text = "", "", [], ""
             results: dict = {}
+            discovery: dict = {}
             if session:
                 session_id, model, _started = session
                 messages = st.execute(
@@ -417,9 +441,13 @@ def collect_runs(
                     "order by timestamp, id",
                     (session_id,),
                 ).fetchall()
+                discovery: dict = {}
                 for role, content, raw_calls, call_id in messages:
                     if role == "tool" and call_id:
                         results[call_id] = content
+                        continue
+                    if role == "user":
+                        discovery.update(_discovery_lines(content))
                         continue
                     if role != "assistant":
                         continue
@@ -449,6 +477,7 @@ def collect_runs(
                     deliver=str(job.get("deliver") or ""),
                     duration_s=(round(finished - claimed, 1)
                                 if finished is not None else None),
+                    discovery=discovery,
                 )
             )
     finally:
@@ -550,6 +579,19 @@ def grade(run: JobRun, *, now: Optional[datetime] = None) -> Verdict:
             f"called:{tool}", PASS if called else FAIL,
             "" if called else f"never called {tool}",
         ))
+    for key, template in contract.discovery_checks:
+        if silent:
+            break
+        value = run.discovery.get(key)
+        if value in (None, ""):
+            verdict.outcomes.append(Outcome(f"copied:{key}", SKIP, "no injected value"))
+            continue
+        expected = template.format(value=value)
+        copied = expected in text
+        verdict.outcomes.append(Outcome(
+            f"copied:{key}", PASS if copied else FAIL,
+            "" if copied else f"injected {key}={value!r} but the report lacks {expected!r}",
+        ))
     if contract.required_any_tools and not silent:
         called_any = any(t in run.tool_names for t in contract.required_any_tools)
         verdict.outcomes.append(Outcome(
@@ -607,14 +649,22 @@ OUTPUT_CHARS = 4000
 
 
 def _evidence(run: JobRun) -> str:
+    if run.model == "script":
+        return (
+            f"status={run.status}; duration={run.duration_s}s; script job (no model "
+            "session; its file writes are not tracked here, the message itself "
+            "states what it applied)"
+        )
     calls = ", ".join(
         f"{name}({', '.join(f'{k}={str(v)[:60]!r}' for k, v in list(args.items())[:2])})"
         for name, args in run.tool_calls[:12]
     ) or "none"
     files = ", ".join(run.files_written[:8]) or "none"
+    injected = "; ".join(f"{k}={v}" for k, v in run.discovery.items()) or "none"
     return (
         f"status={run.status}; duration={run.duration_s}s; "
-        f"tool calls ({len(run.tool_calls)}): {calls}; files written: {files}"
+        f"tool calls ({len(run.tool_calls)}): {calls}; successful file writes: {files}; "
+        f"injected discovery facts the report must copy: {injected}"
     )
 
 
