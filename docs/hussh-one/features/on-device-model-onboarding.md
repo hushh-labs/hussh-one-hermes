@@ -678,6 +678,31 @@ report` drops their rows from the rate (probe mode bumped to
 ledger counted every graded row and are not comparable). Both arms of the
 learning pair were rerun on the active-only frozen corpus.
 
+## Learning rounds on the active corpus, 2026-09-02: what the loop can and cannot see
+
+Three replay-suite rounds ran on the frozen active-only corpus (45 cases,
+28 train / 17 held out, identical ids in every arm, empty playbook at the
+start of every arm, Fable 5.1 as reflector through a file handoff, the
+model at a verified 262,144).
+
+| Round | Evidence offered to the reflector | Matched arm (held-out structural) | Control arm |
+| --- | --- | --- | --- |
+| structural only | 1 failure (`arguments_valid`, a missing required `pattern`) | 0.824 to 0.765, 2 tactics | degenerate: one failure, nothing to shuffle, refused to rule |
+| structural + judged | the same failure plus 2 independently judged off-path verdicts (a stall, a dead end) | 0.824 to 0.824, 3 tactics | non-degenerate, 0.824 to 0.824, 3 tactics |
+
+Two conclusions, neither of them a learning claim. First, at 0.976
+structural validity the MoE gives a structural-only loop almost nothing to
+learn from: one failure in 28 training cases, and a control that cannot
+distinguish its arms. Second, the judged verdicts do reach the reflector
+now, and the tactics they produce are about behaviour (query the live
+service when asked whether it is connected; locate an attachment before
+asking for it), which held-out structural validity cannot see by
+construction. Both arms moving by exactly 0.0 is the metric saying so, not
+the loop failing. The measurement that can see those tactics is a judged
+with/without pair: `hermes puppy replay --playbook` on the same frozen
+cases, both artifact sets in one blinded queue, graded by a session that
+did not write it. That pair is the next number to record here.
+
 ## A cron job on the on-device model: the Auto-Dream nine-night failure, 2026-09-02
 
 The nightly Auto-Dream job failed nine nights running with "Context length
