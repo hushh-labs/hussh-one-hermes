@@ -792,6 +792,40 @@ any on-device cron job that edits the owner's files: a small model treats
 "write or patch" as "write", so give it one safe verb, and take a backup
 before it runs.
 
+## Production first, 2026-09-02 (day): what the founder actually saw
+
+The founder's morning read was "the cron jobs are all still failing" and
+"messages at 10am". The execution log said something narrower, and each
+piece has a fix:
+
+- **A harness run killed a production job.** `hermes puppy replay` called
+  `host.ensure_context`, which always drained LM Studio and reloaded the
+  model even when it was already at the requested context; the wiki
+  maintenance cron job, mid-request at 06:25, died with "Model unloaded".
+  `ensure_context` now reads the model's context back first and touches
+  nothing when it already matches. Beyond that, exams do not run against the
+  production LM Studio during the day; the founder's device is not a lab
+  bench while the assistant is at work.
+- **The 10am messages were the self-healing doctor.** It runs every 15
+  minutes and delivered to WhatsApp six times in ten hours, mostly to repeat
+  alerts about jobs that had failed once (including the updater's nightly
+  "exit 1", which was its designed abort). Its delivery is now `local`; it
+  still heals, and the daily jobs remain the only WhatsApp senders. The
+  updater exits 0 with a "Deferred" log line when the fork was fast-forwarded
+  and only the upstream merge is waiting for a human, so it no longer reads
+  as a failing service.
+- **Every agent-driven cron job carried 213 MCP tool schemas** because a
+  per-job `enabled_toolsets` without a server name merges every enabled MCP
+  server in. Each job is now scoped to what its prompt uses: board sync and
+  the token report `no_mcp`, wiki maintenance only `hushh-wiki`, the
+  timesheet `no_mcp`. A small on-device model gets a small prompt.
+- **The vault follows the owner, not the screen.** The bridge cleared the
+  vault key whenever the macOS console was locked, which is exactly when the
+  personal agent's scheduled work runs; every vault-backed job and test
+  failed at night with "Unlock the Hussh One vault". The workstation-lock
+  coupling is now opt-in (`hussh_one.vault.lock_with_workstation: true`);
+  by default the always-on personal agent keeps its vault.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above

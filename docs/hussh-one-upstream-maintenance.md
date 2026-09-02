@@ -165,8 +165,10 @@ same interpreter reads the checkout fine. The job also starts from
 `HERMES_HOME`, so the shell never has to stand inside a folder it may not
 enter. Until the upstream conflict backlog has a resolver, a nightly run
 fetches, pushes a safety tag, fast-forwards the fork, attempts the upstream
-merge, aborts on the conflicts with `main` untouched, and exits 1 without
-restarting anything; `--restart` only fires after a fully successful merge.
+merge, aborts on the conflicts with `main` untouched, logs "Deferred" and
+exits 0 without restarting anything (a deferred merge is not a failed
+service; exit 1 is reserved for a contract or guard failure); `--restart`
+only fires after a fully successful merge.
 Its logs are `$HERMES_HOME/logs/hussh-one-upstream-update.log` and
 `.error.log`; the contract also requires a clean tree, so uncommitted work in
 the checkout at 07:00 makes the run refuse.

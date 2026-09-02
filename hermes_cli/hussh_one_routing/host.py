@@ -216,9 +216,18 @@ def ensure_context(
     load: Callable[..., Optional[int]] = load_at_context,
     restart: Optional[Callable[[], None]] = None,
     max_restarts: int = 1,
+    current: Optional[Callable[[str], Optional[int]]] = None,
 ) -> Optional[int]:
     """Load ``model`` at ``context_length``, self-healing across the LM
     Studio session-stickiness described in :func:`restart_app`.
+
+    **Idempotent first.** If ``model`` already holds ``context_length`` (read
+    back through ``current``, by default :func:`loaded_context`), nothing is
+    touched: no drain, no reload. This host also runs the founder's live
+    gateway and its cron jobs against the same LM Studio, and on 2026-09-02
+    a replay run drained an already-correct model out from under a running
+    cron job, which died with "Model unloaded". A harness must never evict a
+    model that is already what it asked for.
 
     A plain drain-and-load cannot tell "genuinely stuck at a stale context"
     apart from "the server clamped a request it cannot satisfy" -- both look
@@ -236,6 +245,14 @@ def ensure_context(
     touching the real app.
     """
     from .ladder import drain
+
+    probe = current or loaded_context
+    try:
+        already = probe(model)
+    except Exception:  # noqa: BLE001 - a failed readback just means "load it"
+        already = None
+    if already == context_length:
+        return already
 
     loaded: Optional[int] = None
     for attempt in range(max_restarts + 1):

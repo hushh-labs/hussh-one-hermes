@@ -12,7 +12,17 @@ logic that is fully testable without touching a real app or a real server.
 
 from __future__ import annotations
 
+import pytest
+
 from hermes_cli.hussh_one_routing import host as H
+
+
+@pytest.fixture(autouse=True)
+def _no_live_readback(monkeypatch):
+    # ensure_context now asks the server what the model already holds before
+    # touching anything. These tests script a fake host; the real readback
+    # would reach for a live LM Studio (and wait on its timeout when absent).
+    monkeypatch.setattr(H, "loaded_context", lambda model, **kw: None)
 
 
 class _Host:
@@ -25,11 +35,19 @@ class _Host:
         self._loads_at = list(loads_at or [])
         self.load_calls = []
         self.restart_calls = 0
+        self.unload_calls = []
+
+    def current(self, model):
+        for entry in self._resident:
+            if entry.get("identifier") == model:
+                return entry.get("context")
+        return None
 
     def resident(self):
         return list(self._resident)
 
     def unload(self, identifier):
+        self.unload_calls.append(identifier)
         self._resident = [e for e in self._resident if e.get("identifier") != identifier]
         return True
 
@@ -44,6 +62,50 @@ class _Host:
         # load() call returns, so a restart is just a count here; the retry
         # that follows pops the next (by construction, fixed) queue entry.
         self.restart_calls += 1
+
+
+class TestEnsureContextLeavesACorrectModelAlone:
+    """This host also serves the founder's live gateway and its cron jobs.
+
+    On 2026-09-02 a replay run drained a model that was already at the
+    requested context, and a cron job mid-request died with "Model unloaded".
+    A harness must never evict a model that is already what it asked for.
+    """
+
+    def test_an_already_correct_model_is_not_drained_or_reloaded(self):
+        host = _Host()
+        host._resident = [{"identifier": "m1", "context": 262144}]
+        result = H.ensure_context(
+            "m1", 262144, unload=host.unload, resident=host.resident,
+            load=host.load, current=host.current,
+        )
+        assert result == 262144
+        assert host.load_calls == []
+        assert host.unload_calls == []
+
+    def test_a_model_at_the_wrong_context_is_still_reloaded(self):
+        host = _Host()
+        host._resident = [{"identifier": "m1", "context": 98304}]
+        result = H.ensure_context(
+            "m1", 262144, unload=host.unload, resident=host.resident,
+            load=host.load, current=host.current,
+        )
+        assert result == 262144
+        assert host.unload_calls == ["m1"]
+        assert host.load_calls == [("m1", 262144)]
+
+    def test_a_failed_readback_falls_through_to_loading(self):
+        host = _Host()
+
+        def broken(model):
+            raise RuntimeError("server away")
+
+        result = H.ensure_context(
+            "m1", 98304, unload=host.unload, resident=host.resident,
+            load=host.load, current=broken,
+        )
+        assert result == 98304
+        assert host.load_calls == [("m1", 98304)]
 
 
 class TestEnsureContextWithoutRestart:

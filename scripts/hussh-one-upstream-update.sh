@@ -220,7 +220,12 @@ apply_update() {
     git merge --abort || true
     git switch main
     git branch -D "$sync_branch" || true
-    return 1
+    # Deferred, not failed: the fork was fast-forwarded above and nothing
+    # broke; what remains is a merge no script may resolve. Exiting non-zero
+    # here made the doctor flag the updater as a failing service every night
+    # until a resolver exists, and page the founder for it.
+    log "Deferred: fork main is current; the official upstream merge waits for manual resolution (see docs/hussh-one-upstream-maintenance.md). No restart."
+    return 0
   fi
   update_attribution_base "$upstream_sha"
   git add LICENSES/attribution.toml

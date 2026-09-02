@@ -36,6 +36,28 @@ from .keychain import MacOSKeychain
 from .replica import EncryptedPkmReplica
 
 
+def _configured_lock_with_workstation() -> bool:
+    """``hussh_one.vault.lock_with_workstation`` from config.yaml; False when unset.
+
+    False is the owner-device default: the personal agent keeps its vault
+    while the screen is locked, because that is exactly when its scheduled
+    work runs. A fleet that wants the vault to follow the workstation lock
+    sets the key to true.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        return bool(
+            cfg_get(
+                load_config_readonly(),
+                "hussh_one", "vault", "lock_with_workstation",
+                default=False,
+            )
+        )
+    except Exception:  # noqa: BLE001 - an unreadable config must not lock the vault
+        return False
+
+
 class HusshVaultBridge:
     """Owns identity, vault memory, and device-bound owner capabilities."""
 
@@ -55,10 +77,23 @@ class HusshVaultBridge:
         profile_home: Path | None = None,
         keychain: MacOSKeychain | None = None,
         http: httpx.Client | None = None,
+        lock_with_workstation: bool | None = None,
     ) -> None:
         self.profile_home = profile_home or get_hermes_home()
         self.keychain = keychain or MacOSKeychain()
         self.http = http or httpx.Client(timeout=45.0)
+        # Whether a locked macOS console clears the vault key. Off by default:
+        # this is the owner's always-on personal agent, and its cron jobs and
+        # background work run while the screen is locked (founder rule,
+        # 2026-09-02, after every vault-backed job and test failed at night
+        # with "Unlock the Hussh One vault"). Set
+        # ``hussh_one.vault.lock_with_workstation: true`` in config.yaml to
+        # couple the vault to the workstation lock again.
+        self.lock_with_workstation = (
+            lock_with_workstation
+            if lock_with_workstation is not None
+            else _configured_lock_with_workstation()
+        )
         self.identity = HusshIdentityClient(
             profile_home=self.profile_home,
             keychain=self.keychain,
@@ -521,7 +556,10 @@ class HusshVaultBridge:
                     self._clear_source_library_custody_key_locked()
                     self._clear_owner_token_locked()
                 self.identity.lock_identity()
-            elif time.monotonic() >= self._next_workstation_lock_check_at:
+            elif (
+                self.lock_with_workstation
+                and time.monotonic() >= self._next_workstation_lock_check_at
+            ):
                 self._next_workstation_lock_check_at = (
                     time.monotonic() + self.WORKSTATION_LOCK_CHECK_SECONDS
                 )
@@ -571,7 +609,7 @@ class HusshVaultBridge:
 
     def _active_vault_key(self) -> bytes | None:
         with self._lock:
-            if self._macos_console_locked():
+            if self.lock_with_workstation and self._macos_console_locked():
                 self._clear_vault_key_locked()
                 self._clear_source_library_custody_key_locked()
                 self._clear_owner_token_locked()

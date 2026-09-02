@@ -626,6 +626,90 @@ def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
         mcp_bridge.require_vault_key()
 
 
+def test_a_locked_console_keeps_the_personal_agents_vault_unless_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Founder rule, 2026-09-02: the always-on personal agent keeps its vault
+    # while the screen is locked, because that is exactly when its scheduled
+    # work runs. Coupling to the workstation lock is opt-in.
+    class FakeKeychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+
+        def get(self, account: str) -> bytes | None:
+            return self.values.get(account)
+
+        def set(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete(self, account: str) -> None:
+            self.values.pop(account, None)
+
+    profile = tmp_path / "profile"
+    keychain = FakeKeychain()
+    setup = HusshVaultBridge(
+        profile_home=profile,
+        keychain=keychain,  # type: ignore[arg-type]
+        lock_with_workstation=False,
+    )
+    identity = {
+        "user_id": "user-a",
+        "device_id": "tdv_device-a",
+        "profile_id": setup.identity.profile_id,
+        "environment": "uat",
+    }
+    setup.identity.identity_path.parent.mkdir(parents=True)
+    setup.identity.identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    vault_key = bytes(range(32))
+    wrapping_key = bytes(reversed(range(32)))
+    keychain.set(setup._account("device-wrapping-key"), wrapping_key)
+    write_envelope(
+        setup.envelope_path,
+        wrap_local_vault_key(
+            vault_key=vault_key,
+            device_wrapping_key=wrapping_key,
+            profile_id=setup.identity.profile_id,
+            user_id="user-a",
+            device_id="tdv_device-a",
+        ),
+    )
+    setup._write_lock_state(locked=False, reason="test_unlock")
+    monkeypatch.setattr(
+        HusshVaultBridge, "_macos_console_locked", staticmethod(lambda: True)
+    )
+
+    always_on = HusshVaultBridge(
+        profile_home=profile,
+        keychain=keychain,  # type: ignore[arg-type]
+        lock_with_workstation=False,
+    )
+    assert always_on.require_vault_key() == vault_key
+
+    coupled = HusshVaultBridge(
+        profile_home=profile,
+        keychain=keychain,  # type: ignore[arg-type]
+        lock_with_workstation=True,
+    )
+    with pytest.raises(VaultCryptoError, match="Unlock"):
+        coupled.require_vault_key()
+
+
+def test_lock_with_workstation_defaults_off_and_reads_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import config as hermes_config
+    from hermes_cli.hussh_one_pkm import bridge as bridge_module
+
+    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: {})
+    assert bridge_module._configured_lock_with_workstation() is False
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config_readonly",
+        lambda: {"hussh_one": {"vault": {"lock_with_workstation": True}}},
+    )
+    assert bridge_module._configured_lock_with_workstation() is True
+
+
 def test_source_library_device_custody_is_cached_zeroized_and_phase_latched(
     tmp_path: Path,
 ) -> None:
