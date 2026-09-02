@@ -21,6 +21,14 @@ different tool may be right. Teaching to agreement would train imitation of a
 recorded trace, and the model would learn to copy a run rather than do a job.
 So ``learnable_failures`` withholds agreement-only misses from the reflector and
 they are reported without being taught to.
+
+**One non-structural signal is allowed in: an independent judge's off-path
+verdict.** ``hermes puppy goal-progress report`` writes those beside the model's
+playbook, each with a rule and a citation quoting the model's own output, and
+``learnable_failures`` attaches them to the case they graded. That is
+truth-graded evidence about this model's own turn, not imitation of a reference,
+so the reflector may see it. It is not re-measured inside the round (a round has
+no judge); its effect shows up in the next independent goal-progress round.
 """
 
 from __future__ import annotations
@@ -34,6 +42,10 @@ from .exam.model import COMPACTED, HARNESS
 logger = logging.getLogger(__name__)
 
 SUITE_ID = "replay"
+
+# Oracle-name prefix for a failure that came from a judge rather than a parser,
+# so a playbook bullet can be traced back to the verdict that produced it.
+JUDGED_PREFIX = "judge:"
 
 # Oracles whose failure is true regardless of what the reference model did.
 STRUCTURAL_ORACLES = frozenset(
@@ -54,7 +66,9 @@ STRUCTURAL_ORACLES = frozenset(
 )
 
 
-def learnable_failures(verdicts: Sequence[Any]) -> list:
+def learnable_failures(
+    verdicts: Sequence[Any], judged: Optional[dict] = None
+) -> list:
     """The failures a reflector may write tactics about.
 
     Excludes three things, each for its own reason.
@@ -67,8 +81,13 @@ def learnable_failures(verdicts: Sequence[Any]) -> list:
     ground truth. Teaching to it produces imitation of a recorded run.
 
     What survives is a structural failure with its exact diagnostic, which is
-    the only evidence here that is true independent of the reference.
+    true independent of the reference, plus any row in ``judged`` for the same
+    case id: an independent judge's off-path verdict, written by
+    ``goal_progress.write_judged_failures`` with a rule and a citation quoting
+    the model's own output. Those are tagged ``judge:<rule>``. A judged row on
+    an indeterminate turn is still dropped, for the timeout reason above.
     """
+    judged = judged or {}
     out = []
     for verdict in verdicts:
         if verdict.indeterminate:
@@ -78,20 +97,43 @@ def learnable_failures(verdicts: Sequence[Any]) -> list:
             for outcome in verdict.failures
             if outcome.name in STRUCTURAL_ORACLES
         ]
-        if not structural:
+        oracles = [o.name for o in structural]
+        lines = [f"{o.name}: {o.detail}" for o in structural if o.detail]
+        for row in judged.get(verdict.case_id, ()):
+            rule = row.get("rule") or "off-path"
+            oracles.append(f"{JUDGED_PREFIX}{rule}")
+            detail = " ".join(
+                part for part in (row.get("citation"), row.get("note")) if part
+            )
+            lines.append(f"{JUDGED_PREFIX}{rule}: {detail}".rstrip(": "))
+        if not oracles:
             continue
         out.append(
             {
                 "case_id": verdict.case_id,
                 "suite": SUITE_ID,
                 "fault": verdict.fault,
-                "oracles": [o.name for o in structural],
-                "asi": "\n".join(
-                    f"{o.name}: {o.detail}" for o in structural if o.detail
-                ),
+                "oracles": oracles,
+                "asi": "\n".join(lines),
             }
         )
     return out
+
+
+def load_judged(model: str) -> dict:
+    """Judged off-path failures on file for this model, or {} when none.
+
+    Reads the playbook directory, so the loop and the judge agree on which
+    model a verdict belongs to. Fails open: a learning aid must never stop a
+    round from running.
+    """
+    from .exam import goal_progress as GP
+
+    try:
+        return GP.load_judged_failures(model)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read judged failures for %s", model, exc_info=True)
+        return {}
 
 
 def score(verdicts: Sequence[Any]) -> float:
@@ -196,8 +238,11 @@ def make_answerer(
     return answer
 
 
-def summarize_round(before: Sequence[Any], after: Sequence[Any]) -> dict:
+def summarize_round(
+    before: Sequence[Any], after: Sequence[Any], judged: Optional[dict] = None
+) -> dict:
     """What one round changed, with both signals kept apart."""
+    taught = learnable_failures(before, judged)
     return {
         "structural_before": round(score(before), 4),
         "structural_after": round(score(after), 4),
@@ -206,10 +251,17 @@ def summarize_round(before: Sequence[Any], after: Sequence[Any]) -> dict:
         "agreement_after": agreement(after),
         "timed_out_before": sum(1 for v in before if v.fault == HARNESS),
         "compacted_before": sum(1 for v in before if v.fault == COMPACTED),
-        "learnable_failures": len(learnable_failures(before)),
+        "learnable_failures": len(taught),
+        "judged_taught": sum(
+            1 for f in taught
+            if any(o.startswith(JUDGED_PREFIX) for o in f["oracles"])
+        ),
         "caveat": (
-            "Only structural failures are taught to. Agreement is reported "
-            "because the label is one frontier trajectory rather than ground "
-            "truth, and teaching to it would train imitation of a recorded run."
+            "Structural failures and independently judged off-path verdicts "
+            "are taught to. Agreement is reported because the label is one "
+            "frontier trajectory rather than ground truth, and teaching to it "
+            "would train imitation of a recorded run. Judged verdicts are not "
+            "re-measured inside the round; the next goal-progress round is "
+            "where their effect shows."
         ),
     }

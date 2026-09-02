@@ -597,6 +597,49 @@ writing the request itself into memory, asking the user for an audio file
 the context said to search for). This is the goal-progress number to quote;
 the earlier same-session rounds remain in the record as history.
 
+## The edge that was missing, 2026-09-02: the learning half never reached the model
+
+Auditing "does the harness work for the model" end to end found that it did
+not, for three independent reasons, none of them visible from any test:
+
+1. **The playbook plugin was never switched on.** Plugins are opt-in on this
+   fork (`plugins.enabled` in `~/.hermes/config.yaml`), and `puppy-playbook`
+   was not in the list. `hermes plugins list` showed it as `not enabled`, and
+   the gateway log had never mentioned it. Every tactic the loop ever wrote
+   was unread. Fixed on the founder's machine (config allow-list) and
+   recorded here so the next machine's bootstrap checks it: `hermes plugins
+   list | grep puppy-playbook` must say `enabled`.
+2. **The replay suite was not a live suite.** The plugin injected
+   `file_edit`, `terminal` and `tool_select` playbooks and ignored `replay`,
+   the one suite graded on the owner's real turns and the only one the
+   learning loop runs now. `replay` is now first in `LIVE_SUITES`.
+3. **The independent judge's verdicts went nowhere.** `learnable_failures`
+   admitted structural failures only, correctly refusing agreement misses.
+   But an off-path verdict from a blinded, control-checked judge, with a rule
+   and a citation quoting the model's own output, is truth about that turn,
+   not imitation. `hermes puppy goal-progress report` now writes those rows
+   to `~/.hermes/puppy-playbooks/<model slug>/judged_failures.jsonl`
+   (appended, keyed on case id + rule, never in the repository because the
+   citations quote sessions), and `hermes puppy loop --run` attaches them to
+   their cases as `judge:<rule>` evidence for the reflector. The shuffled
+   control receives the same rows detached from their cases, so the negative
+   control stays fair. Judged verdicts are not re-measured inside a round (a
+   round has no judge); their effect shows in the next goal-progress round.
+
+Also from the same audit: `goal-progress report` now appends one row per
+model to the evolution ledger (`~/.hermes/evolution-ledger.jsonl`) in the
+`judge_queue` row shape, probe mode `goal_progress/replay/blinded-judge/v1`,
+so `compare_runs` can say whether the next model generation moved the judged
+number. Until this change no goal-progress rate had ever been recorded
+anywhere a later run could compare against. The 2026-09-02 independent round
+above is the first two rows, and its five judged off-path turns (three for
+the MoE, two for qwen) are the first judged evidence on file.
+
+The first replay-suite learning round with a frontier reflector (Fable 5.1,
+file handoff, 19 train / 26 held out, matched and shuffled arms) is running
+against this wiring; its result is reported in the memory notes for this
+work until it lands here with numbers.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above
@@ -680,7 +723,25 @@ not a re-derivation.
    ```
 
    A void result means a planted control was missed; no rate survives that,
-   and the fix is to re-grade more carefully, not to re-run the queue.
+   and the fix is to re-grade more carefully, not to re-run the queue. A
+   valid report also appends one ledger row per model and writes the judged
+   off-path turns beside each model's playbook (paths are printed under
+   `ledger` and `judged_failures_written`); nothing more to do for either.
+
+4b. **Then let the model learn from it**, one round per shipping model,
+   matched arm and shuffled control, with a reflector that is not on-device:
+
+   ```
+   hermes puppy loop <model> --run --judge <frontier model>
+   hermes puppy loop <model> --run --judge <frontier model> --control
+   ```
+
+   The round reads the judged failures written in step 4 and the structural
+   failures of its own baseline pass. Report held-out structural before and
+   after for both arms; a matched gain the shuffled arm also shows is noise.
+   Before trusting any of this on a new machine, `hermes plugins list` must
+   show `puppy-playbook` as `enabled`, or the playbook is written and never
+   read (the 2026-09-02 finding above).
 
 5. **Report all three numbers, never summed**: structural validity (from the
    replay summary), agreement with the reference (`reference_match`, an

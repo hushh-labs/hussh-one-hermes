@@ -117,6 +117,82 @@ class TestRoundSummary:
         rows = LR.summarize_round([verdict("a")], [verdict("a")])
         assert "imitation" in rows["caveat"]
 
+    def test_judged_evidence_is_counted_apart(self):
+        rows = LR.summarize_round(
+            [verdict("a"), verdict("b", failures=["shell_parses"])],
+            [verdict("a"), verdict("b")],
+            judged=JUDGED,
+        )
+        assert rows["learnable_failures"] == 2
+        assert rows["judged_taught"] == 1
+
+
+JUDGED = {
+    "a": [{
+        "case_id": "a",
+        "rule": "dead-end",
+        "citation": "ls /nowhere",
+        "note": "lists a path the request never named",
+    }]
+}
+
+
+class TestJudgedVerdictsAreLearnable:
+    """An independent judge's off-path verdict is the one non-structural
+    signal allowed in: it grades this model's own turn against a rule, with a
+    citation, so it is truth about the turn rather than imitation of a
+    reference."""
+
+    def test_a_judged_off_path_turn_is_learnable(self):
+        found = LR.learnable_failures([verdict("a")], judged=JUDGED)
+        assert found[0]["oracles"] == ["judge:dead-end"]
+        assert "ls /nowhere" in found[0]["asi"]
+        assert "never named" in found[0]["asi"]
+
+    def test_judged_rows_attach_only_to_their_own_case(self):
+        assert LR.learnable_failures([verdict("b")], judged=JUDGED) == []
+
+    def test_a_judged_timeout_still_teaches_nothing(self):
+        found = LR.learnable_failures(
+            [verdict("a", indeterminate="timeout")], judged=JUDGED
+        )
+        assert found == []
+
+    def test_structural_and_judged_evidence_combine_on_one_case(self):
+        found = LR.learnable_failures(
+            [verdict("a", failures=["shell_parses"])], judged=JUDGED
+        )
+        assert found[0]["oracles"] == ["shell_parses", "judge:dead-end"]
+
+    def test_without_judged_rows_nothing_changes(self):
+        assert LR.learnable_failures([verdict("a")]) == []
+
+    def test_load_judged_reads_beside_the_playbook(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.hussh_one_routing import playbook as pb
+        from hermes_cli.hussh_one_routing.exam import goal_progress as GP
+
+        result = {
+            "void": False,
+            "judge": "j",
+            "per_model": {"pub/m": {
+                "on_path": 0,
+                "graded": 1,
+                "goal_progress": {"rate": 0.0, "n": 1, "ci95": [0.0, 0.79],
+                                  "width": 0.79},
+                "off_path_rules": {"dead-end": 1},
+                "judged_failures": list(JUDGED["a"]),
+            }},
+        }
+        GP.write_judged_failures(result)
+        GP.write_judged_failures(result)  # the same verdict twice is one failure
+        loaded = LR.load_judged("pub/m")
+        assert [r["rule"] for r in loaded["a"]] == ["dead-end"]
+        assert LR.load_judged("pub/other") == {}
+        # The judged file lives in the model's own playbook directory.
+        assert (GP.judged_failures_path("pub/m").parent
+                == pb.path_for("pub/m", "replay").parent)
+
 
 class TestTheAnswerer:
     class _Turn:

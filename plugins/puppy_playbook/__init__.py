@@ -34,10 +34,13 @@ logger = logging.getLogger(__name__)
 
 SECTION_ID = "puppy-playbook"
 
-# Suites whose learning is relevant to a live agent session. `long_context` is
-# deliberately absent: its findings are about budget and routing rather than
-# anything a model can act on from its prompt.
-LIVE_SUITES = ("file_edit", "terminal", "tool_select")
+# Suites whose learning is relevant to a live agent session. `replay` comes
+# first: it is graded on the owner's real session turns, so its tactics are the
+# closest thing to advice about the job the model is about to do. It was missing
+# from this tuple until 2026-09-02, so every replay round's playbook was written
+# and never read. `long_context` is deliberately absent: its findings are about
+# budget and routing rather than anything a model can act on from its prompt.
+LIVE_SUITES = ("replay", "file_edit", "terminal", "tool_select")
 
 # Hard ceiling. The playbook is prepended to every call in the session, so it is
 # a standing tax on both latency and the context the real task needs. Real

@@ -20,6 +20,7 @@ Four subcommands:
 
 from __future__ import annotations
 
+import functools
 import json
 import sys
 from pathlib import Path
@@ -253,6 +254,15 @@ def _cmd_loop(args) -> int:
 
     print(f"\n{len(cases)} real session turns | "
           f"{'SHUFFLED CONTROL' if args.control else 'matched evidence'}")
+    # Verdicts from an independent judge (`hermes puppy goal-progress report`)
+    # are the one non-structural signal the loop may learn from. No file on
+    # disk means none, not an error. The shuffled arm detaches these from
+    # their cases exactly like structural evidence, so the control stays fair.
+    judged = LR.load_judged(args.model)
+    if judged:
+        print(f"  judged off-path verdicts on file: "
+              f"{sum(len(rows) for rows in judged.values())}")
+
     # The replay suite's own scorer and failure filter, not run_round's
     # generic defaults: the generic `score` counts disagreement with the
     # reference as a failure, which once reported a 0.952-structural model
@@ -266,7 +276,7 @@ def _cmd_loop(args) -> int:
         answer=answer,
         reflect=reflect,
         score_fn=LR.score,
-        failures_fn=LR.learnable_failures,
+        failures_fn=functools.partial(LR.learnable_failures, judged=judged),
         on_progress=print,
     )
     print("\n=== round ===")
@@ -647,6 +657,15 @@ def _cmd_goal_progress(args) -> int:
             out_dir=Path(args.out), seal_path=Path(args.seal),
             identity_path=Path(args.identity), judge_label=args.judge,
         )
+        # A rate nobody can compare to the next model's is a number, not a
+        # trend: every report lands in the evolution ledger, void or not.
+        ledger = GP.append_to_ledger(
+            result, ledger_path=getattr(args, "ledger", None)
+        )
+        result["ledger"] = {"path": ledger["path"], "rows": len(ledger["rows"])}
+        # And the judged off-path turns go beside the model's playbook, where
+        # the learning loop reads them as evidence.
+        result["judged_failures_written"] = GP.write_judged_failures(result)
         print(json.dumps(result, indent=2))
         return EXIT_OK
 
@@ -839,6 +858,9 @@ def build_puppy_parser(subparsers) -> None:
     gp_report.add_argument("--identity", required=True, help="Identity map path")
     gp_report.add_argument("--judge", required=True,
                            help="Label identifying who graded this queue")
+    gp_report.add_argument("--ledger",
+                           help="Evolution ledger path (default: the shared "
+                                "ledger under HERMES_HOME)")
 
     routing = sub.add_parser("routing", help="What the ledger supports recommending")
     routing.add_argument("--ledger", help="Ledger path (default: $HERMES_HOME)")

@@ -124,3 +124,17 @@ class TestTheContextTaxIsBounded:
         stock("m", "file_edit", TACTIC)
         section = render({"model": "m"})
         assert section.rstrip().endswith(TACTIC)
+
+
+class TestReplayIsALiveSuite:
+    def test_replay_tactics_reach_the_prompt(self, home):
+        # The learning loop grades the owner's real session turns under the
+        # "replay" suite. Until 2026-09-02 that suite was not in LIVE_SUITES,
+        # so every replay round wrote a playbook that nothing ever read.
+        from plugins.puppy_playbook import LIVE_SUITES
+
+        assert LIVE_SUITES[0] == "replay"
+        stock("google/gemma-4-26b-a4b-qat", "replay", TACTIC)
+        section = render({"model": "google/gemma-4-26b-a4b-qat"})
+        assert "## replay" in section
+        assert TACTIC in section

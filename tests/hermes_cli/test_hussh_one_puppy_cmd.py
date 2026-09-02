@@ -165,6 +165,12 @@ class TestGoalProgressParsing:
                 "--out", "run", "--seal", "s.json", "--identity", "i.json",
             ])
 
+    def test_report_ledger_is_optional(self):
+        base = ["puppy", "goal-progress", "report", "--out", "run",
+                "--seal", "s.json", "--identity", "i.json", "--judge", "j"]
+        assert _parser().parse_args(base).ledger is None
+        assert _parser().parse_args(base + ["--ledger", "l.jsonl"]).ledger == "l.jsonl"
+
 
 def _artifact(path, model_slug, records):
     file = path / f"corrected_{model_slug}.jsonl"
@@ -204,10 +210,13 @@ class TestGoalProgressCommandDispatch:
         assert not (tmp_path / "run").exists()
         assert "not found" in capsys.readouterr().err
 
-    def test_queue_then_report_round_trips_through_the_cli(self, tmp_path, capsys):
+    def test_queue_then_report_round_trips_through_the_cli(
+        self, tmp_path, capsys, monkeypatch
+    ):
         # Same fixture shape as the goal_progress module's own tests, driven
         # this time through the CLI layer to prove nothing is lost or
         # renamed crossing that boundary.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         model_a = _artifact(tmp_path, "alpha_model-a", [
             _record("c1", "search_files", {"pattern": "x"},
                     "search_files", {"pattern": "x"}),
@@ -237,7 +246,8 @@ class TestGoalProgressCommandDispatch:
         # reference continuation printed in its own utterance. Proving the
         # CLI's queue/report plumbing here, not goal_progress's own control
         # logic, which has its own dedicated tests.
-        real_ids = set(json.loads(identity.read_text(encoding="utf-8")))
+        identity_map = json.loads(identity.read_text(encoding="utf-8"))
+        real_ids = set(identity_map)
         for line in (run_dir / "review-queue.jsonl").read_text().splitlines():
             row = json.loads(line)
             action = row["output"]["action"]
@@ -250,6 +260,15 @@ class TestGoalProgressCommandDispatch:
                     citation=action.split('"')[0].strip() or action.split(" ", 1)[0],
                     note="planted swap",
                 )
+            elif not is_control and identity_map[row["id"]]["case_id"] == "c2":
+                # One real off-path turn, so the report has something to
+                # carry into the ledger and the judged-failures file.
+                verdict_cli.record(
+                    run_dir=run_dir, row_id=row["id"], verdict="wrong",
+                    rule="dead-end",
+                    citation=action.split(" ", 1)[0],
+                    note="listed instead of reading the named file",
+                )
             else:
                 verdict_cli.record(
                     run_dir=run_dir, row_id=row["id"], verdict="correct",
@@ -259,12 +278,31 @@ class TestGoalProgressCommandDispatch:
         report_args = argparse.Namespace(
             goal_progress_command="report",
             out=str(run_dir), seal=str(seal), identity=str(identity),
-            judge="test-judge",
+            judge="test-judge", ledger=str(tmp_path / "ledger.jsonl"),
         )
         assert PC._cmd_goal_progress(report_args) == PC.EXIT_OK
         printed = json.loads(capsys.readouterr().out)
         assert printed["void"] is False
         assert set(printed["per_model"]) == {"alpha/model-a", "beta/model-b"}
+
+        # The judged off-path turn leaves the report twice: into the evolution
+        # ledger (one row per model, comparable by probe mode) and into the
+        # file the learning loop reads for exactly this model.
+        alpha = printed["per_model"]["alpha/model-a"]
+        assert [f["case_id"] for f in alpha["judged_failures"]] == ["c2"]
+        assert alpha["judged_failures"][0]["rule"] == "dead-end"
+        rows = [json.loads(line) for line in
+                (tmp_path / "ledger.jsonl").read_text().splitlines()]
+        assert sorted(r["answerer_model"] for r in rows) == [
+            "alpha/model-a", "beta/model-b",
+        ]
+        assert all(r["capability_profile"]["probe_mode"] == GP.PROBE_MODE
+                   for r in rows)
+        assert printed["ledger"]["rows"] == 2
+        from hermes_cli.hussh_one_routing import loop_replay as LR
+
+        assert LR.load_judged("alpha/model-a")["c2"][0]["rule"] == "dead-end"
+        assert LR.load_judged("beta/model-b") == {}
 
 
 class TestDefaultLadderReflectsTheFinalPick:
@@ -289,5 +327,8 @@ class TestLoopUsesTheReplaySuiteScorer:
 
         src = inspect.getsource(PC._cmd_loop)
         assert "score_fn=LR.score" in src
-        assert "failures_fn=LR.learnable_failures" in src
+        # Judged verdicts ride along as the one non-structural signal; the
+        # shuffled control wraps the same failures_fn, so both arms see them.
+        assert "failures_fn=functools.partial(LR.learnable_failures" in src
+        assert "judged=judged" in src
         assert callable(LR.score) and callable(LR.learnable_failures)

@@ -43,6 +43,7 @@ import json
 import logging
 import random
 import re
+import time
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -411,20 +412,26 @@ def report(
     from hermes_cli.hussh_one_pkm.judge_queue import ingest
     from hermes_cli.hussh_one_routing import stats
 
+    identity = json.loads(Path(identity_path).read_text(encoding="utf-8"))
     graded = ingest(
         out_dir=Path(out_dir), judge_label=judge_label, seal_path=Path(seal_path)
     )
     if graded.void:
-        return {"void": True, "void_reason": graded.void_reason}
+        return {
+            "void": True,
+            "void_reason": graded.void_reason,
+            "judge": judge_label,
+            "models": _models_in(identity),
+        }
 
-    identity = json.loads(Path(identity_path).read_text(encoding="utf-8"))
     per_model: dict = {}
     for case in graded.cases:
         who = identity.get(case.case_id)
         if not who or case.control is not None or not case.counted:
             continue
         bucket = per_model.setdefault(
-            who["model"], {"on_path": 0, "graded": 0, "off_path_rules": {}}
+            who["model"],
+            {"on_path": 0, "graded": 0, "off_path_rules": {}, "judged_failures": []},
         )
         bucket["graded"] += 1
         if case.verdict == "correct":
@@ -433,6 +440,15 @@ def report(
             bucket["off_path_rules"][case.rule] = (
                 bucket["off_path_rules"].get(case.rule, 0) + 1
             )
+            # Keyed by the replay case id, not the blinded row id, so the
+            # learning loop can attach this verdict to the exact turn.
+            bucket["judged_failures"].append({
+                "case_id": who["case_id"],
+                "row_id": case.case_id,
+                "rule": case.rule,
+                "citation": case.citation,
+                "note": case.note,
+            })
 
     for model, bucket in per_model.items():
         bucket["goal_progress"] = stats.describe(bucket["on_path"], bucket["graded"])
@@ -440,6 +456,8 @@ def report(
     return {
         "void": False,
         "suite": SUITE_ID,
+        "judge": judge_label,
+        "models": _models_in(identity),
         "per_model": per_model,
         "caveat": (
             "Goal progress is a judged number over blinded rows. It is the "
@@ -447,3 +465,144 @@ def report(
             "to either; a different action than the reference can be on-path."
         ),
     }
+
+
+# How a goal-progress run was asked. The ledger refuses to compare rows whose
+# probe mode differs, so this string changes whenever the queue's shape, the
+# control policy or the counting rule changes.
+PROBE_MODE = "goal_progress/replay/blinded-judge/v1"
+
+JUDGED_FAILURES_FILE = "judged_failures.jsonl"
+
+
+def _models_in(identity: dict) -> list:
+    return sorted({who["model"] for who in identity.values() if who.get("model")})
+
+
+def append_to_ledger(
+    result: dict,
+    *,
+    ledger_path: Optional[Path | str] = None,
+    timestamp: Optional[int] = None,
+) -> dict:
+    """Record a goal-progress run in the evolution ledger, one row per model.
+
+    Same row shape as ``judge_queue.append_to_ledger``, so ``read_ledger`` and
+    ``compare_runs`` work unchanged: ``scoreboard.accuracy`` is the goal
+    progress rate and ``capability_profile.probe_mode`` is ``PROBE_MODE``. A
+    void run is recorded per model with an empty scoreboard, because "we tried
+    and the grader missed a control" is a real event; ``compare_runs`` skips
+    void rows on its own.
+    """
+    from hermes_cli.hussh_one_pkm import judge_queue as JQ
+
+    at = int(timestamp if timestamp is not None else time.time())
+    path = Path(ledger_path) if ledger_path is not None else JQ.default_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    void = bool(result.get("void"))
+    if void:
+        per_model = {model: None for model in result.get("models") or []}
+    else:
+        per_model = result["per_model"]
+    rows = []
+    with path.open("a", encoding="utf-8") as handle:
+        for model, bucket in sorted(per_model.items()):
+            scoreboard: dict = {}
+            if bucket is not None:
+                described = bucket["goal_progress"]
+                scoreboard = {
+                    "metric": "goal_progress",
+                    "accuracy": described["rate"],
+                    "n": described["n"],
+                    "ci95": described["ci95"],
+                    "off_path_rules": bucket["off_path_rules"],
+                }
+            row = {
+                "schema_version": JQ.SCHEMA_VERSION,
+                "at": at,
+                "answerer_model": model,
+                "judge": result.get("judge"),
+                "capability_profile": {"probe_mode": PROBE_MODE, "suite": SUITE_ID},
+                "host": {},
+                "benchmark": {},
+                "scoreboard": scoreboard,
+                "void": void,
+                "void_reason": result.get("void_reason", ""),
+            }
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+            rows.append(row)
+    return {"path": str(path), "rows": rows}
+
+
+def judged_failures_path(
+    model: str, *, directory: Optional[Path | str] = None
+) -> Path:
+    from hermes_cli.hussh_one_routing import playbook as pb
+
+    base = Path(directory) if directory is not None else pb.playbook_dir()
+    return base / pb.model_slug(model) / JUDGED_FAILURES_FILE
+
+
+def _read_jsonl(path: Path) -> list:
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    return rows
+
+
+def write_judged_failures(
+    result: dict,
+    *,
+    directory: Optional[Path | str] = None,
+    timestamp: Optional[int] = None,
+) -> dict:
+    """Persist every judged off-path verdict beside the model's playbook.
+
+    This is the file the learning loop reads (``loop_replay.load_judged``) and
+    the only bridge from an independent judge's verdicts to the reflector. Rows
+    carry the replay case id so a later round can attach the verdict to the
+    exact turn that failed. Append-only and keyed on (case_id, rule): the same
+    failure judged twice is one failure. It lives under HERMES_HOME and never
+    in the repository, because the citations quote the owner's own sessions.
+    """
+    if result.get("void"):
+        return {}
+    at = int(timestamp if timestamp is not None else time.time())
+    written: dict = {}
+    for model, bucket in result["per_model"].items():
+        rows = bucket.get("judged_failures") or []
+        if not rows:
+            continue
+        path = judged_failures_path(model, directory=directory)
+        seen = {(r.get("case_id"), r.get("rule")) for r in _read_jsonl(path)}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new_rows = 0
+        with path.open("a", encoding="utf-8") as handle:
+            for row in rows:
+                key = (row["case_id"], row["rule"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                handle.write(json.dumps(
+                    {**row, "suite": SUITE_ID, "judge": result.get("judge"), "at": at},
+                    sort_keys=True,
+                ) + "\n")
+                new_rows += 1
+        written[model] = {"path": str(path), "new_rows": new_rows}
+    return written
+
+
+def load_judged_failures(
+    model: str, *, directory: Optional[Path | str] = None
+) -> dict:
+    """Replay case id -> judged off-path rows; empty when nothing was judged."""
+    out: dict = {}
+    for row in _read_jsonl(judged_failures_path(model, directory=directory)):
+        out.setdefault(row["case_id"], []).append(row)
+    return out

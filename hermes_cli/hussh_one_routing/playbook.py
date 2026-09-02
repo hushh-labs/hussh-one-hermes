@@ -195,15 +195,20 @@ def playbook_dir() -> Path:
     return get_hermes_home() / "puppy-playbooks"
 
 
-def path_for(model: str, suite: str) -> Path:
-    """Where one model's playbook for one suite lives.
+def model_slug(model: str) -> str:
+    """The on-disk name for a model id.
 
-    The model id is slugified because it carries a publisher prefix and a
-    slash, and a slash would silently create a directory tree that a later
-    lookup would not find.
+    The id carries a publisher prefix and a slash, and a slash would silently
+    create a directory tree that a later lookup would not find. Everything that
+    stores per-model state beside the playbook uses this one function, so the
+    loop and the judge never disagree about which directory is the model's.
     """
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", model)
-    return playbook_dir() / slug / f"{suite}.json"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", model)
+
+
+def path_for(model: str, suite: str) -> Path:
+    """Where one model's playbook for one suite lives."""
+    return playbook_dir() / model_slug(model) / f"{suite}.json"
 
 
 def load(model: str, suite: str) -> Playbook:

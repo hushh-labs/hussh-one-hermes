@@ -313,3 +313,93 @@ class TestEndToEnd:
         hedged_model = identity_map[first_real]["model"]
         bucket = result["per_model"][hedged_model]
         assert bucket["on_path"] < bucket["graded"]
+
+
+class TestTheRunIsRecorded:
+    """A rate nobody can compare to the next model's is a number, not a
+    trend. Every report lands in the evolution ledger in the judge_queue row
+    shape, so ``compare_runs`` works on it unchanged, and every judged
+    off-path turn lands beside the model's playbook for the learning loop."""
+
+    def _result(self):
+        return {
+            "void": False,
+            "judge": "fable-5.1",
+            "models": ["a/one", "b/two"],
+            "per_model": {
+                "a/one": {
+                    "on_path": 3,
+                    "graded": 4,
+                    "goal_progress": {"rate": 0.75, "n": 4,
+                                      "ci95": [0.3, 0.95], "width": 0.65},
+                    "off_path_rules": {"dead-end": 1},
+                    "judged_failures": [{
+                        "case_id": "s#1", "row_id": "c003", "rule": "dead-end",
+                        "citation": "ls /x", "note": "n",
+                    }],
+                },
+                "b/two": {
+                    "on_path": 4,
+                    "graded": 4,
+                    "goal_progress": {"rate": 1.0, "n": 4,
+                                      "ci95": [0.51, 1.0], "width": 0.49},
+                    "off_path_rules": {},
+                    "judged_failures": [],
+                },
+            },
+        }
+
+    def test_one_ledger_row_per_model_in_the_shared_shape(self, tmp_path):
+        from hermes_cli.hussh_one_pkm import judge_queue as JQ
+
+        ledger = tmp_path / "ledger.jsonl"
+        out = GP.append_to_ledger(self._result(), ledger_path=ledger, timestamp=5)
+        rows = JQ.read_ledger(ledger)
+        assert [r["answerer_model"] for r in rows] == ["a/one", "b/two"]
+        assert rows[0]["scoreboard"]["accuracy"] == 0.75
+        assert rows[0]["capability_profile"]["probe_mode"] == GP.PROBE_MODE
+        assert rows[0]["judge"] == "fable-5.1" and rows[0]["at"] == 5
+        assert out["path"] == str(ledger) and len(out["rows"]) == 2
+
+    def test_two_runs_of_the_same_model_compare(self, tmp_path):
+        from hermes_cli.hussh_one_pkm import judge_queue as JQ
+
+        ledger = tmp_path / "ledger.jsonl"
+        GP.append_to_ledger(self._result(), ledger_path=ledger, timestamp=1)
+        later = self._result()
+        later["per_model"]["a/one"]["goal_progress"]["rate"] = 1.0
+        GP.append_to_ledger(later, ledger_path=ledger, timestamp=2)
+        comparison = JQ.compare_runs(ledger, model="a/one")
+        assert comparison["comparable"] is True
+        assert comparison["delta"] == 0.25
+
+    def test_a_void_run_is_recorded_per_model_without_a_rate(self, tmp_path):
+        from hermes_cli.hussh_one_pkm import judge_queue as JQ
+
+        ledger = tmp_path / "ledger.jsonl"
+        void = {"void": True, "void_reason": "missed control", "judge": "j",
+                "models": ["a/one", "b/two"]}
+        GP.append_to_ledger(void, ledger_path=ledger)
+        rows = JQ.read_ledger(ledger)
+        assert [r["answerer_model"] for r in rows] == ["a/one", "b/two"]
+        assert all(r["void"] and r["scoreboard"] == {} for r in rows)
+        # And compare_runs ignores it rather than inventing a trend.
+        assert JQ.compare_runs(ledger, model="a/one")["comparable"] is False
+
+    def test_judged_failures_land_beside_the_playbook_and_dedupe(self, tmp_path):
+        written = GP.write_judged_failures(
+            self._result(), directory=tmp_path, timestamp=7
+        )
+        assert set(written) == {"a/one"}
+        again = GP.write_judged_failures(
+            self._result(), directory=tmp_path, timestamp=8
+        )
+        assert again["a/one"]["new_rows"] == 0
+        loaded = GP.load_judged_failures("a/one", directory=tmp_path)
+        assert list(loaded) == ["s#1"]
+        assert loaded["s#1"][0]["rule"] == "dead-end"
+        assert loaded["s#1"][0]["judge"] == "fable-5.1"
+        assert GP.load_judged_failures("b/two", directory=tmp_path) == {}
+
+    def test_a_void_run_writes_no_judged_failures(self, tmp_path):
+        assert GP.write_judged_failures({"void": True}, directory=tmp_path) == {}
