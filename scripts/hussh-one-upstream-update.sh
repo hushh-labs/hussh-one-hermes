@@ -194,12 +194,45 @@ check_update() {
   fi
 }
 
+after_fork_advance() {
+  # The fork moved. Two things must follow or the device silently runs stale:
+  # the cron jobs and their scripts (versioned under scripts/hussh-one-cron)
+  # are reconciled onto this machine, and the long-running gateway is
+  # restarted gracefully (SIGUSR1: drain, exit, launchd respawns) when
+  # --restart was asked for. Before 2026-09-02 a nightly fast-forward left
+  # the gateway on yesterday's code until someone restarted it by hand.
+  if [[ -x "$REPO_ROOT/.venv/bin/python" && -f "$REPO_ROOT/scripts/hussh-one-cron/hussh-one-cron-sync.py" ]]; then
+    if "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/hussh-one-cron/hussh-one-cron-sync.py" --apply; then
+      log "Cron jobs and scripts reconciled from scripts/hussh-one-cron."
+    else
+      warn "Cron job reconciliation failed; the jobs on this machine may be stale."
+    fi
+  fi
+  if [[ "$RESTART" == "1" ]]; then
+    local pid
+    pid="$(pgrep -f 'hermes_cli.main gateway run' | head -1 || true)"
+    if [[ -n "$pid" ]]; then
+      log "Gateway pid $pid asked to restart gracefully (SIGUSR1) so it runs the fast-forwarded code."
+      kill -USR1 "$pid" || warn "could not signal the gateway; a manual restart is needed"
+    else
+      warn "No running gateway found to restart after the fast-forward."
+    fi
+  fi
+}
+
 apply_update() {
   acquire_lock
   verify_repository_contract
   git fetch origin --tags --prune --quiet
   git fetch upstream --tags --prune --quiet
+  local before_ff after_ff
+  before_ff="$(git rev-parse HEAD)"
   git pull --ff-only origin main
+  after_ff="$(git rev-parse HEAD)"
+  if [[ "$before_ff" != "$after_ff" ]]; then
+    log "Fork main fast-forwarded ${before_ff:0:10} -> ${after_ff:0:10}."
+    after_fork_advance
+  fi
   if git merge-base --is-ancestor upstream/main main; then
     log "Hussh One main already contains official Hermes upstream/main."
     return 0

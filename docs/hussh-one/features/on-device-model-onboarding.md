@@ -936,6 +936,28 @@ judge should grade. The judge half stays with a separate session on
 purpose: the same on-device model grading its own daily work would be the
 answerer judging itself.
 
+### The jobs are a versioned product
+
+Every job graded above (its schedule, prompt, toolsets and the script behind
+it) lived only in one machine's `~/.hermes` until 2026-09-02: a product no
+second Puppy One could receive, and a change nobody could review. The day's
+Auto-Dream rewrite, the wiki job's injected discovery facts and the
+every-15-minute doctor's delivery change were all edits to files outside
+the repository. They are now under `scripts/hussh-one-cron/` with a
+manifest (`jobs.manifest.json`: eleven jobs, the disabled PR-train jobs
+deliberately absent) and a sync (`hussh-one-cron-sync.py`) that installs
+the scripts into `$HERMES_HOME/scripts` and reconciles each job by name,
+updating only the fields the manifest owns. A job's `deliver` is set only
+when the job is created (it is the owner's own chat, per device), `model`
+and `provider` are never touched (the device default applies), and a job
+the manifest does not name is left exactly as the founder left it. The
+daily updater runs the sync whenever the fork fast-forwards and then asks
+the gateway to restart gracefully, so the code the jobs run on is the code
+in the checkout; before this the gateway was thirteen commits behind the
+checkout it had been started from. Run `--check` by hand to see drift; on
+the founder's machine the first check read all eleven jobs and nothing
+differing.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above

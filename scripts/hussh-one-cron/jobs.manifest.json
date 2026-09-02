@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "notes": [
+    "The Puppy One daily jobs as a versioned product. hussh-one-cron-sync.py installs the scripts into $HERMES_HOME/scripts and reconciles the jobs by name.",
+    "deliver is set only when a job is created (it is per device: the owner's own chat); model and provider are never touched (the device default applies).",
+    "Jobs absent from this manifest are left alone; the founder disables jobs on purpose and the sync must not resurrect or remove them."
+  ],
+  "jobs": [
+    {
+      "name": "Auto-Dream Consolidated Suite",
+      "schedule": "10 3 * * *",
+      "script": "auto_dream.py",
+      "prompt_file": "prompts/auto-dream-consolidated-suite.md",
+      "enabled_toolsets": ["todo", "no_mcp"],
+      "skills": [],
+      "default_deliver": "local",
+      "purpose": "The model half: reads the budgeted dump and answers with one JSON object; it touches no files."
+    },
+    {
+      "name": "Auto-Dream Apply",
+      "schedule": "25 3 * * *",
+      "script": "auto_dream_apply.py",
+      "no_agent": true,
+      "default_deliver": "local",
+      "purpose": "The script half: snapshots the memory layers, applies the JSON, delivers the brief with what it applied."
+    },
+    {
+      "name": "Hussh One Token Usage Report",
+      "schedule": "20 4 * * *",
+      "script": "token_usage_report.py",
+      "prompt_file": "prompts/hussh-one-token-usage-report.md",
+      "enabled_toolsets": ["file", "no_mcp"],
+      "skills": [],
+      "default_deliver": "local"
+    },
+    {
+      "name": "Hushh Core Board Sync",
+      "schedule": "35 5 * * *",
+      "script": "board_sync.py",
+      "prompt_file": "prompts/hushh-core-board-sync.md",
+      "enabled_toolsets": ["terminal", "file", "no_mcp"],
+      "skills": [],
+      "default_deliver": "local"
+    },
+    {
+      "name": "Hushh Wiki Maintenance Follow-on",
+      "schedule": "20 6 * * *",
+      "script": "wiki_discovery.sh",
+      "prompt_file": "prompts/hushh-wiki-maintenance-follow-on.md",
+      "enabled_toolsets": ["terminal", "file", "skills", "hushh-wiki"],
+      "skills": ["hushh-wiki-mcp"],
+      "default_deliver": "local"
+    },
+    {
+      "name": "hushh-research tmp janitor",
+      "schedule": "50 6 * * *",
+      "script": "hushh_research_tmp_janitor.sh",
+      "no_agent": true,
+      "default_deliver": "local"
+    },
+    {
+      "name": "Hermes Performance Maintenance",
+      "schedule": "every 30m",
+      "script": "reap_stale_processes.sh",
+      "no_agent": true,
+      "default_deliver": "local"
+    },
+    {
+      "name": "Hussh One Self-Healing Doctor",
+      "schedule": "every 15m",
+      "script": "hussh_one_doctor_heal.py",
+      "no_agent": true,
+      "default_deliver": "local",
+      "purpose": "Heals; delivers locally so it never pages the owner during the day."
+    },
+    {
+      "name": "WhatsApp Session Janitor (weekly)",
+      "schedule": "0 5 * * 0",
+      "script": "whatsapp_session_janitor.sh",
+      "no_agent": true,
+      "default_deliver": "local"
+    },
+    {
+      "name": "monthly-timesheet-generator",
+      "schedule": "45 3 1 * *",
+      "script": "generate_monthly_timesheet.py",
+      "prompt_file": "prompts/monthly-timesheet-generator.md",
+      "enabled_toolsets": ["terminal", "file", "skills", "no_mcp"],
+      "skills": ["hushh-timesheet-generator"],
+      "default_deliver": "local"
+    },
+    {
+      "name": "Puppy One Job Audit",
+      "schedule": "30 7 * * *",
+      "script": "puppy_jobs_audit.sh",
+      "no_agent": true,
+      "default_deliver": "local",
+      "purpose": "Contract-checks the day's runs; silent when every job delivered within its contract."
+    }
+  ]
+}

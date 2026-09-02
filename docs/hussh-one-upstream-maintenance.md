@@ -173,6 +173,22 @@ Its logs are `$HERMES_HOME/logs/hussh-one-upstream-update.log` and
 `.error.log`; the contract also requires a clean tree, so uncommitted work in
 the checkout at 07:00 makes the run refuse.
 
+A deferred upstream merge still fast-forwards the fork, and until 2026-09-02
+that was where the run stopped: the checkout moved, the gateway kept running
+the old code (on the founder's machine it was thirteen fork commits behind
+the checkout it was started from), and the daily jobs that live in
+`~/.hermes` never learned about a change committed to the fork. When
+`git pull --ff-only` moves `HEAD` the updater now runs
+`scripts/hussh-one-cron/hussh-one-cron-sync.py --apply` (the Puppy One
+daily jobs as a versioned product: every job script and prompt under
+`scripts/hussh-one-cron/`, installed into `$HERMES_HOME/scripts` and
+reconciled by job name from `jobs.manifest.json`, never touching a job's
+`deliver`, `model` or `provider`, never removing or reviving a job the
+manifest does not name) and, when `--restart` was requested, asks the
+running gateway to restart gracefully (`SIGUSR1`: drain, exit, launchd
+respawns from the new checkout). Run the sync by hand with `--check` to see
+drift without changing anything.
+
 Inspect or manage it with:
 
 ```bash
