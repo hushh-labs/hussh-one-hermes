@@ -75,6 +75,13 @@ class RoundResult:
     delta: Optional[float] = None
     void: bool = False
     void_reason: str = ""
+    # Which cases sat on which side, and where they came from. Two arms of a
+    # comparison must show identical lists here or the comparison is void: the
+    # first matched/control pair silently ran on two different case sets
+    # because the live sessions directory changed between the two launches.
+    train_ids: list = field(default_factory=list)
+    held_out_ids: list = field(default_factory=list)
+    corpus: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +98,9 @@ class RoundResult:
             "delta": self.delta,
             "void": self.void,
             "void_reason": self.void_reason,
+            "train_ids": list(self.train_ids),
+            "held_out_ids": list(self.held_out_ids),
+            "corpus": self.corpus,
         }
 
 
@@ -180,6 +190,8 @@ def run_round(
     result = RoundResult(
         round_number=book.round_number + 1, model=model, suite=suite
     )
+    result.train_ids = sorted(getattr(c, "case_id", str(c)) for c in train)
+    result.held_out_ids = sorted(getattr(c, "case_id", str(c)) for c in hold)
 
     if not hold:
         result.void = True

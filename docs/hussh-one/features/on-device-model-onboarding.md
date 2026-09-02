@@ -635,10 +635,31 @@ anywhere a later run could compare against. The 2026-09-02 independent round
 above is the first two rows, and its five judged off-path turns (three for
 the MoE, two for qwen) are the first judged evidence on file.
 
-The first replay-suite learning round with a frontier reflector (Fable 5.1,
-file handoff, 19 train / 26 held out, matched and shuffled arms) is running
-against this wiring; its result is reported in the memory notes for this
-work until it lands here with numbers.
+## The corpus must be frozen, 2026-09-02: the exam read a directory that changes
+
+The first replay-suite learning pair with a frontier reflector (Fable 5.1
+through a file handoff) produced a matched arm with 19 train / 26 held out and
+a control arm with 26 train / 19 held out. The split is hashed on case ids and
+cannot flip like that on one case set, so the two arms had run on two
+different sets. Two causes, both invisible to every test:
+
+- the exam extracts from the live `~/.hermes/sessions` directory, and one
+  dump that existed at the first launch was gone at the second;
+- the cron case-id fix (`case_prefix`, 26-character cron prefixes instead of
+  the colliding 7) landed between the two launches and renumbered every cron
+  case, moving them across the hash split.
+
+The matched arm's numbers from that pair (held-out structural 0.846 to 0.885,
+two accepted tactics about grounding paths) are therefore a pilot, not a
+result; the tactics themselves were kept because they are correct advice,
+but no learning claim rests on them.
+
+What changed so it cannot recur: `hermes puppy freeze` copies every request
+dump to `$HERMES_HOME/puppy-corpus/<date>/` with a manifest, `replay` and
+`loop` take `--dumps <dir>` to read that copy instead of the live directory,
+and a round result now records `train_ids`, `held_out_ids` and `corpus`, so a
+comparison whose arms disagree on those lists is visibly void. Both arms of
+the rerun read the frozen 2026-09-02 corpus (115 dumps).
 
 ## The monthly refresh: what to actually run when a new model drops
 
@@ -690,13 +711,20 @@ not a re-derivation.
    `hermes puppy replay <alias> --assume-loaded`, which trusts the resident
    instance and never loads or evicts anything itself.
 
-3. **Run the replay exam with artifacts, once per candidate model:**
+3. **Freeze the corpus, then run the replay exam with artifacts, once per
+   candidate model, every run against the same frozen directory:**
 
    ```
+   hermes puppy freeze                      # -> $HERMES_HOME/puppy-corpus/<date>
    hermes puppy replay <model> --limit 45 \
+     --dumps $HERMES_HOME/puppy-corpus/<date> \
      --artifacts /path/corrected_<slug>.jsonl \
      --out /path/summary_<slug>.json
    ```
+
+   Never compare two runs that read different `--dumps` directories: the
+   live sessions directory changes under a run (see "The corpus must be
+   frozen" above).
 
    This is the exam that matters: real session turns, cut just before the
    agent acted. `--artifacts` writes the per-case detail a surprising result

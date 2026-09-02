@@ -56,6 +56,7 @@ def cmd_puppy(args) -> int:
         "loop": _cmd_loop,
         "replay": _cmd_replay,
         "goal-progress": _cmd_goal_progress,
+        "freeze": _cmd_freeze,
         "routing": _cmd_routing,
     }.get(action)
     if handler is None:
@@ -202,7 +203,10 @@ def _cmd_loop(args) -> int:
     from hermes_cli.hussh_one_routing import reflector as RF
     from hermes_cli.hussh_one_routing.exam import replay as RP
 
-    cases = RP.extract_cases(max_cases=args.limit)
+    dumps = getattr(args, "dumps", None)
+    cases = RP.extract_cases(
+        max_cases=args.limit, root=Path(dumps) if dumps else None
+    )
     if not cases:
         print("no replay cases found", file=sys.stderr)
         return EXIT_ERROR
@@ -279,6 +283,7 @@ def _cmd_loop(args) -> int:
         failures_fn=functools.partial(LR.learnable_failures, judged=judged),
         on_progress=print,
     )
+    result.corpus = dumps
     print("\n=== round ===")
     print(json.dumps(result.to_dict(), indent=2)[:1600])
     if args.out:
@@ -394,7 +399,10 @@ def _cmd_replay(args) -> int:
     from hermes_cli.hussh_one_routing.exam import replay as RP
     from hermes_cli.hussh_one_routing.request import complete
 
-    cases = RP.extract_cases(max_cases=args.limit)
+    dumps = getattr(args, "dumps", None)
+    cases = RP.extract_cases(
+        max_cases=args.limit, root=Path(dumps) if dumps else None
+    )
     if not cases:
         print("no replay cases found in the session dumps", file=sys.stderr)
         return EXIT_ERROR
@@ -673,6 +681,51 @@ def _cmd_goal_progress(args) -> int:
     return EXIT_ERROR
 
 
+def _cmd_freeze(args) -> int:
+    """Copy the request dumps somewhere the gateway never touches.
+
+    The replay exam reads the live sessions directory, and live means it
+    changes under a run: dumps appear and vanish, and a case-id scheme change
+    renumbers cases. The first matched/control learning pair silently ran on
+    two different case sets for exactly that reason. A frozen copy, pinned
+    with ``--dumps`` on ``replay`` and ``loop``, is what makes two runs
+    comparable; the manifest records what was frozen and when.
+    """
+    import shutil
+    import time as _time
+
+    from hermes_cli.hussh_one_routing.exam import build as B
+
+    source = Path(args.source) if getattr(args, "source", None) else B.sessions_dir()
+    target = (
+        Path(args.to) if getattr(args, "to", None)
+        else B.sessions_dir().parent / "puppy-corpus" / _time.strftime("%Y-%m-%d")
+    )
+    files = sorted(source.glob(B.DUMP_GLOB))
+    if not files:
+        print(f"no request dumps under {source}", file=sys.stderr)
+        return EXIT_ERROR
+    target.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for path in files:
+        dest = target / path.name
+        if not dest.exists():
+            shutil.copy2(path, dest)
+            copied += 1
+    manifest = {
+        "frozen_at": int(_time.time()),
+        "source": str(source),
+        "count": len(files),
+        "dumps": [path.name for path in files],
+    }
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    print(f"frozen: {target} ({len(files)} dumps, {copied} newly copied)")
+    print(f"pin it with: hermes puppy replay <model> --dumps {target}")
+    return EXIT_OK
+
+
 def _top_tools(cases, limit: int = 6):
     counts: dict = {}
     for case in cases:
@@ -786,6 +839,10 @@ def build_puppy_parser(subparsers) -> None:
     loop.add_argument("--control", action="store_true",
                       help="Shuffle the evidence: the loop's negative control")
     loop.add_argument("--limit", type=int, default=25, help="Cases per round")
+    loop.add_argument("--dumps",
+                      help="Directory of FROZEN request dumps (see `hermes puppy "
+                           "freeze`); default is the live sessions directory, "
+                           "which changes under a run")
     loop.add_argument("--judge", help="Reflector model; must not be on-device")
     loop.add_argument("--max-tokens", type=int, dest="max_tokens")
     loop.add_argument("--timeout", type=float, default=900.0)
@@ -802,6 +859,10 @@ def build_puppy_parser(subparsers) -> None:
     )
     replay.add_argument("model", help="On-device model id")
     replay.add_argument("--limit", type=int, default=30, help="Cases to replay")
+    replay.add_argument("--dumps",
+                        help="Directory of FROZEN request dumps (see `hermes "
+                             "puppy freeze`); default is the live sessions "
+                             "directory, which changes under a run")
     replay.add_argument("--max-tokens", type=int, dest="max_tokens",
                         help="Generation budget (default: measured)")
     replay.add_argument("--timeout", type=float, default=600.0)
@@ -861,6 +922,15 @@ def build_puppy_parser(subparsers) -> None:
     gp_report.add_argument("--ledger",
                            help="Evolution ledger path (default: the shared "
                                 "ledger under HERMES_HOME)")
+
+    freeze = sub.add_parser(
+        "freeze",
+        help="Copy the request dumps to a frozen corpus directory the exam can pin",
+    )
+    freeze.add_argument("--to", help="Target directory (default: "
+                                     "$HERMES_HOME/puppy-corpus/<date>)")
+    freeze.add_argument("--source", help="Dumps directory (default: "
+                                         "$HERMES_HOME/sessions)")
 
     routing = sub.add_parser("routing", help="What the ledger supports recommending")
     routing.add_argument("--ledger", help="Ledger path (default: $HERMES_HOME)")

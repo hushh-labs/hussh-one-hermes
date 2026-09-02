@@ -93,6 +93,25 @@ class TestTheReflectorSeesOnlyWhatItShould:
         assert offered[0]["oracles"] == ["parses"]
 
 
+class TestTheRoundRecordsItsCaseSet:
+    def test_train_and_held_out_ids_are_in_the_result(self, home):
+        # Two arms of a comparison must show identical lists here, or the
+        # comparison is void. The first matched/control pair could not even be
+        # checked, because the result recorded counts and no ids.
+        cases = [_Case(f"c{i}") for i in range(30)]
+        result, _ = L.run_round(
+            model="m", suite="file_edit", cases=cases,
+            answer=lambda c, t: verdict(c.case_id),
+            reflect=lambda f, t: [],
+        )
+        assert sorted(result.train_ids + result.held_out_ids) == sorted(
+            c.case_id for c in cases
+        )
+        assert set(result.train_ids).isdisjoint(result.held_out_ids)
+        assert result.to_dict()["held_out_ids"] == result.held_out_ids
+        assert result.to_dict()["corpus"] is None
+
+
 class TestARoundThatCannotBeMeasuredIsVoid:
     def test_no_held_out_cases_voids_the_round(self, home):
         result, _ = L.run_round(

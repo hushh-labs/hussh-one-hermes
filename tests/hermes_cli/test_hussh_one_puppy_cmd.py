@@ -332,3 +332,50 @@ class TestLoopUsesTheReplaySuiteScorer:
         assert "failures_fn=functools.partial(LR.learnable_failures" in src
         assert "judged=judged" in src
         assert callable(LR.score) and callable(LR.learnable_failures)
+
+
+class TestTheCorpusCanBeFrozenAndPinned:
+    """The exam reads the live sessions directory, which changes under a run.
+
+    The first matched/control learning pair ran on two different case sets
+    because a dump vanished and the cron case-id fix renumbered cases between
+    the two launches. `hermes puppy freeze` plus `--dumps` is the answer.
+    """
+
+    def test_loop_and_replay_take_a_dumps_directory(self):
+        assert _parser().parse_args(["puppy", "loop", "m"]).dumps is None
+        assert _parser().parse_args(
+            ["puppy", "loop", "m", "--dumps", "/frozen"]
+        ).dumps == "/frozen"
+        assert _parser().parse_args(
+            ["puppy", "replay", "m", "--dumps", "/frozen"]
+        ).dumps == "/frozen"
+
+    def test_freeze_copies_every_dump_and_writes_a_manifest(self, tmp_path, capsys):
+        source = tmp_path / "sessions"
+        source.mkdir()
+        for name in ("request_dump_a.json", "request_dump_b.json"):
+            (source / name).write_text("{}", encoding="utf-8")
+        (source / "sessions.json").write_text("{}", encoding="utf-8")  # not a dump
+        target = tmp_path / "frozen"
+        args = argparse.Namespace(
+            puppy_command="freeze", source=str(source), to=str(target)
+        )
+        assert PC._cmd_freeze(args) == PC.EXIT_OK
+        assert sorted(p.name for p in target.glob("request_dump_*.json")) == [
+            "request_dump_a.json", "request_dump_b.json",
+        ]
+        assert not (target / "sessions.json").exists()
+        manifest = json.loads((target / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["count"] == 2 and manifest["source"] == str(source)
+        assert "--dumps" in capsys.readouterr().out
+        # Freezing again is idempotent: nothing is re-copied or clobbered.
+        assert PC._cmd_freeze(args) == PC.EXIT_OK
+        assert "0 newly copied" in capsys.readouterr().out
+
+    def test_freeze_refuses_an_empty_source(self, tmp_path):
+        args = argparse.Namespace(
+            puppy_command="freeze", source=str(tmp_path), to=str(tmp_path / "out")
+        )
+        assert PC._cmd_freeze(args) == PC.EXIT_ERROR
+        assert not (tmp_path / "out").exists()
