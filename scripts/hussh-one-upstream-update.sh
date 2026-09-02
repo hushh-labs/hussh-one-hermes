@@ -263,13 +263,27 @@ install_launchd_schedule() {
   local plist="$HOME/Library/LaunchAgents/$SCHEDULE_LABEL.plist" log_dir="$HERMES_HOME/logs"
   mkdir -p "$(dirname "$plist")" "$log_dir"
   if [[ "$DRY_RUN" == "1" ]]; then log "dry-run: install launchd daily updater at $plist"; return 0; fi
+  # macOS privacy (TCC) decides per launched binary whether a launchd job may
+  # read a protected folder such as ~/Documents, where the checkout usually
+  # lives. /bin/bash has no such grant, so the first scheduled run on
+  # 2026-09-02 died with "Operation not permitted" before reading this script
+  # (exit 126), while the gateway job, launched through the repo's own
+  # interpreter, reads the same checkout fine. Launch through that interpreter
+  # when it exists, and start from HERMES_HOME so the shell never has to stand
+  # inside a folder it may not enter; the interpreter changes into the repo.
+  local launcher_head
+  if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    launcher_head="<string>${REPO_ROOT}/.venv/bin/python</string><string>-c</string><string>import os, subprocess, sys; os.chdir('${REPO_ROOT}'); sys.exit(subprocess.call(['/bin/bash', '${SCRIPT_DIR}/hussh-one-upstream-update.sh', '--apply', '--restart', '--manager', '${MANAGER}']))</string>"
+  else
+    launcher_head="<string>/bin/bash</string><string>${SCRIPT_DIR}/hussh-one-upstream-update.sh</string><string>--apply</string><string>--restart</string><string>--manager</string><string>${MANAGER}</string>"
+  fi
   cat >"$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${SCHEDULE_LABEL}</string>
-  <key>ProgramArguments</key><array><string>/bin/bash</string><string>${SCRIPT_DIR}/hussh-one-upstream-update.sh</string><string>--apply</string><string>--restart</string><string>--manager</string><string>${MANAGER}</string></array>
-  <key>WorkingDirectory</key><string>${REPO_ROOT}</string>
+  <key>ProgramArguments</key><array>${launcher_head}</array>
+  <key>WorkingDirectory</key><string>${HERMES_HOME}</string>
   <key>EnvironmentVariables</key><dict><key>HERMES_HOME</key><string>${HERMES_HOME}</string></dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>${SCHEDULE_HOUR}</integer><key>Minute</key><integer>${SCHEDULE_MINUTE}</integer></dict>
   <key>StandardOutPath</key><string>${log_dir}/hussh-one-upstream-update.log</string>
