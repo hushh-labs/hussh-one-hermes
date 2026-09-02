@@ -123,8 +123,19 @@ class TestCompactCase:
         case = self._case()
         new_case, meta = PC.compact_case(case, self._Compressor())
         assert new_case.tokens < case.tokens
-        assert meta["tokens_before"] == case.tokens
+        # before/after are measured on the SAME basis (the messages body), so
+        # a compactor that drops half the turns shows roughly half the tokens
+        # -- and one that touches nothing shows no shrink at all. Comparing a
+        # whole-request 'before' against a messages-only 'after' once reported
+        # 55k -> 12k on an untouched case.
+        assert meta["tokens_before"] > meta["tokens_after"]
         assert meta["tokens_after"] == new_case.tokens
+
+    def test_an_untouched_case_reports_no_shrink(self):
+        case = self._case()
+        passthrough = self._Compressor(output=list(case.messages))
+        _, meta = PC.compact_case(case, passthrough)
+        assert meta["tokens_before"] == meta["tokens_after"]
 
     def test_a_summary_fallback_is_reported_not_hidden(self):
         _, meta = PC.compact_case(

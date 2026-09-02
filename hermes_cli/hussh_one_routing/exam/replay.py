@@ -82,6 +82,24 @@ class ReplayCase:
         return len(self.catalog)
 
 
+
+def case_prefix(session_id: str) -> str:
+    """The session part of a case id, collision-free across cron runs.
+
+    Interactive session ids start with a timestamp, so their first 12
+    characters are unique per session and stay the id they have always been
+    (artifacts from earlier runs are compared by case id, so that prefix must
+    not move). Cron session ids start with the JOB id instead
+    (``cron_<12-hex>_<date>_<time>``), so their first 12 characters are the
+    same for every run of one job -- found live when 8 of 45 rows in a run
+    shared two ids. For those, keep the job id and add the date, which is what
+    actually distinguishes one run from the next.
+    """
+    if session_id.startswith("cron_"):
+        return session_id[:26]
+    return session_id[:12]
+
+
 def _known_paths(messages: Sequence[dict]) -> list:
     """Absolute paths that appeared anywhere in the context.
 
@@ -157,7 +175,7 @@ def extract_cases(
                             bucket = by_session.setdefault(session_id, [])
                             bucket.append(
                                 ReplayCase(
-                                    case_id=f"{session_id[:12]}#{len(bucket)}",
+                                    case_id=f"{case_prefix(session_id)}#{len(bucket)}",
                                     messages=[dict(m) for m in prefix],
                                     catalog=catalog,
                                     schemas=schemas,

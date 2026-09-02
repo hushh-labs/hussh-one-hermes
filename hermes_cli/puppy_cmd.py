@@ -312,6 +312,13 @@ def compact_case(case, compressor, *, replay_module=None):
     if RP is None:
         from hermes_cli.hussh_one_routing.exam import replay as RP  # noqa: N806
 
+    # Measure before/after on the SAME basis (the messages body). case.tokens
+    # is the whole request body including the tool catalog, and comparing it
+    # against a messages-only 'after' overstated every shrink -- found when a
+    # first run reported 55k -> 12k on a case the compactor had not touched.
+    from hermes_cli.hussh_one_routing.exam.build import estimate_tokens
+
+    before_tokens = estimate_tokens(json.dumps(case.messages))
     started = _time.time()
     compressed = compressor.compress(
         copy.deepcopy(case.messages),
@@ -331,8 +338,8 @@ def compact_case(case, compressor, *, replay_module=None):
     meta = {
         "compacted": True,
         "compaction_s": elapsed,
-        "tokens_before": case.tokens,
-        "tokens_after": new_case.tokens,
+        "tokens_before": before_tokens,
+        "tokens_after": estimate_tokens(json.dumps(compressed)),
         "messages_before": len(case.messages),
         "messages_after": len(compressed),
         "summary_fallback_used": bool(
