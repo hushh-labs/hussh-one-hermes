@@ -497,6 +497,30 @@ export function killToLineEnd(value: string, cursor: number): { value: string; c
  * Terminals that instead rewrite Cmd+Backspace to Ctrl+U are handled by
  * the `isMacActionFallback` kill-to-start path, not by this predicate.
  */
+/**
+ * A Ctrl chord that no binding claimed, which must never become text.
+ *
+ * `Ctrl+<letter>` produces no character on any keyboard layout, but the
+ * parser names a control byte after the letter it corresponds to: 0x0c is
+ * reported as `{name: 'l', ctrl: true}`. Anything that reaches the insert
+ * path by name alone therefore types that letter.
+ *
+ * This is not hypothetical. The dashboard writes 0x0c into the PTY on every
+ * browser reattach to make the TUI repaint (`TUI_FORCE_REDRAW` in
+ * `hermes_cli/pty_session.py`), so reloading the tab appended a literal `l`
+ * to whatever the owner had half-written at the prompt.
+ *
+ * Only Ctrl is treated this way. Option/Meta chords do produce characters on
+ * some layouts, and a paste is text by definition.
+ */
+export function isUnclaimedControlChord(
+  key: { ctrl: boolean },
+  input: string,
+  isPasted = false
+): boolean {
+  return key.ctrl && !isPasted && input.length === 1
+}
+
 export function isLineKillModifier(key: { ctrl: boolean; meta: boolean; super?: boolean }): boolean {
   return key.super === true
 }
@@ -1574,6 +1598,8 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
+      } else if (isUnclaimedControlChord(k, inp, event.keypress.isPasted)) {
+        return
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
