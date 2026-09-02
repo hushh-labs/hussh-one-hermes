@@ -78,11 +78,35 @@ class TestContractChecks:
             tool_calls=[("write_file", {"path": "/x/MEMORY.md"})] * 4,
         ))
         assert "no_forbidden_tool" in _fails(destructive)
+        patched_all = [("patch", {"path": f"/x/{name}"}) for name in
+                       ("MEMORY.md", "procedures.md", "index.json", "journal.md")]
         good = J.grade(_run(
             name="Auto-Dream Consolidated Suite", text=text,
-            tool_calls=[("read_file", {"path": "/x"})] + [("patch", {"path": "/x/MEMORY.md"})] * 4,
+            tool_calls=[("read_file", {"path": "/x"})] + patched_all,
         ))
         assert _fails(good) == {}
+
+    def test_auto_dream_must_have_written_every_memory_layer_successfully(self):
+        # The 12:06 run made three patch calls, two failed on the tool's own
+        # contract, and the brief still claimed consolidation. Only writes
+        # whose result reported success count.
+        text = "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• x"
+        run = _run(
+            name="Auto-Dream Consolidated Suite", text=text,
+            tool_calls=[("read_file", {"path": "/x"})] + [("patch", {"path": "/x/journal.md"})] * 4,
+        )
+        run.files_written = ["/x/journal.md"]
+        failures = _fails(J.grade(run))
+        assert {"wrote:MEMORY.md", "wrote:procedures.md", "wrote:index.json"} <= set(failures)
+        assert "wrote:journal.md" not in failures
+
+    def test_only_successful_writes_count(self):
+        assert J._write_succeeded('{"success": true, "diff": "..."}')
+        assert J._write_succeeded('{"bytes_written": 521, "verified": true}')
+        assert not J._write_succeeded('{"error": "Unknown mode: append"}')
+        assert not J._write_succeeded('{"success": false, "error": "Patch validation failed"}')
+        assert not J._write_succeeded("")
+        assert not J._write_succeeded("not json")
 
     def test_wiki_silent_token_is_allowed_whole(self):
         verdict = J.grade(_run(name="Hushh Wiki Maintenance Follow-on", text="[SILENT]",
@@ -152,12 +176,16 @@ def _databases(tmp_path):
                 "content text, tool_call_id text, tool_calls text, tool_name text, timestamp real)")
     con.execute("insert into sessions values ('cron_j1_20260902_031002','cron','google/gemma-4-26b-a4b-qat',?,?,4,1,'cron_complete')",
                 (claimed + 2, claimed + 100))
-    calls = json.dumps([{"function": {"name": "patch", "arguments": json.dumps({"path": "/tmp/MEMORY.md"})}}])
-    con.executemany("insert into messages (session_id, role, content, tool_calls, timestamp) values (?,?,?,?,?)", [
-        ("cron_j1_20260902_031002", "user", "prompt...", "", claimed + 2),
-        ("cron_j1_20260902_031002", "assistant", "", calls, claimed + 10),
-        ("cron_j1_20260902_031002", "tool", '{"bytes_written": 5}', "", claimed + 11),
-        ("cron_j1_20260902_031002", "assistant", HEADER + "• Synced 3 tickets", "", claimed + 90),
+    calls = json.dumps([
+        {"id": "t1", "call_id": "t1", "function": {"name": "patch", "arguments": json.dumps({"path": "/tmp/MEMORY.md"})}},
+        {"id": "t2", "call_id": "t2", "function": {"name": "patch", "arguments": json.dumps({"path": "/tmp/index.json"})}},
+    ])
+    con.executemany("insert into messages (session_id, role, content, tool_calls, tool_call_id, timestamp) values (?,?,?,?,?,?)", [
+        ("cron_j1_20260902_031002", "user", "prompt...", "", "", claimed + 2),
+        ("cron_j1_20260902_031002", "assistant", "", calls, "", claimed + 10),
+        ("cron_j1_20260902_031002", "tool", '{"success": true}', "", "t1", claimed + 11),
+        ("cron_j1_20260902_031002", "tool", '{"error": "hunk did not apply"}', "", "t2", claimed + 12),
+        ("cron_j1_20260902_031002", "assistant", HEADER + "• Synced 3 tickets", "", "", claimed + 90),
     ])
     con.commit(); con.close()
     jobs = tmp_path / "jobs.json"
@@ -176,7 +204,8 @@ class TestCollection:
         assert [r.job_id for r in runs] == ["j1", "j2"]  # j3 is no_agent
         board = runs[0]
         assert board.session_id == "cron_j1_20260902_031002"
-        assert board.tool_names == ["patch"]
+        assert board.tool_names == ["patch", "patch"]
+        # Only the patch whose result reported success counts as written.
         assert board.files_written == ["/tmp/MEMORY.md"]
         assert board.final_text.startswith(HEADER)
         assert board.duration_s == 120.0

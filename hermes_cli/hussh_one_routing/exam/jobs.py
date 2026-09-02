@@ -74,6 +74,12 @@ class JobContract:
     min_tool_calls: int = 0
     required_tools: tuple = ()  # at least one call to each of these
     artifact_glob: str = ""  # strftime-expanded against the previous month
+    # Path fragments that must appear among the files the run SUCCESSFULLY
+    # wrote (a patch whose result says success, a write_file that reports
+    # bytes). A call that errored does not count: the 12:06 Auto-Dream run
+    # made three patch calls, two failed on the tool's own contract, and the
+    # brief still claimed consolidation.
+    required_written: tuple = ()
     max_chars: int = MOBILE_MAX_CHARS
     judge_hint: str = ""  # what "production grade" means for this job
 
@@ -85,6 +91,7 @@ CONTRACTS: tuple = (
                 "======================================"),
         min_tool_calls=4,
         required_tools=("patch",),
+        required_written=("MEMORY.md", "procedures.md", "index.json", "journal.md"),
         forbidden_tools=("send_message", "write_file"),
         judge_hint=(
             "Phase 1 must have actually consolidated: patches to MEMORY.md, "
@@ -235,6 +242,49 @@ def _tool_calls(raw: Any) -> list:
     return out
 
 
+def _tool_calls_with_ids(raw: Any) -> list:
+    """``[(name, args, call_id)]`` so a call can be matched to its result."""
+    if not raw:
+        return []
+    try:
+        calls = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for call in calls or []:
+        function = (call or {}).get("function") or {}
+        name = function.get("name")
+        if not name:
+            continue
+        args = function.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:  # noqa: BLE001
+                args = {"__raw__": args}
+        call_id = str((call or {}).get("call_id") or (call or {}).get("id") or "")
+        out.append((name, args if isinstance(args, dict) else {}, call_id))
+    return out
+
+
+def _write_succeeded(result_text: str) -> bool:
+    """Whether a write_file/patch result reports success.
+
+    The file tools answer with JSON: ``{"success": true, ...}`` for a patch,
+    ``{"bytes_written": N, ...}`` for a write. Anything else (an ``error``
+    key, prose, nothing) is a failed write and must not count as work done.
+    """
+    if not result_text:
+        return False
+    try:
+        payload = json.loads(result_text)
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(payload, dict) or payload.get("error"):
+        return False
+    return bool(payload.get("success")) or "bytes_written" in payload
+
+
 def _written_path(name: str, args: dict) -> Optional[str]:
     if name not in ("write_file", "patch"):
         return None
@@ -291,23 +341,30 @@ def collect_runs(
                 (f"cron_{job_id}_%", claimed - 5, (finished or claimed) + 120),
             ).fetchone()
             session_id, model, tool_calls, final_text = "", "", [], ""
+            results: dict = {}
             if session:
                 session_id, model, _started = session
                 messages = st.execute(
-                    "select role, coalesce(content,''), coalesce(tool_calls,'') "
-                    "from messages where session_id = ? order by timestamp, id",
+                    "select role, coalesce(content,''), coalesce(tool_calls,''), "
+                    "coalesce(tool_call_id,'') from messages where session_id = ? "
+                    "order by timestamp, id",
                     (session_id,),
                 ).fetchall()
-                for role, content, raw_calls in messages:
+                for role, content, raw_calls, call_id in messages:
+                    if role == "tool" and call_id:
+                        results[call_id] = content
+                        continue
                     if role != "assistant":
                         continue
-                    tool_calls.extend(_tool_calls(raw_calls))
+                    tool_calls.extend(_tool_calls_with_ids(raw_calls))
                     if content.strip():
                         final_text = content
             files = [
-                path for name, args in tool_calls
+                path for name, args, call_id in tool_calls
                 if (path := _written_path(name, args))
+                and _write_succeeded(results.get(call_id, ""))
             ]
+            tool_calls = [(name, args) for name, args, _cid in tool_calls]
             runs.append(
                 JobRun(
                     job_id=str(job_id),
@@ -425,6 +482,14 @@ def grade(run: JobRun, *, now: Optional[datetime] = None) -> Verdict:
         verdict.outcomes.append(Outcome(
             f"called:{tool}", PASS if called else FAIL,
             "" if called else f"never called {tool}",
+        ))
+    for fragment in contract.required_written:
+        if silent:
+            break
+        written = any(fragment in path for path in run.files_written)
+        verdict.outcomes.append(Outcome(
+            f"wrote:{fragment}", PASS if written else FAIL,
+            "" if written else f"no successful write touched {fragment}",
         ))
     if contract.artifact_glob:
         exists, where = _artifact_exists(contract.artifact_glob, now)
