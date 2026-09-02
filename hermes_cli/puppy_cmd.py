@@ -274,6 +274,69 @@ def _no_judge(prompt: str) -> str:
     return ""
 
 
+def compact_case(case, compressor, *, replay_module=None):
+    """Run one replay case's history through the REAL Hermes compactor.
+
+    This is the long-horizon probe the corpus itself cannot provide: every
+    real case fits under 96k, so a full-context exam never exercises what a
+    long-running session actually lives with -- production compaction
+    (``agent.context_compressor.ContextCompressor``: prune old tool results,
+    protect the head, keep a recent tail, LLM-summarize the middle).
+    Compacting a case with that exact machinery, then asking for the next
+    action, measures the model under the conditions Hermes naturally creates
+    once a session outgrows its threshold.
+
+    Fairness detail carried over from the earlier recency-window arm:
+    ``known_paths`` is recomputed from the COMPACTED view, because grounding
+    is judged against what the model could actually see, and a summary
+    legitimately drops paths the full history contained.
+
+    Returns ``(new_case, meta)``; the caller sends ``new_case`` and records
+    ``meta`` (before/after tokens, wall time, whether the summariser fell
+    back to a deterministic drop) beside the verdict, so a quality delta can
+    be attributed to compaction rather than hidden inside it.
+    """
+    import copy
+    import dataclasses
+    import time as _time
+
+    RP = replay_module
+    if RP is None:
+        from hermes_cli.hussh_one_routing.exam import replay as RP  # noqa: N806
+
+    started = _time.time()
+    compressed = compressor.compress(
+        copy.deepcopy(case.messages),
+        current_tokens=case.tokens,
+        force=True,
+    )
+    elapsed = round(_time.time() - started, 1)
+
+    # tokens is a property derived from wire_chars, so the compacted size
+    # flows through the same estimator every other case uses.
+    new_case = dataclasses.replace(
+        case,
+        messages=compressed,
+        wire_chars=len(json.dumps(compressed)),
+        known_paths=RP._known_paths(compressed),
+    )
+    meta = {
+        "compacted": True,
+        "compaction_s": elapsed,
+        "tokens_before": case.tokens,
+        "tokens_after": new_case.tokens,
+        "messages_before": len(case.messages),
+        "messages_after": len(compressed),
+        "summary_fallback_used": bool(
+            getattr(compressor, "_last_summary_fallback_used", False)
+        ),
+        "summary_error": str(
+            getattr(compressor, "_last_summary_error", None) or ""
+        )[:200],
+    }
+    return new_case, meta
+
+
 def _cmd_replay(args) -> int:
     """Ask a model to take the next action on real moments from real sessions.
 
@@ -371,7 +434,29 @@ def _cmd_replay(args) -> int:
     )
     budget = args.max_tokens or profile.max_tokens
     effort = RZ.effort_for(args.model, RZ.MAX)
-    print(f"  thinking: {profile.mode} | budget {budget} | effort {effort}\n")
+    print(f"  thinking: {profile.mode} | budget {budget} | effort {effort}")
+
+    compressor = None
+    if args.compact_threshold:
+        # The REAL production compactor, with the model under test as its own
+        # summariser -- matching the on-device posture, where compression runs
+        # locally rather than on a cloud aux. force=True per the in-repo
+        # compaction-eval precedent, so cooldown state never skips a case.
+        from agent.context_compressor import ContextCompressor
+
+        compressor = ContextCompressor(
+            model=args.model,
+            summary_model_override=args.model,
+            base_url="http://127.0.0.1:1234/v1",
+            api_key="lm-studio",
+            config_context_length=pinned,
+            quiet_mode=True,
+        )
+        exceeding = sum(1 for c in cases if c.tokens > args.compact_threshold)
+        print(f"  compaction: REAL Hermes compactor at threshold "
+              f"{args.compact_threshold:,} tokens; {exceeding}/{len(cases)} "
+              "cases exceed it and will be compacted")
+    print()
 
     def last_user(case, limit=2000):
         for message in reversed(case.messages):
@@ -388,6 +473,27 @@ def _cmd_replay(args) -> int:
             verdict.indeterminate = "environment_interference"
             verdicts.append(verdict)
             continue
+
+        compaction_meta = {"compacted": False}
+        if compressor is not None and case.tokens > args.compact_threshold:
+            try:
+                case, compaction_meta = compact_case(
+                    case, compressor, replay_module=RP
+                )
+                print(f"[{index}/{len(cases)}] compacted "
+                      f"{compaction_meta['tokens_before']:,} -> "
+                      f"{compaction_meta['tokens_after']:,} tokens in "
+                      f"{compaction_meta['compaction_s']}s"
+                      + (" (summary FELL BACK to deterministic drop)"
+                         if compaction_meta["summary_fallback_used"] else ""))
+            except Exception as exc:  # noqa: BLE001
+                # A compactor crash is a harness fault, never a model verdict.
+                verdict = RP.grade(case, chosen=None, arguments=None)
+                verdict.indeterminate = f"compaction_error: {exc}"[:120]
+                verdicts.append(verdict)
+                print(f"[{index}/{len(cases)}] COMPACTION ERROR: {exc}",
+                      file=sys.stderr)
+                continue
 
         messages = profile.apply(case.messages)
         started = time.time()
@@ -448,6 +554,7 @@ def _cmd_replay(args) -> int:
                     for o in verdict.outcomes
                 ],
                 "elapsed_s": round(elapsed, 1),
+                **compaction_meta,
             })
 
         try:
@@ -465,6 +572,16 @@ def _cmd_replay(args) -> int:
     summary["context_length"] = pinned
     summary["reasoning_effort"] = effort
     summary["environment_interference"] = interfered
+    if compressor is not None:
+        compacted = [r for r in artifact_rows if r.get("compacted")]
+        summary["compact_threshold"] = args.compact_threshold
+        summary["cases_compacted"] = len(compacted)
+        if compacted:
+            times = sorted(r["compaction_s"] for r in compacted)
+            summary["compaction_median_s"] = times[len(times) // 2]
+            summary["summary_fallbacks"] = sum(
+                1 for r in compacted if r.get("summary_fallback_used")
+            )
     print("\n=== summary ===")
     print(json.dumps(summary, indent=2)[:2200])
     if args.out:
@@ -670,6 +787,15 @@ def build_puppy_parser(subparsers) -> None:
                              "model this harness cannot load itself (e.g. "
                              "a non-default catalog variant reachable only "
                              "through the LM Studio GUI's own picker)")
+    replay.add_argument("--compact-threshold", type=int,
+                        dest="compact_threshold",
+                        help="The long-horizon probe: cases above this many "
+                             "tokens are first compacted by the REAL Hermes "
+                             "compactor (prune tool results, protect head, "
+                             "keep tail, LLM-summarize the middle, with the "
+                             "model under test as its own summariser), "
+                             "measuring the model under the conditions a "
+                             "long-running session naturally creates")
 
     goal_progress = sub.add_parser(
         "goal-progress",

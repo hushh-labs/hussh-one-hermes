@@ -54,6 +54,84 @@ class TestReplayParsing:
         )
         assert args.assume_loaded is True
 
+    def test_compact_threshold_parses_and_defaults_off(self):
+        assert _parser().parse_args(
+            ["puppy", "replay", "m"]
+        ).compact_threshold is None
+        args = _parser().parse_args(
+            ["puppy", "replay", "m", "--compact-threshold", "32768"]
+        )
+        assert args.compact_threshold == 32768
+
+
+class TestCompactCase:
+    """The long-horizon probe: a case run through the real compactor's shape.
+
+    The compressor here is a fake with the production signature, because the
+    real one needs a live summary LLM; what these pin is the harness's side
+    of the contract -- deep-copied input, recomputed grounding, honest meta.
+    """
+
+    class _Compressor:
+        def __init__(self, output=None, fallback=False):
+            self._output = output
+            self._last_summary_fallback_used = fallback
+            self._last_summary_error = None
+            self.saw = None
+
+        def compress(self, messages, current_tokens=None, force=False):
+            self.saw = messages
+            assert force is True
+            return self._output if self._output is not None else messages[-2:]
+
+    def _case(self):
+        from hermes_cli.hussh_one_routing.exam.replay import ReplayCase
+
+        return ReplayCase(
+            case_id="c1", session_id="s1",
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "read /tmp/old_path.py please"},
+                {"role": "assistant", "content": "done"},
+                {"role": "user", "content": "now check /tmp/new_path.py"},
+            ],
+            wire_chars=300_000, catalog=["read_file"],
+            expected_tool="read_file", expected_args={"path": "/tmp/new_path.py"},
+            known_paths=["/tmp/old_path.py", "/tmp/new_path.py"],
+        )
+
+    def test_known_paths_are_recomputed_from_the_compacted_view(self):
+        # The summary legitimately drops history; grounding must be judged
+        # against what the model can actually see, or paths_grounded punishes
+        # the compactor's correct behaviour as a model failure.
+        case = self._case()
+        new_case, meta = PC.compact_case(case, self._Compressor())
+        assert "/tmp/old_path.py" not in new_case.known_paths
+        assert "/tmp/new_path.py" in new_case.known_paths
+        assert meta["compacted"] is True
+        assert meta["messages_after"] == 2
+
+    def test_the_original_case_is_not_mutated(self):
+        case = self._case()
+        compressor = self._Compressor()
+        PC.compact_case(case, compressor)
+        assert len(case.messages) == 4
+        # And the compressor received a copy, not the case's own list.
+        assert compressor.saw is not case.messages
+
+    def test_token_count_reflects_the_compacted_body(self):
+        case = self._case()
+        new_case, meta = PC.compact_case(case, self._Compressor())
+        assert new_case.tokens < case.tokens
+        assert meta["tokens_before"] == case.tokens
+        assert meta["tokens_after"] == new_case.tokens
+
+    def test_a_summary_fallback_is_reported_not_hidden(self):
+        _, meta = PC.compact_case(
+            self._case(), self._Compressor(fallback=True)
+        )
+        assert meta["summary_fallback_used"] is True
+
 
 class TestGoalProgressParsing:
     def test_queue_requires_artifacts_out_seal_identity(self):
