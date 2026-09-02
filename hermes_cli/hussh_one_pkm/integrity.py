@@ -122,6 +122,20 @@ SUITE_RULES: dict[str, frozenset[str]] = {
             "stalls",  # asks or idles when context already holds the answer
         }
     ),
+    # Daily-job output quality: was what the job delivered production grade
+    # against its own prompt and the evidence of what the run did. Closed on
+    # purpose, like goal_progress; every rule demands a citation.
+    "cron_quality": frozenset(
+        {
+            "format-contract",      # header, keys, brevity or convention the prompt fixes
+            "no-work",              # reports work the evidence shows was not done
+            "contradicts-evidence", # a claim the tool calls or files contradict
+            "wrong-recipient",      # sent or addressed somewhere the prompt forbids
+            "leaked-error",         # a script or stack error pasted into the message
+            "incomplete",           # a required section, phase or artifact is missing
+            "hallucinated-detail",  # a number, ticket or page not in the evidence
+        }
+    ),
     "merge": frozenset(
         {
             "kept-wrong-side",   # chose ours where theirs was correct, or vice versa

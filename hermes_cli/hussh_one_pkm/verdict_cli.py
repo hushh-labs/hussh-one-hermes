@@ -85,7 +85,10 @@ def _citation_present(citation: str, row: dict) -> bool:
     needle = citation.strip().casefold().strip('"')
     if not needle:
         return False
-    if needle in json.dumps(row.get("output"), sort_keys=True).casefold():
+    # ensure_ascii=False: the default escapes every non-ASCII character to
+    # \uXXXX, so an honest citation of a line carrying an emoji or a middle
+    # dot (every branded job header has both) was rejected as unfound.
+    if needle in json.dumps(row.get("output"), sort_keys=True, ensure_ascii=False).casefold():
         return True
     return needle in str(row.get("utterance") or "").casefold()
 

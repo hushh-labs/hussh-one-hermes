@@ -826,6 +826,47 @@ piece has a fix:
   coupling is now opt-in (`hussh_one.vault.lock_with_workstation: true`);
   by default the always-on personal agent keeps its vault.
 
+## The jobs are the exam now: `hermes puppy jobs`, 2026-09-02
+
+The founder's bar is not "the cron jobs completed" but "the outputs are
+always production grade". On the first day every daily job completed, and
+the delivered text still had a wiki run that answered "No changes detected"
+on a day with twenty commits (under the board-sync job's header), a usage
+report whose model split was empty and whose GCP line pasted a Python
+import error, and an Auto-Dream brief produced without writing a single
+memory file. None of that is visible in the scheduler's status column.
+
+`hermes puppy jobs collect --since 24h --out <dir> --seal <secrets>/seal.json
+--identity <secrets>/identity.json` joins the scheduler's executions to the
+sessions that served them and does two things, kept apart:
+
+- **Deterministic contract checks** read off each job's own prompt: the exact
+  branding header (or the `[SILENT]` convention), the keys a report must
+  carry, the tool calls it must have made (Auto-Dream: `patch`, never
+  `write_file`), the artifact it must have produced (the timesheet workbook
+  for the previous month), the errors it must never leak into a chat
+  message, and a length a phone can read. Written to `runs.json`; printed as
+  one line per run.
+- **A blinded queue** over the completed runs, each row carrying the job's
+  contract excerpt, what production grade means for that job, and the
+  evidence of what the run did (tool calls, files written, status) beside the
+  delivered text, with planted cross-job swaps as controls. A separate
+  session grades it through `verdict_cli` with the closed `cron_quality`
+  rule set (`format-contract`, `no-work`, `contradicts-evidence`,
+  `wrong-recipient`, `leaked-error`, `incomplete`, `hallucinated-detail`);
+  `hermes puppy jobs report --judge <who>` ingests it, prints per-job and
+  per-model production-grade rates, appends ledger rows under probe mode
+  `cron_quality/daily-jobs/blinded-judge/v1`, and writes the judged failures
+  beside the model's playbook.
+
+The fixes that came out of the first day were to the jobs, not the model:
+the wiki prompt now makes discovery mandatory (git log and a broad wiki
+search before deciding; `[SILENT]` only when nothing shipped) and carries its
+own header; the usage prompt lists models by tokens when the month's cost
+is $0 and states an unavailable source plainly; the usage script no longer
+pastes an import error into the owner's chat. The loop this closes: every
+morning, collect, judge, fix the job or the prompt, re-run, re-judge.
+
 ## The monthly refresh: what to actually run when a new model drops
 
 On-device models turn over roughly monthly, per the founder. Everything above

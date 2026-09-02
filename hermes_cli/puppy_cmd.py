@@ -23,6 +23,7 @@ from __future__ import annotations
 import functools
 import json
 import sys
+import time
 from pathlib import Path
 
 EXIT_OK = 0
@@ -57,6 +58,7 @@ def cmd_puppy(args) -> int:
         "replay": _cmd_replay,
         "goal-progress": _cmd_goal_progress,
         "freeze": _cmd_freeze,
+        "jobs": _cmd_jobs,
         "routing": _cmd_routing,
     }.get(action)
     if handler is None:
@@ -753,6 +755,77 @@ def _cmd_freeze(args) -> int:
     return EXIT_OK
 
 
+def _parse_since(value: str) -> float:
+    """``24h``, ``3d``, or an ISO timestamp, as an epoch."""
+    import datetime as _dt
+
+    text = (value or "24h").strip()
+    if text.endswith("h") and text[:-1].isdigit():
+        return time.time() - int(text[:-1]) * 3600
+    if text.endswith("d") and text[:-1].isdigit():
+        return time.time() - int(text[:-1]) * 86400
+    return _dt.datetime.fromisoformat(text).timestamp()
+
+
+def _cmd_jobs(args) -> int:
+    """Grade what the daily cron jobs delivered, not whether they exited 0.
+
+    ``collect`` joins the scheduler's executions to their sessions, runs the
+    deterministic contract checks each job's own prompt implies, writes the
+    per-run table, and builds one blinded queue over the completed runs (with
+    planted cross-job swaps). ``report`` ingests the graded queue: per-job and
+    per-model production-grade rates, ledger rows, judged failures beside the
+    model's playbook. Same two-session discipline as goal progress.
+    """
+    from hermes_cli.hussh_one_routing.exam import jobs as J
+
+    action = getattr(args, "jobs_command", None)
+    if action == "collect":
+        runs = J.collect_runs(_parse_since(args.since))
+        if not runs:
+            print("no agent-driven cron executions in that window", file=sys.stderr)
+            return EXIT_ERROR
+        verdicts = [J.grade(run) for run in runs]
+        table = J.summarize(runs, verdicts)
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "runs.json").write_text(json.dumps(table, indent=2), encoding="utf-8")
+        for name, entries in table["per_job"].items():
+            for entry in entries:
+                mark = "OK " if not entry["contract_failures"] and not entry["indeterminate"] else "!! "
+                print(f"{mark}{name:34s} {entry['claimed_at'][:16]} "
+                      f"tools={entry['tool_calls']:<2d} "
+                      f"{entry['indeterminate'] or ', '.join(entry['contract_failures']) or 'contract ok'}")
+        try:
+            queued = J.write_jobs_queue(
+                runs, out_dir=out_dir / "run", seal_path=Path(args.seal),
+                identity_path=Path(args.identity),
+            )
+        except ValueError as exc:
+            print(f"queue not written: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        print(f"\nqueue: {queued.queue_path}")
+        print(f"rows : {queued.row_count} (controls {queued.control_count})")
+        print("Grade every row in a DIFFERENT session via verdict_cli (suite "
+              "cron_quality), then run `hermes puppy jobs report`.")
+        return EXIT_OK
+
+    if action == "report":
+        result = J.report(
+            out_dir=Path(args.out) / "run", seal_path=Path(args.seal),
+            identity_path=Path(args.identity), judge_label=args.judge,
+        )
+        if not result["void"]:
+            ledger = J.append_to_ledger(result, ledger_path=getattr(args, "ledger", None))
+            result["ledger"] = {"path": ledger["path"], "rows": len(ledger["rows"])}
+            result["judged_failures_written"] = J.write_judged_failures(result)
+        print(json.dumps(result, indent=2))
+        return EXIT_OK
+
+    print("jobs needs a subcommand: collect or report", file=sys.stderr)
+    return EXIT_ERROR
+
+
 def _with_playbook(messages: list, playbook_text: str) -> list:
     """Prepend the served playbook section to the system message.
 
@@ -981,6 +1054,30 @@ def build_puppy_parser(subparsers) -> None:
                                      "$HERMES_HOME/puppy-corpus/<date>)")
     freeze.add_argument("--source", help="Dumps directory (default: "
                                          "$HERMES_HOME/sessions)")
+
+    jobs = sub.add_parser(
+        "jobs",
+        help="Grade what the daily cron jobs delivered (contract checks + a blinded judge)",
+    )
+    jobs_sub = jobs.add_subparsers(dest="jobs_command")
+    jobs_collect = jobs_sub.add_parser(
+        "collect", help="Contract-check recent runs and write a blinded queue"
+    )
+    jobs_collect.add_argument("--since", default="24h",
+                              help="Window: 24h, 3d, or an ISO timestamp (default 24h)")
+    jobs_collect.add_argument("--out", required=True, help="Run directory to create")
+    jobs_collect.add_argument("--seal", required=True, help="Seal path (outside --out)")
+    jobs_collect.add_argument("--identity", required=True,
+                              help="Identity map path (outside --out)")
+    jobs_report = jobs_sub.add_parser(
+        "report", help="Ingest the graded queue and report per-job quality"
+    )
+    jobs_report.add_argument("--out", required=True, help="Run directory from collect")
+    jobs_report.add_argument("--seal", required=True, help="Seal path")
+    jobs_report.add_argument("--identity", required=True, help="Identity map path")
+    jobs_report.add_argument("--judge", required=True,
+                             help="Label identifying who graded this queue")
+    jobs_report.add_argument("--ledger", help="Evolution ledger path (default: shared)")
 
     routing = sub.add_parser("routing", help="What the ledger supports recommending")
     routing.add_argument("--ledger", help="Ledger path (default: $HERMES_HOME)")

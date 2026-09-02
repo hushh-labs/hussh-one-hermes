@@ -297,7 +297,11 @@ def _citation_is_real(citation: str, output: Any, utterance: str = "") -> bool:
     if not citation:
         return False
     needle = citation.strip().casefold().strip('"')
-    if needle in json.dumps(output, sort_keys=True).casefold():
+    # ensure_ascii=False: the default escapes non-ASCII to \uXXXX, so a
+    # citation of a line with an emoji or a middle dot (every branded job
+    # header) was discarded at ingest as unfound, silently voiding a real
+    # verdict. Same fix as verdict_cli._citation_present.
+    if needle in json.dumps(output, sort_keys=True, ensure_ascii=False).casefold():
         return True
     return bool(utterance) and needle in utterance.casefold()
 
