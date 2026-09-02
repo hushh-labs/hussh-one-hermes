@@ -69,36 +69,28 @@ class TestContractChecks:
         verdict = J.grade(_run(tool_calls=[("send_message", {"to": "group"})]))
         assert _fails(verdict)["no_forbidden_tool"] == "called send_message"
 
-    def test_auto_dream_must_patch_not_write(self):
-        text = "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• x"
-        lazy = J.grade(_run(name="Auto-Dream Consolidated Suite", text=text, tool_calls=[]))
-        assert {"did_work", "called:patch"} <= set(_fails(lazy))
-        destructive = J.grade(_run(
-            name="Auto-Dream Consolidated Suite", text=text,
-            tool_calls=[("write_file", {"path": "/x/MEMORY.md"})] * 4,
+    def test_required_writes_count_only_successful_ones(self, monkeypatch):
+        # A job that must write files (the old Auto-Dream shape, before the
+        # model half stopped touching files): the 12:06 run made three patch
+        # calls, two failed on the tool's own contract, and the brief still
+        # claimed consolidation. Only writes whose result reported success
+        # count, and every required layer must have one.
+        monkeypatch.setattr(J, "CONTRACTS", (
+            J.JobContract(name_contains="writer job", header=(),
+                          required_tools=("patch",),
+                          required_written=("MEMORY.md", "journal.md"),
+                          forbidden_tools=("write_file",)),
         ))
-        assert "no_forbidden_tool" in _fails(destructive)
-        patched_all = [("patch", {"path": f"/x/{name}"}) for name in
-                       ("MEMORY.md", "procedures.md", "index.json", "journal.md")]
-        good = J.grade(_run(
-            name="Auto-Dream Consolidated Suite", text=text,
-            tool_calls=[("read_file", {"path": "/x"})] + patched_all,
-        ))
-        assert _fails(good) == {}
-
-    def test_auto_dream_must_have_written_every_memory_layer_successfully(self):
-        # The 12:06 run made three patch calls, two failed on the tool's own
-        # contract, and the brief still claimed consolidation. Only writes
-        # whose result reported success count.
-        text = "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• x"
-        run = _run(
-            name="Auto-Dream Consolidated Suite", text=text,
-            tool_calls=[("read_file", {"path": "/x"})] + [("patch", {"path": "/x/journal.md"})] * 4,
-        )
+        run = _run(name="writer job", text="done",
+                   tool_calls=[("patch", {"path": "/x/journal.md"})] * 3)
         run.files_written = ["/x/journal.md"]
         failures = _fails(J.grade(run))
-        assert {"wrote:MEMORY.md", "wrote:procedures.md", "wrote:index.json"} <= set(failures)
-        assert "wrote:journal.md" not in failures
+        assert "wrote:MEMORY.md" in failures and "wrote:journal.md" not in failures
+        run.files_written = ["/x/journal.md", "/x/MEMORY.md"]
+        assert _fails(J.grade(run)) == {}
+        destructive = _run(name="writer job", text="done",
+                           tool_calls=[("write_file", {"path": "/x/MEMORY.md"})])
+        assert "no_forbidden_tool" in _fails(J.grade(destructive))
 
     def test_only_successful_writes_count(self):
         assert J._write_succeeded('{"success": true, "diff": "..."}')
@@ -117,6 +109,38 @@ class TestContractChecks:
         verdict = J.grade(_run(name="Hushh Wiki Maintenance Follow-on", text=HEADER + "• nothing",
                                tool_calls=[("terminal", {"command": "git log"})]))
         assert "header_exact" in _fails(verdict)
+
+    def test_wiki_scan_must_be_a_real_wiki_call(self):
+        # The 12:05 run reported "wiki_list -> 236 pages" after calling only
+        # list_prompts twice. The tool actually called is the evidence.
+        text = ("*🤫 Hussh One* · *Wiki Maintenance*\n======================================\n\n"
+                "• Commits in the last 36h: 1 (x)\n• Wiki scan: wiki_list → 236 pages considered\n• ok")
+        faked = J.grade(_run(name="Hushh Wiki Maintenance Follow-on", text=text,
+                             tool_calls=[("terminal", {"command": "log"}),
+                                         ("mcp__hushh_wiki__list_prompts", {}),
+                                         ("mcp__hushh_wiki__list_prompts", {})]))
+        assert "called_any:wiki_search|wiki_list" in _fails(faked)
+        real = J.grade(_run(name="Hushh Wiki Maintenance Follow-on", text=text,
+                            tool_calls=[("terminal", {"command": "log"}),
+                                        ("mcp__hushh_wiki__wiki_list", {})]))
+        assert _fails(real) == {}
+
+    def test_auto_dream_model_half_is_json_without_tools(self):
+        good = _run(name="Auto-Dream Consolidated Suite",
+                    text='```json\n{"long_term": ["a"], "procedures": [], "index_entries": [], '
+                         '"archive": [], "dream": "d", "vision": "v", "brief": "b"}\n```')
+        assert _fails(J.grade(good)) == {}
+        prose = _run(name="Auto-Dream Consolidated Suite", text=HEADER + "• Consolidated things")
+        assert 'has:"brief"' in _fails(J.grade(prose))
+        touched = _run(name="Auto-Dream Consolidated Suite", text=good.final_text,
+                       tool_calls=[("patch", {"path": "/x/MEMORY.md"})])
+        assert _fails(J.grade(touched))["no_forbidden_tool"] == "called patch"
+
+    def test_auto_dream_apply_brief_states_what_it_applied(self):
+        text = ("*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n"
+                "• Consolidated x\n\n• Memory: +3 facts, +1 procedures, +2 index entries, 0 archived, dream recorded")
+        assert _fails(J.grade(_run(name="Auto-Dream Apply", text=text))) == {}
+        assert "has:• Memory:" in _fails(J.grade(_run(name="Auto-Dream Apply", text=HEADER + "• x")))
 
     def test_usage_report_requires_every_key(self):
         text = "🤫 Hussh One\nUsage Daemon [S]\n════════════════════\n\n*Today:*\n\n*Cost:*\n$0"
@@ -188,11 +212,24 @@ def _databases(tmp_path):
         ("cron_j1_20260902_031002", "assistant", HEADER + "• Synced 3 tickets", "", "", claimed + 90),
     ])
     con.commit(); con.close()
+    con = sqlite3.connect(ex)
+    con.execute("insert into executions values ('e4','j4','builtin','p',1,0,'completed',"
+                "'2026-09-02T05:30:00-07:00','2026-09-02T05:30:00-07:00',"
+                "'2026-09-02T05:30:03-07:00',null)")
+    con.commit(); con.close()
+    output = tmp_path / "output" / "j4"
+    output.mkdir(parents=True)
+    saved = output / "2026-09-02_05-30-03.md"
+    saved.write_text("*🤫 Hussh One* · *Auto-Dream Daemon*\n====\n\n• Memory: +2 facts", encoding="utf-8")
+    import os
+    stamp = datetime.fromisoformat("2026-09-02T05:30:02-07:00").timestamp()
+    os.utime(saved, (stamp, stamp))
     jobs = tmp_path / "jobs.json"
     jobs.write_text(json.dumps({"jobs": [
         {"id": "j1", "name": "Hushh Core Board Sync", "prompt": "Start exactly with this 3-line header", "deliver": "local"},
         {"id": "j2", "name": "Hushh Wiki Maintenance Follow-on", "prompt": "wiki", "deliver": "local"},
         {"id": "j3", "name": "Hussh One Self-Healing Doctor", "prompt": "", "no_agent": True},
+        {"id": "j4", "name": "Auto-Dream Apply", "prompt": "", "no_agent": True, "deliver": "local,whatsapp:x"},
     ]}), encoding="utf-8")
     return jobs, ex, st
 
@@ -200,8 +237,16 @@ def _databases(tmp_path):
 class TestCollection:
     def test_executions_join_their_sessions_and_scripts_are_skipped(self, tmp_path):
         jobs, ex, st = _databases(tmp_path)
-        runs = J.collect_runs(0, jobs_path=jobs, executions_db=ex, state_db=st)
-        assert [r.job_id for r in runs] == ["j1", "j2"]  # j3 is no_agent
+        runs = J.collect_runs(0, jobs_path=jobs, executions_db=ex, state_db=st,
+                              output_dir=tmp_path / "output")
+        # j3 (the doctor) is a script job with no message contract: skipped.
+        # j4 (Auto-Dream Apply) is a script job WITH a contract: its delivered
+        # stdout is the scheduler's saved output file.
+        assert [r.job_id for r in runs] == ["j1", "j2", "j4"]
+        apply = runs[2]
+        assert apply.model == "script" and apply.tool_calls == []
+        assert apply.final_text.startswith("*🤫 Hussh One* · *Auto-Dream Daemon*")
+        assert "has:• Memory:" not in _fails(J.grade(apply))
         board = runs[0]
         assert board.session_id == "cron_j1_20260902_031002"
         assert board.tool_names == ["patch", "patch"]
@@ -215,7 +260,9 @@ class TestCollection:
     def test_the_window_is_honoured(self, tmp_path):
         jobs, ex, st = _databases(tmp_path)
         late = datetime.fromisoformat("2026-09-02T03:30:00-07:00").timestamp()
-        runs = J.collect_runs(late, jobs_path=jobs, executions_db=ex, state_db=st)
+        until = datetime.fromisoformat("2026-09-02T05:00:00-07:00").timestamp()
+        runs = J.collect_runs(late, jobs_path=jobs, executions_db=ex, state_db=st,
+                              until_epoch=until, output_dir=tmp_path / "output")
         assert [r.job_id for r in runs] == ["j2"]
 
 

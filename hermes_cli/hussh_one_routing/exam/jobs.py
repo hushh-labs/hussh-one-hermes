@@ -73,6 +73,10 @@ class JobContract:
     forbidden_tools: tuple = ()
     min_tool_calls: int = 0
     required_tools: tuple = ()  # at least one call to each of these
+    # At least one call to ANY of these. The 12:05 wiki run reported a
+    # "wiki_list -> 236 pages" scan while its only wiki calls were two
+    # list_prompts; the name of the tool actually called is the evidence.
+    required_any_tools: tuple = ()
     artifact_glob: str = ""  # strftime-expanded against the previous month
     # Path fragments that must appear among the files the run SUCCESSFULLY
     # wrote (a patch whose result says success, a write_file that reports
@@ -85,20 +89,35 @@ class JobContract:
 
 
 CONTRACTS: tuple = (
+    # The model half of Auto-Dream: it reasons and emits ONE JSON object; a
+    # separate script applies it. Three runs on 2026-09-02 showed the model
+    # cannot be trusted to drive file edits itself (nothing written, memory
+    # replaced with write_file, two-line reads then "Consolidation Complete").
     JobContract(
-        name_contains="Auto-Dream",
+        name_contains="Auto-Dream Consolidated",
+        required_substrings=('"brief"', '"dream"', '"long_term"', '"vision"'),
+        forbidden_tools=("send_message", "write_file", "patch", "terminal"),
+        max_chars=12000,
+        judge_hint=(
+            "The final response must be exactly one JSON object with long_term, "
+            "procedures, index_entries, archive, dream, vision and brief. The "
+            "facts must come from the conversations in the dump (specific, "
+            "dated, nothing invented), relations may only cite ids from the "
+            "compact index, the dream is one surreal 120-200 word narrative, "
+            "the vision is honest about noise, and the brief follows its "
+            "header and brevity rules. No tool calls at all."
+        ),
+    ),
+    # The script half: what actually reaches the owner. Judged as a message.
+    JobContract(
+        name_contains="Auto-Dream Apply",
         header=("*🤫 Hussh One* · *Auto-Dream Daemon*",
                 "======================================"),
-        min_tool_calls=4,
-        required_tools=("patch",),
-        required_written=("MEMORY.md", "procedures.md", "index.json", "journal.md"),
-        forbidden_tools=("send_message", "write_file"),
+        required_substrings=("• Memory:",),
         judge_hint=(
-            "Phase 1 must have actually consolidated: patches to MEMORY.md, "
-            "procedures.md, index.json and the dream journal, never write_file "
-            "on an existing file. The brief must reflect the conversations in "
-            "the dump (specific, dated), carry ONE dream narrative teaser and "
-            "ONE honest vision line, and stay short."
+            "The delivered brief must match the applied counts it states, "
+            "carry one dream teaser and one vision bullet, and say plainly if "
+            "anything could not be applied."
         ),
     ),
     JobContract(
@@ -124,6 +143,7 @@ CONTRACTS: tuple = (
         required_substrings=("Commits in the last 36h:", "Wiki scan:"),
         forbidden_tools=("send_message",),
         min_tool_calls=2,
+        required_any_tools=("mcp__hushh_wiki__wiki_search", "mcp__hushh_wiki__wiki_list"),
         judge_hint=(
             "The run must have discovered what changed (git log / diff on the "
             "repository, a broad wiki search) before deciding. '[SILENT]' is "
@@ -295,6 +315,21 @@ def _written_path(name: str, args: dict) -> Optional[str]:
     return None
 
 
+def _script_output(output_dir: Path, job_id: str, claimed: float, finished: Optional[float]) -> str:
+    """A no-agent job's delivered stdout: the scheduler's saved output file."""
+    folder = Path(output_dir) / job_id
+    if not folder.exists():
+        return ""
+    low, high = claimed - 5, (finished or claimed) + 120
+    for path in sorted(folder.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+        mtime = path.stat().st_mtime
+        if low <= mtime <= high:
+            return path.read_text(encoding="utf-8", errors="replace")
+        if mtime < low:
+            break
+    return ""
+
+
 def collect_runs(
     since_epoch: float,
     *,
@@ -302,17 +337,22 @@ def collect_runs(
     executions_db: Optional[Path] = None,
     state_db: Optional[Path] = None,
     until_epoch: Optional[float] = None,
+    output_dir: Optional[Path] = None,
 ) -> list:
-    """Every agent-driven cron execution since ``since_epoch``, with evidence.
+    """Every graded cron execution since ``since_epoch``, with evidence.
 
-    Script-only jobs (``no_agent``) have no model output to grade and are
-    skipped. An execution whose session cannot be found is kept with an empty
+    Agent jobs are joined to the session that served them. Script-only jobs
+    (``no_agent``) are included only when a contract exists for them, since
+    what they deliver is the scheduler's saved stdout rather than a session;
+    the doctor and the janitors have no message contract and are skipped.
+    An execution whose session cannot be found is kept with an empty
     transcript: a run that delivered nothing is a finding, not a gap.
     """
     home = hermes_home()
     jobs = _load_jobs(jobs_path or home / "cron" / "jobs.json")
     ex_path = executions_db or home / "cron" / "executions.db"
     st_path = state_db or home / "state.db"
+    out_dir = Path(output_dir) if output_dir is not None else home / "cron" / "output"
     if not Path(ex_path).exists() or not Path(st_path).exists():
         return []
 
@@ -331,9 +371,23 @@ def collect_runs(
             if until_epoch is not None and claimed > until_epoch:
                 continue
             job = jobs.get(str(job_id))
-            if not job or job.get("no_agent"):
+            if not job:
                 continue
             finished = _parse_iso(finished_at) if finished_at else None
+            if job.get("no_agent"):
+                if contract_for(str(job.get("name") or "")) is None:
+                    continue
+                runs.append(JobRun(
+                    job_id=str(job_id), name=str(job.get("name") or job_id),
+                    session_id=f"script_{job_id}_{str(claimed_at)[:19]}",
+                    model="script", status=str(status), claimed_at=str(claimed_at),
+                    finished_at=str(finished_at), error=str(error),
+                    prompt=str(job.get("prompt") or ""),
+                    final_text=_script_output(out_dir, str(job_id), claimed, finished),
+                    deliver=str(job.get("deliver") or ""),
+                    duration_s=(round(finished - claimed, 1) if finished is not None else None),
+                ))
+                continue
             session = st.execute(
                 "select id, coalesce(model,''), started_at from sessions "
                 "where id like ? and started_at >= ? and started_at <= ? "
@@ -482,6 +536,13 @@ def grade(run: JobRun, *, now: Optional[datetime] = None) -> Verdict:
         verdict.outcomes.append(Outcome(
             f"called:{tool}", PASS if called else FAIL,
             "" if called else f"never called {tool}",
+        ))
+    if contract.required_any_tools and not silent:
+        called_any = any(t in run.tool_names for t in contract.required_any_tools)
+        verdict.outcomes.append(Outcome(
+            "called_any:" + "|".join(t.rsplit("__", 1)[-1] for t in contract.required_any_tools),
+            PASS if called_any else FAIL,
+            "" if called_any else f"none of {list(contract.required_any_tools)} was called",
         ))
     for fragment in contract.required_written:
         if silent:
