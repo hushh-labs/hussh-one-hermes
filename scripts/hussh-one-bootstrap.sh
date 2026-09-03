@@ -26,7 +26,7 @@ usage() {
 Usage: scripts/hussh-one-bootstrap.sh [options]
 
 Options:
-  --manager auto|launchd|systemd|s6|screen
+  --manager auto|launchd|systemd|s6|windows|screen
   --start                   Start/restart Hussh One services after setup
   --skip-install            Do not create/update the Python environment
   --skip-build              Do not build TUI/dashboard frontend assets
@@ -105,7 +105,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MANAGER" in
-  auto|launchd|systemd|s6|screen) ;;
+  auto|launchd|systemd|s6|windows|screen) ;;
   *)
     echo "error: unsupported manager '$MANAGER'" >&2
     exit 2
@@ -132,17 +132,41 @@ warn() {
   printf 'warning: %s\n' "$*" >&2
 }
 
-python_bin() {
+# Native Windows venv layout: python.exe/hermes.exe live under Scripts/, and
+# there is no bin/. Anyone running this script from Git Bash / MSYS against a
+# uv- or python -m venv-created venv hits this branch -- same gap
+# scripts/run_tests.sh already had to close for the same reason.
+venv_python_path() {
   if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     printf '%s\n' "$REPO_ROOT/.venv/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]]; then
+    printf '%s\n' "$REPO_ROOT/.venv/Scripts/python.exe"
+  fi
+}
+
+venv_hermes_path() {
+  if [[ -x "$REPO_ROOT/.venv/bin/hermes" ]]; then
+    printf '%s\n' "$REPO_ROOT/.venv/bin/hermes"
+  elif [[ -x "$REPO_ROOT/.venv/Scripts/hermes.exe" ]]; then
+    printf '%s\n' "$REPO_ROOT/.venv/Scripts/hermes.exe"
+  fi
+}
+
+python_bin() {
+  local venv_python
+  venv_python="$(venv_python_path)"
+  if [[ -n "$venv_python" ]]; then
+    printf '%s\n' "$venv_python"
   else
     command -v python3.11 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null || true
   fi
 }
 
 hermes_bin() {
-  if [[ -x "$REPO_ROOT/.venv/bin/hermes" ]]; then
-    printf '%s\n' "$REPO_ROOT/.venv/bin/hermes"
+  local venv_hermes
+  venv_hermes="$(venv_hermes_path)"
+  if [[ -n "$venv_hermes" ]]; then
+    printf '%s\n' "$venv_hermes"
   elif command -v hermes >/dev/null 2>&1; then
     command -v hermes
   else
@@ -156,7 +180,7 @@ ensure_venv() {
     return 0
   fi
 
-  if [[ ! -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  if [[ -z "$(venv_python_path)" ]]; then
     if command -v uv >/dev/null 2>&1; then
       run_cmd uv venv --python 3.11 .venv
     elif command -v python3.11 >/dev/null 2>&1; then
@@ -172,8 +196,8 @@ ensure_venv() {
   if command -v uv >/dev/null 2>&1; then
     run_cmd uv pip install -e ".[all,dev]"
   else
-    run_cmd "$REPO_ROOT/.venv/bin/python" -m pip install --upgrade pip
-    run_cmd "$REPO_ROOT/.venv/bin/python" -m pip install -e ".[all,dev]"
+    run_cmd "$(venv_python_path)" -m pip install --upgrade pip
+    run_cmd "$(venv_python_path)" -m pip install -e ".[all,dev]"
   fi
 }
 

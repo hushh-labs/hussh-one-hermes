@@ -250,7 +250,9 @@ scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-restart.sh
 ```
 
-The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `8473` (a dedicated, conflict-free loopback port — not `3000`, which collides with Next.js / Vite / CRA dev servers).
+The supervisor chooses `launchd` on macOS, user `systemd` on Linux, s6 in supported containers, a per-user Scheduled Task on native Windows (Git Bash/MSYS — no elevation, no WSL required), and `screen` only as a fallback. It refuses mixed manager state unless `--clean-conflicts` is passed. The dashboard is always launched as `hermes dashboard --tui --no-open` on port `9119`, and the gateway/WhatsApp bridge health remains on port `8473` (a dedicated, conflict-free loopback port — not `3000`, which collides with Next.js / Vite / CRA dev servers).
+
+On Windows, Scheduled Task creation itself can be denied by local Group Policy even for a standard non-elevated per-user task — confirmed live, isolated specifically to the `ONLOGON` trigger type (a plain `ONCE` task created fine on the same machine, same permissions). If `install`/`start` fails with "Access is denied" on Windows, this is almost certainly why; there is no fallback for it yet (upstream's `gateway_windows.py` has a Startup-folder fallback for its own harder SYSTEM-scope case — the natural template for one here, not yet built).
 
 ### Step 5: VS Code Copilot BYOK (Vertex ADC) — native, optional
 

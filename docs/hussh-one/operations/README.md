@@ -7,7 +7,7 @@ under `scripts/hussh-one-*`.
 | Script | Purpose |
 |--------|---------|
 | `hussh-one-bootstrap.sh` | Fresh-clone setup; detects + optionally starts a supervisor |
-| `hussh-one-supervisor.sh` | Owns lifecycle (launchd/systemd/s6/screen); install/restart/status |
+| `hussh-one-supervisor.sh` | Owns lifecycle (launchd/systemd/s6/windows/screen); install/restart/status |
 | `hussh-one-doctor.sh` | Health check; `--require-services` for strict mode |
 | `hussh-one-guard.sh` | Post-merge invariant guard (branding, header, capsule, dashboard) |
 | `hussh-one-restart.sh` | Convenience restart wrapper |

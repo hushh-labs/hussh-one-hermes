@@ -18,6 +18,10 @@ WHATSAPP_HEALTH_URL="${HUSSH_ONE_WHATSAPP_HEALTH_URL:-http://127.0.0.1:8473/heal
 OPEN_WEBUI_URL="${HUSSH_ONE_OPEN_WEBUI_URL:-}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 OPEN_WEBUI_LAUNCHER="${HUSSH_ONE_OPEN_WEBUI_LAUNCHER:-$HOME/.local/bin/start-open-webui-hermes.sh}"
+# Same default + override var name as the Scheduled Task hussh-one-supervisor.sh
+# installs -- doctor.sh doesn't source that script, so this is its own copy of
+# the identifier, same convention the launchd pairs array below already uses.
+DASHBOARD_TASK="${HUSSH_ONE_DASHBOARD_TASK_NAME:-Hussh One Dashboard}"
 
 FAILURES=0
 WARNINGS=0
@@ -27,7 +31,7 @@ usage() {
 Usage: scripts/hussh-one-doctor.sh [options]
 
 Options:
-  --manager auto|launchd|systemd|s6|screen
+  --manager auto|launchd|systemd|s6|windows|screen
   --require-services       Fail if dashboard, WhatsApp, or Open WebUI health is not reachable
   --live-vertex            Run optional live Vertex Claude smoke checks
   --dry-run                Print external service checks without mutating state
@@ -87,7 +91,7 @@ if [[ -z "$OPEN_WEBUI_URL" ]]; then
 fi
 
 case "$MANAGER" in
-  auto|launchd|systemd|s6|screen) ;;
+  auto|launchd|systemd|s6|windows|screen) ;;
   *)
     echo "error: unsupported manager '$MANAGER'" >&2
     exit 2
@@ -110,9 +114,14 @@ fail() {
   printf 'fail: %s\n' "$*" >&2
 }
 
+# Native Windows venv layout: python.exe/hermes.exe live under Scripts/, not
+# bin/ -- same gap scripts/run_tests.sh already had to close for Git Bash/MSYS
+# running against a uv- or python -m venv-created venv.
 python_bin() {
   if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     printf '%s\n' "$REPO_ROOT/.venv/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]]; then
+    printf '%s\n' "$REPO_ROOT/.venv/Scripts/python.exe"
   else
     command -v python3 2>/dev/null || command -v python 2>/dev/null || true
   fi
@@ -121,6 +130,8 @@ python_bin() {
 hermes_bin() {
   if [[ -x "$REPO_ROOT/.venv/bin/hermes" ]]; then
     printf '%s\n' "$REPO_ROOT/.venv/bin/hermes"
+  elif [[ -x "$REPO_ROOT/.venv/Scripts/hermes.exe" ]]; then
+    printf '%s\n' "$REPO_ROOT/.venv/Scripts/hermes.exe"
   elif command -v hermes >/dev/null 2>&1; then
     command -v hermes
   else
@@ -337,14 +348,57 @@ check_supervisor_status() {
   rm -f /tmp/hussh-one-supervisor.$$ /tmp/hussh-one-supervisor-err.$$
 }
 
+check_boot_persistence_windows() {
+  # The schtasks equivalent of the launchd check below: a Scheduled Task IS
+  # its own registration (no separate config file a person could hand-edit
+  # and forget to reload), so this only needs one check per task -- does it
+  # exist, and is it not disabled -- not the launchd block's two-tier
+  # RunAtLoad-vs-registered split.
+  if ! command -v schtasks.exe >/dev/null 2>&1; then
+    warn "boot-persistence: schtasks.exe unavailable; skipped"
+    return 0
+  fi
+  local py gateway_task
+  py="$(python_bin)"
+  gateway_task="Hermes_Gateway"
+  if [[ -n "$py" ]]; then
+    gateway_task="$("$py" -c 'from hermes_cli.gateway_windows import get_task_name; print(get_task_name())' 2>/dev/null || echo "Hermes_Gateway")"
+  fi
+
+  local task label state
+  for label in "gateway:$gateway_task" "dashboard:$DASHBOARD_TASK"; do
+    task="${label#*:}"
+    # "Scheduled Task State" (Enabled/Disabled) is only present with /V
+    # (verbose) -- confirmed live: plain /FO LIST has "Status" (Ready/
+    # Running/Queued, a different concept) but not this field at all.
+    # schtasks exits non-zero for a task that doesn't exist, and with
+    # pipefail active that would otherwise abort this whole script under
+    # set -e the moment someone hasn't installed a task yet -- the ordinary
+    # case, not an edge one. `|| true` makes "not found" a normal, reportable
+    # outcome instead of a crash.
+    state="$(MSYS_NO_PATHCONV=1 schtasks.exe /Query /TN "$task" /V /FO LIST 2>/dev/null | sed -nE 's/^Scheduled Task State: *//p' || true)"
+    if [[ -z "$state" ]]; then
+      warn "boot-persistence: task '$task' not found (not installed on this machine)"
+    elif [[ "$state" == "Enabled" ]]; then
+      pass "boot-persistence: $task — registered and Enabled"
+    else
+      fail "boot-persistence: task '$task' is $state (expected Enabled) — will NOT auto-start after login"
+    fi
+  done
+}
+
 check_boot_persistence() {
   # "Is it running now" (check_supervisor_status) is not the same claim as
   # "will it come back after a restart". A plist that lost RunAtLoad (bad
   # edit, accidental re-write, upstream merge) still shows a running
   # process today and only reveals the gap on the NEXT reboot — exactly
   # the blind spot this check closes.
+  if [[ "$MANAGER" == "windows" ]] || { [[ "$MANAGER" == "auto" ]] && [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; }; then
+    check_boot_persistence_windows
+    return 0
+  fi
   if [[ "$MANAGER" != "launchd" && "$MANAGER" != "auto" ]]; then
-    warn "boot-persistence check only implemented for launchd; manager=$MANAGER skipped"
+    warn "boot-persistence check only implemented for launchd/windows; manager=$MANAGER skipped"
     return 0
   fi
   if [[ "$(uname -s)" != "Darwin" ]]; then

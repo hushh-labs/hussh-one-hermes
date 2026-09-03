@@ -30,6 +30,7 @@ DASHBOARD_SCREEN="${HUSSH_ONE_DASHBOARD_SCREEN:-hermes-dashboard-hussh-one}"
 GATEWAY_SCREEN="${HUSSH_ONE_GATEWAY_SCREEN:-hermes-gateway-hussh-one}"
 DASHBOARD_LABEL="${HUSSH_ONE_DASHBOARD_LAUNCHD_LABEL:-ai.hussh-one.dashboard}"
 DASHBOARD_UNIT="${HUSSH_ONE_DASHBOARD_SYSTEMD_UNIT:-hussh-one-dashboard.service}"
+DASHBOARD_TASK="${HUSSH_ONE_DASHBOARD_TASK_NAME:-Hussh One Dashboard}"
 # Kept only to retire the pre-single-owner detached watchdog during upgrade.
 DASHBOARD_WATCHDOG_PID="${HUSSH_ONE_DASHBOARD_WATCHDOG_PID:-$HERMES_HOME/hussh-one-dashboard.watchdog.pid}"
 DASHBOARD_WATCHDOG_SCRIPT="$SCRIPT_DIR/hussh-one-dashboard-watchdog.py"
@@ -48,7 +49,7 @@ usage() {
 Usage: scripts/hussh-one-supervisor.sh {install|start|stop|restart|status} [options]
 
 Options:
-  --manager auto|launchd|systemd|s6|screen
+  --manager auto|launchd|systemd|s6|windows|screen
   --clean-conflicts          Stop fallback screen sessions before service start/restart
   --host HOST                Dashboard host (default: 127.0.0.1)
   --dashboard-port PORT      Dashboard port (default: 9119)
@@ -135,7 +136,7 @@ if [[ -z "$ACTION" ]]; then
 fi
 
 case "$MANAGER" in
-  auto|launchd|systemd|s6|screen) ;;
+  auto|launchd|systemd|s6|windows|screen) ;;
   *)
     echo "error: unsupported manager '$MANAGER'" >&2
     exit 2
@@ -145,6 +146,11 @@ esac
 if [[ -z "$HERMES_BIN" ]]; then
   if [[ -x "$REPO_ROOT/.venv/bin/hermes" ]]; then
     HERMES_BIN="$REPO_ROOT/.venv/bin/hermes"
+  # Native Windows venv layout: hermes.exe/python.exe live under Scripts/,
+  # not bin/ -- same gap run_tests.sh already had to close for Git Bash/MSYS
+  # running against a uv- or python -m venv-created venv.
+  elif [[ -x "$REPO_ROOT/.venv/Scripts/hermes.exe" ]]; then
+    HERMES_BIN="$REPO_ROOT/.venv/Scripts/hermes.exe"
   elif command -v hermes >/dev/null 2>&1; then
     HERMES_BIN="$(command -v hermes)"
   else
@@ -155,6 +161,8 @@ fi
 if [[ -z "$HERMES_PYTHON_BIN" ]]; then
   if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     HERMES_PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]]; then
+    HERMES_PYTHON_BIN="$REPO_ROOT/.venv/Scripts/python.exe"
   elif command -v python3 >/dev/null 2>&1; then
     HERMES_PYTHON_BIN="$(command -v python3)"
   else
@@ -202,6 +210,16 @@ is_linux() {
   [[ "$(uname -s)" == "Linux" ]]
 }
 
+# Git Bash / MSYS / Cygwin all report one of these uname -s prefixes on
+# native Windows -- same match already used by scripts/install.sh's own OS
+# detection, not a guessed pattern.
+is_windows() {
+  case "$(uname -s)" in
+    CYGWIN*|MINGW*|MSYS*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_container() {
   [[ -f /.dockerenv || -f /run/.containerenv || -n "${container:-}" || -n "${HERMES_CONTAINER:-}" ]]
 }
@@ -227,12 +245,17 @@ detect_manager() {
     return 0
   fi
 
+  if is_windows && command -v schtasks.exe >/dev/null 2>&1; then
+    printf 'windows\n'
+    return 0
+  fi
+
   if command -v screen >/dev/null 2>&1; then
     printf 'screen\n'
     return 0
   fi
 
-  echo "error: no supported supervisor found (launchd, systemd, s6, or screen)" >&2
+  echo "error: no supported supervisor found (launchd, systemd, s6, windows, or screen)" >&2
   exit 1
 }
 
@@ -351,10 +374,16 @@ selected_dashboard_active() {
   case "$selected" in
     launchd) launchd_job_active ;;
     systemd) systemd_job_active ;;
+    windows) windows_job_active ;;
     screen) screen_session_exists "$DASHBOARD_SCREEN" ;;
     s6) s6_service_dir hussh-one-dashboard >/dev/null 2>&1 || s6_service_dir hermes-dashboard >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
+}
+
+windows_gateway_active() {
+  [[ -x "$HERMES_BIN" ]] || return 1
+  "$HERMES_BIN" gateway status >/dev/null 2>&1
 }
 
 selected_gateway_active() {
@@ -362,6 +391,7 @@ selected_gateway_active() {
   case "$selected" in
     launchd) launchd_gateway_active ;;
     systemd) systemd_gateway_active ;;
+    windows) windows_gateway_active ;;
     screen) screen_session_exists "$GATEWAY_SCREEN" ;;
     s6) s6_service_dir hermes-gateway >/dev/null 2>&1 ;;
     *) return 1 ;;
@@ -781,6 +811,61 @@ systemd_status_dashboard() {
   fi
 }
 
+# Gateway lifecycle on Windows is already handled -- gateway_service() shells
+# out to `hermes gateway <verb>`, and upstream's hermes_cli/gateway_windows.py
+# already implements a native Scheduled Task installer behind that command.
+# The dashboard has no upstream equivalent, so this is fork-owned, mirroring
+# the systemd_*_dashboard functions above. Deliberately a per-user ONLOGON
+# task, not a SYSTEM-scoped one -- that needs no elevation/UAC, unlike the
+# SYSTEM-scope case gateway_windows.py had to build elevation handling for,
+# which this does not need to replicate.
+#
+# KNOWN LIMIT (verified live, not theoretical): on a machine with Group
+# Policy restricting logon-trigger tasks, `/SC ONLOGON` creation itself can
+# return "Access is denied" even for a standard, non-elevated, /RL LIMITED
+# per-user task -- confirmed by isolating it against the SAME machine, SAME
+# permissions: `/SC ONCE` succeeded, `/SC ONLOGON` alone (no other flag
+# changed) was denied. If `install`/`start` fails this way, that is almost
+# certainly local policy, not a bug here -- gateway_windows.py's own Startup-
+# folder fallback (for its harder SYSTEM-scope case) is the natural template
+# for a future fallback here; not built yet, flagged rather than guessed at.
+# Git Bash/MSYS rewrites a bare leading "/Switch" into a fake root-relative
+# Unix path (schtasks.exe then sees "C:/Program Files/Git/Create" instead of
+# "/Create") -- MSYS_NO_PATHCONV=1 is the standard, documented way to turn
+# that conversion off for one command. Every schtasks.exe call below needs
+# it; confirmed live against real Task Scheduler on this exact machine, both
+# the failure without it and the fix with it.
+windows_job_active() {
+  command -v schtasks.exe >/dev/null 2>&1 || return 1
+  MSYS_NO_PATHCONV=1 schtasks.exe /Query /TN "$DASHBOARD_TASK" /FO LIST 2>/dev/null \
+    | grep -q "Status:.*Running"
+}
+
+windows_install_dashboard() {
+  MSYS_NO_PATHCONV=1 run_cmd schtasks.exe /Create /TN "$DASHBOARD_TASK" /SC ONLOGON /RL LIMITED \
+    /TR "$(dashboard_command_line)" /F
+}
+
+windows_start_dashboard() {
+  windows_install_dashboard
+  MSYS_NO_PATHCONV=1 run_cmd schtasks.exe /Run /TN "$DASHBOARD_TASK" >/dev/null 2>&1 || true
+}
+
+windows_stop_dashboard() {
+  if command -v schtasks.exe >/dev/null 2>&1; then
+    MSYS_NO_PATHCONV=1 run_cmd schtasks.exe /End /TN "$DASHBOARD_TASK" >/dev/null 2>&1 || true
+  fi
+  kill_port_listeners "$DASHBOARD_PORT"
+}
+
+windows_status_dashboard() {
+  if windows_job_active; then
+    log "dashboard windows: active ($DASHBOARD_TASK)"
+  else
+    log "dashboard windows: inactive ($DASHBOARD_TASK)"
+  fi
+}
+
 screen_start() {
   if [[ "$DRY_RUN" != "1" ]] && ! command -v screen >/dev/null 2>&1; then
     echo "error: screen is required for fallback manager mode" >&2
@@ -885,6 +970,10 @@ case "$ACTION" in
         gateway_service install
         systemd_install_dashboard
         ;;
+      windows)
+        gateway_service install
+        windows_install_dashboard
+        ;;
       s6)
         s6_action install
         ;;
@@ -904,6 +993,10 @@ case "$ACTION" in
         gateway_service start
         systemd_start_dashboard
         ;;
+      windows)
+        gateway_service start
+        windows_start_dashboard
+        ;;
       s6)
         s6_action start
         ;;
@@ -920,6 +1013,10 @@ case "$ACTION" in
         ;;
       systemd)
         systemd_stop_dashboard
+        gateway_service stop
+        ;;
+      windows)
+        windows_stop_dashboard
         gateway_service stop
         ;;
       s6)
@@ -941,6 +1038,10 @@ case "$ACTION" in
         gateway_service restart
         systemd_start_dashboard
         ;;
+      windows)
+        gateway_service restart
+        windows_start_dashboard
+        ;;
       s6)
         s6_action restart
         ;;
@@ -958,6 +1059,10 @@ case "$ACTION" in
       systemd)
         gateway_service status || true
         systemd_status_dashboard
+        ;;
+      windows)
+        gateway_service status || true
+        windows_status_dashboard
         ;;
       s6)
         s6_action status || true
