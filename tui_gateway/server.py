@@ -14863,12 +14863,28 @@ def _hussh_one_setup_output(arg: str) -> str:
     # accepts but the picker does not offer is a command nobody can find.
     from hermes_cli.commands import HUSSH_ONE_ACTIONS
 
+    # "connect <environment>" names which One this machine links to. The
+    # environment is an argument to connect, not an action of its own, so the
+    # picker list is unchanged; anything else after "connect" is refused by
+    # name, with the accepted values, rather than dropped into the usage line.
+    connect_environment: Optional[str] = None
+    if action.startswith("connect "):
+        from hermes_cli.hussh_one_pkm.client import (
+            HusshIdentityError,
+            resolve_environment,
+        )
+
+        try:
+            connect_environment = resolve_environment(action[len("connect "):])
+        except HusshIdentityError as exc:
+            return f"{exc}\n\nusage: /hussh-one connect [uat|production]"
+        action = "connect"
     if action not in {"", "disconnect confirm", *HUSSH_ONE_ACTIONS}:
         return f"usage: /hussh-one [{'|'.join(HUSSH_ONE_ACTIONS)}]"
     if action == "help":
         return (
             "Hussh One trusted-device setup:\n"
-            "  /hussh-one connect — open browser approval\n"
+            "  /hussh-one connect [uat|production] - link this machine to your Hussh One account (default: hussh_one.environment, else uat)\n"
             "  /hussh-one reconnect — repair an expired login, keeping this device's vault\n"
             "  /hussh-one enroll — secure this device or create your first vault\n"
             "  /hussh-one status — inspect this profile\n\n"
@@ -15075,11 +15091,20 @@ def _hussh_one_setup_output(arg: str) -> str:
                 "  /hussh-one disconnect — review account-switch cleanup"
             )
 
-        bridge.begin_onboarding(
-            device_name="Hussh One Hermes dashboard"
+        from urllib.parse import urlsplit
+
+        opened = bridge.begin_onboarding(
+            device_name="Hussh One Hermes dashboard",
+            environment=connect_environment,
         )
+        # Name the host that was opened: with two environments, "a browser
+        # window was opened" no longer says which One is being linked.
+        opened_web_base = (
+            str(opened.get("web_base") or "") if isinstance(opened, dict) else ""
+        )
+        opened_host = urlsplit(opened_web_base).netloc or "One"
         return (
-            "A browser window was opened for Hussh One trusted-device approval. "
+            f"A browser window was opened at {opened_host} for Hussh One trusted-device approval. "
             "Sign in with Google or Apple, complete the existing phone requirement, and confirm the full account email on that page.\n\n"
             "After approval, Hermes automatically opens the native protected vault setup. "
             "Use /hussh-one status at any time; no passphrase, recovery key, or approval URL is shown in chat."

@@ -245,5 +245,206 @@ class TestHeartbeatCannotSeal:
         assert called == []
 
 
+class TestHeartbeatWireShape:
+    """The snapshot is the body. One reads telemetry at the top level.
+
+    Measured on UAT: a body of ``{"heartbeat": {...}}`` reached the server,
+    pydantic dropped the unknown key, and One stored ``last_heartbeat_at``
+    with ``heartbeat: null``. The devices page could never say which model
+    was running.
+    """
+
+    class _State:
+        api_base = "https://api.example"
+        device_id = "tdv_x"
+
+    class _Http:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def post(self, url, headers=None, json=None):
+            self.calls.append({"url": url, "headers": headers, "json": json})
+
+            class _Response:
+                status_code = 200
+
+            return _Response()
+
+    def _client(self, monkeypatch):
+        from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
+
+        client = HusshIdentityClient.__new__(HusshIdentityClient)
+        client._id_token = "tok"
+        client.http = self._Http()
+        state = self._State()
+        monkeypatch.setattr(
+            HusshIdentityClient, "read_state", lambda self: state, raising=False
+        )
+        return client
+
+    def test_the_snapshot_is_posted_flat_with_current_model_at_the_top_level(
+        self, monkeypatch
+    ):
+        client = self._client(monkeypatch)
+        snapshot = {"current_model": "gemma", "busy": False, "active_sessions": 1}
+
+        assert client.post_heartbeat(snapshot) is True
+
+        assert len(client.http.calls) == 1
+        call = client.http.calls[0]
+        assert call["json"] == snapshot
+        assert call["json"]["current_model"] == "gemma"
+        assert "heartbeat" not in call["json"]
+        assert call["url"].endswith("/api/account/trusted-devices/tdv_x/heartbeat")
+        assert call["headers"]["Authorization"] == "Bearer tok"
+
+    def test_a_non_2xx_is_reported_not_raised(self, monkeypatch):
+        client = self._client(monkeypatch)
+
+        def _post(url, headers=None, json=None):
+            class _Response:
+                status_code = 401
+
+            return _Response()
+
+        client.http.post = _post
+        assert client.post_heartbeat({"busy": False}) is False
+
+
+class TestModelAndVersionReaders:
+    """What the bridge puts in the snapshot, read the way ``agent_section`` reads it."""
+
+    def test_model_default_wins_and_is_stripped(self):
+        from hermes_cli.hussh_one_pkm.presence import current_model_from_config
+
+        cfg = {"model": {"default": "  qwen/qwen3-30b  ", "model": "legacy"}}
+        assert current_model_from_config(cfg) == "qwen/qwen3-30b"
+
+    def test_legacy_model_key_is_the_fallback(self):
+        from hermes_cli.hussh_one_pkm.presence import current_model_from_config
+
+        assert current_model_from_config({"model": {"model": "gemma"}}) == "gemma"
+
+    @pytest.mark.parametrize(
+        "cfg", [None, {}, {"model": "not-a-dict"}, {"model": {"default": None}}]
+    )
+    def test_an_unreadable_pin_is_empty_not_wrong(self, cfg):
+        from hermes_cli.hussh_one_pkm.presence import current_model_from_config
+
+        assert current_model_from_config(cfg) == ""
+
+    def test_current_model_reads_the_config_at_call_time(self, monkeypatch):
+        import hermes_cli.config as config
+        from hermes_cli.hussh_one_pkm.presence import current_model
+
+        pins = iter(["gemma", "qwen"])
+        monkeypatch.setattr(
+            config, "load_config_readonly", lambda: {"model": {"default": next(pins)}}
+        )
+        assert current_model() == "gemma"
+        assert current_model() == "qwen"
+
+    def test_a_config_failure_never_blocks_a_heartbeat(self, monkeypatch):
+        import hermes_cli.config as config
+        from hermes_cli.hussh_one_pkm.presence import current_model
+
+        def _explode():
+            raise OSError("config unreadable")
+
+        monkeypatch.setattr(config, "load_config_readonly", _explode)
+        assert current_model() == ""
+
+    def test_agent_version_is_the_package_version(self):
+        import hermes_cli
+        from hermes_cli.hussh_one_pkm.presence import agent_version
+
+        assert agent_version() == hermes_cli.__version__
+        assert agent_version()
+
+    def test_an_empty_model_is_omitted_from_the_snapshot(self):
+        # build_snapshot drops "" values, so an unreadable pin is absent on the
+        # wire rather than reported as a model named "".
+        snapshot = build_snapshot(current_model="", agent_version="")
+        assert "current_model" not in snapshot
+        assert "agent_version" not in snapshot
+
+
+class TestBridgeSnapshotCarriesTheModel:
+    """The owner's devices page can only name the model if the bridge sends it."""
+
+    class _Keychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+
+        def get(self, account):
+            return self.values.get(account)
+
+        def set(self, account, secret):
+            self.values[account] = secret
+
+        def delete(self, account):
+            self.values.pop(account, None)
+
+    def test_each_push_reads_the_pin_at_that_moment(self, tmp_path, monkeypatch):
+        import hermes_cli
+        import hermes_cli.config as config
+        from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
+
+        pins = {"default": "gemma"}
+        monkeypatch.setattr(config, "load_config_readonly", lambda: {"model": dict(pins)})
+
+        bridge = HusshVaultBridge(
+            profile_home=tmp_path, keychain=self._Keychain()  # type: ignore[arg-type]
+        )
+        snapshot_fn = bridge.presence._snapshot
+
+        first = snapshot_fn()
+        assert first["current_model"] == "gemma"
+        assert first["agent_version"] == hermes_cli.__version__
+        assert first["active_sessions"] == 0
+        assert first["busy"] is False
+
+        # A model swap after the bridge was built is a transition, not a stale
+        # reading: the lambda reads the config, it does not capture it.
+        pins["default"] = "qwen"
+        assert snapshot_fn()["current_model"] == "qwen"
+
+    def test_a_config_failure_still_produces_a_snapshot(self, tmp_path, monkeypatch):
+        import hermes_cli.config as config
+        from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
+
+        def _explode():
+            raise OSError("config unreadable")
+
+        monkeypatch.setattr(config, "load_config_readonly", _explode)
+        bridge = HusshVaultBridge(
+            profile_home=tmp_path, keychain=self._Keychain()  # type: ignore[arg-type]
+        )
+        snapshot = bridge.presence._snapshot()
+        assert "current_model" not in snapshot
+        assert snapshot["active_sessions"] == 0
+
+
+class TestTextFieldsFitTheServer:
+    def test_long_model_id_is_capped_so_the_beat_is_never_refused(self):
+        # One keeps 120 characters of text and used to refuse the WHOLE beat
+        # when one field ran over. A device whose beats are refused reads as
+        # gone while it is healthy, so the cap is applied here as well.
+        from hermes_cli.hussh_one_pkm.presence import SERVER_TEXT_MAX, build_snapshot
+
+        long_id = "lmstudio-community/" + ("x" * 200)
+        snapshot = build_snapshot(current_model=long_id, agent_version="v" * 300)
+        assert len(snapshot["current_model"]) == SERVER_TEXT_MAX
+        assert snapshot["current_model"] == long_id[:SERVER_TEXT_MAX]
+        assert len(snapshot["agent_version"]) == SERVER_TEXT_MAX
+
+    def test_blank_text_is_still_omitted(self):
+        from hermes_cli.hussh_one_pkm.presence import build_snapshot
+
+        snapshot = build_snapshot(current_model="   ", agent_version="")
+        assert "current_model" not in snapshot
+        assert "agent_version" not in snapshot
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__]))

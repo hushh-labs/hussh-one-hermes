@@ -139,13 +139,26 @@ class HusshVaultBridge:
         """
         with self._presence_lock:
             if self._presence is None:
-                from .presence import PresencePublisher, build_snapshot
+                from .presence import (
+                    PresencePublisher,
+                    agent_version,
+                    build_snapshot,
+                    current_model,
+                )
 
+                # The model and version are read inside the lambda, per push,
+                # so each push carries the pin at that moment. Pushes happen on
+                # unlock and on the 600s keepalive; nothing fires one on a
+                # model change, so a new pin reaches One on the next push, and
+                # what is reported is the CONFIGURED model, not proof that it
+                # is loaded.
                 self._presence = PresencePublisher(
                     publish=self.identity.post_heartbeat,
                     snapshot=lambda: build_snapshot(
+                        current_model=current_model(),
                         active_sessions=1 if self._vault_key is not None else 0,
                         busy=self._device_sync_status == "syncing",
+                        agent_version=agent_version(),
                     ),
                 )
             return self._presence
@@ -175,7 +188,11 @@ class HusshVaultBridge:
         }
 
     def begin_onboarding(
-        self, *, device_name: str, reconnect: bool = False
+        self,
+        *,
+        device_name: str,
+        reconnect: bool = False,
+        environment: str | None = None,
     ) -> dict[str, Any]:
         """Open One's browser approval and continue vault setup locally.
 
@@ -195,6 +212,12 @@ class HusshVaultBridge:
 
         Switching accounts is still the explicit disconnect path, because that
         custody belongs to the account being left.
+
+        ``environment`` (``"uat"`` or ``"production"``) applies to a fresh
+        connect only. A repair stays in the environment the identity was
+        enrolled in: the device row it replaces, the vault envelope and the
+        replica all belong there, and an argument cannot move them. Moving
+        environments is a disconnect followed by a connect.
         """
         state = self.identity.read_state()
         connected = state is not None and bool(state.account_email)
@@ -203,13 +226,27 @@ class HusshVaultBridge:
                 "This Hermes profile is already connected. Disconnect it before choosing another account."
             )
         self._onboarding_status = "waiting_for_browser_approval"
+        target_environment: str | None
+        if connected:
+            target_environment = state.environment
+        elif state is not None and not str(environment or "").strip():
+            # A legacy state being repaired keeps its own environment unless
+            # asked otherwise: the device row it replaces lives there.
+            target_environment = state.environment
+        else:
+            target_environment = environment
         result = self.identity.open_authorization(
             device_name=device_name,
             replaces_device_id=state.device_id if state is not None else None,
             on_connected=self._continue_native_enrollment,
             expected_account_email=state.account_email if connected else None,
+            environment=target_environment,
         )
-        return {**result, "mode": "reconnect" if connected else "connect"}
+        return {
+            **result,
+            "mode": "reconnect" if connected else "connect",
+            "environment": str(result.get("environment") or target_environment or ""),
+        }
 
     def session_health(self) -> dict[str, Any]:
         """Whether this device's login still reaches Hussh One, and what to do.

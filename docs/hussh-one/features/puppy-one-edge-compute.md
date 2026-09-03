@@ -124,6 +124,22 @@ The snapshot carries brand, processor, RAM and battery. Names only: brand
 describes a machine, a serial number identifies one. A desktop reports **no
 battery** rather than 0% — the same number and the opposite fact.
 
+The snapshot **is** the request body: every field (`current_model`,
+`agent_version`, `busy`, `active_sessions`, hardware, battery) sits at the top
+level of `POST /api/account/trusted-devices/{device_id}/heartbeat`. Builds from
+2026-08-28 to 2026-09-03 wrapped it under a `heartbeat` key, and the server of
+that time dropped the wrapper, so One stamped `last_heartbeat_at` and stored
+`heartbeat: null` on every push. The server now reads both shapes (top-level
+keys win), so an un-updated install reports too; the flat body is canonical.
+Text fields are capped at 120 characters on the device (`SERVER_TEXT_MAX`) to
+match One's cap, so a long model id can never be the reason a beat is refused.
+
+`current_model` is the **configured** pin (`model.default`), read inside the
+snapshot lambda per push, together with `agent_version`; either reader failing
+yields "" and the field is omitted, never a blocked heartbeat. Pushes happen on
+unlock and on the keepalive, so a new pin reaches One on the next push, and the
+devices page is showing the pin, not proof that the model is loaded.
+
 ## Upstream safety
 
 This fork syncs from `NousResearch/hermes-agent` almost daily. Everything here

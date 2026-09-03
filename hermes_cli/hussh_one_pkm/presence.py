@@ -37,6 +37,16 @@ KEEPALIVE_INTERVAL_SECONDS = 600.0
 # A burst of transitions (a model load emits several) collapses into one push.
 MIN_PUSH_INTERVAL_SECONDS = 5.0
 
+#: One keeps at most this many characters of any text field (the service's
+#: ``_HEARTBEAT_MAX_TEXT``). Capped here as well so a long LM Studio model id
+#: can never be the reason a heartbeat is refused: the beat is the liveness
+#: signal, and a device that cannot land one reads as gone while it is fine.
+SERVER_TEXT_MAX = 120
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()[:SERVER_TEXT_MAX]
+
 
 class PresencePublisher:
     """Coalesce runtime transitions into pushes, with a keepalive underneath."""
@@ -161,6 +171,45 @@ class PresencePublisher:
         return self.on_event("flush", force=True)
 
 
+def current_model_from_config(cfg: Any) -> str:
+    """The pinned model in a loaded config, read the way ``agent_section`` reads it.
+
+    ``model.default`` wins, ``model.model`` is the legacy spelling, and anything
+    unreadable is "" so the snapshot simply omits the field rather than
+    reporting a model that is not there.
+    """
+    if not isinstance(cfg, dict):
+        return ""
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    return str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+
+
+def current_model() -> str:
+    """The model pinned in config right now; "" when the config cannot be read.
+
+    Read at call time, never cached: the point of a transition push is to show
+    the pin at the moment of the push, and a config problem must degrade the
+    reading, never block the heartbeat that carries it.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return current_model_from_config(load_config_readonly())
+    except Exception:  # noqa: BLE001 - an unreadable config must not block a heartbeat
+        logger.debug("current model unavailable", exc_info=True)
+        return ""
+
+
+def agent_version() -> str:
+    """This Hermes build's version; "" when it cannot be determined."""
+    try:
+        from hermes_cli import __version__
+
+        return str(__version__ or "").strip()
+    except Exception:  # noqa: BLE001 - a missing version must not block a heartbeat
+        return ""
+
+
 def build_snapshot(
     *,
     current_model: str = "",
@@ -177,12 +226,12 @@ def build_snapshot(
     of which would identify the machine rather than describe it.
     """
     snapshot: dict[str, Any] = {
-        "current_model": current_model,
+        "current_model": _text(current_model),
         "active_sessions": max(0, int(active_sessions)),
         "busy": bool(busy),
     }
     if agent_version:
-        snapshot["agent_version"] = agent_version
+        snapshot["agent_version"] = _text(agent_version)
 
     try:
         from hermes_cli.hussh_one_host_metrics import host_hardware
@@ -191,7 +240,7 @@ def build_snapshot(
         for key in ("brand", "processor"):
             value = hardware.get(key)
             if value:
-                snapshot[key] = str(value)
+                snapshot[key] = _text(value)
         ram_total = hardware.get("ram_total_gb")
         if isinstance(ram_total, (int, float)) and ram_total > 0:
             snapshot["ram_total_gb"] = round(float(ram_total), 2)

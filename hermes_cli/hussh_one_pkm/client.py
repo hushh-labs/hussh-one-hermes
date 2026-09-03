@@ -29,9 +29,25 @@ from .keychain import MacOSKeychain
 
 UAT_API_BASE = "https://api.uat.hushh.ai"
 UAT_WEB_BASE = "https://uat.one.hushh.ai"
+PRODUCTION_API_BASE = "https://api.hushh.ai"
+PRODUCTION_WEB_BASE = "https://one.hushh.ai"
+# The environments a device may enroll against. UAT and production are two
+# deployments of the same Firebase project behind different hosts, so only the
+# API and web bases differ and the one identity-provider key below serves both.
+# The names are the ones the One web binds into the passkey vault-handoff AAD
+# ("production" on one.hushh.ai, "uat" elsewhere); a different spelling here
+# would make every handoff fail to decrypt.
+ENVIRONMENTS: dict[str, tuple[str, str]] = {
+    "uat": (UAT_API_BASE, UAT_WEB_BASE),
+    "production": (PRODUCTION_API_BASE, PRODUCTION_WEB_BASE),
+}
+DEFAULT_ENVIRONMENT = "uat"
+_ENVIRONMENT_ALIASES = {"prod": "production"}
 # Firebase web API keys are public project identifiers, not credentials. The
-# refresh credential created with this key remains Keychain-only.
+# refresh credential created with this key remains Keychain-only. UAT and
+# production share one Firebase project, so this one key serves both.
 UAT_FIREBASE_WEB_API_KEY = "AIzaSyAJ0RDWrBYF6yIDvwdyoAVO4K5QkL218Yc"
+FIREBASE_WEB_API_KEY = UAT_FIREBASE_WEB_API_KEY
 VAULT_HANDOFF_ALGORITHM = "X25519-AES256-GCM"
 VAULT_HANDOFF_VERSION = "hussh-one-trusted-device-vault-handoff-v1"
 
@@ -51,6 +67,47 @@ class HusshSessionExpiredError(HusshIdentityError):
     it. Conflating the two is what made an expired session look like a reason
     to disconnect.
     """
+
+
+def default_environment() -> str:
+    """``hussh_one.environment`` from config.yaml; ``"uat"`` when unset.
+
+    Read live rather than cached, so a person who sets the key and then runs
+    ``/hussh-one connect`` gets it on that connect, not after a restart. Any
+    failure to read the config, or an empty value, falls back to UAT rather
+    than refusing: a config problem must never make enrollment impossible.
+    The value is not validated here; ``resolve_environment`` does that, so a
+    misspelt key is named as such instead of silently becoming UAT.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        value = cfg_get(load_config_readonly(), "hussh_one", "environment")
+    except Exception:  # noqa: BLE001 - an unreadable config falls back to UAT
+        return DEFAULT_ENVIRONMENT
+    name = str(value or "").strip()
+    return name or DEFAULT_ENVIRONMENT
+
+
+def resolve_environment(name: str | None) -> str:
+    """Canonical environment name for ``name``; the config default when blank.
+
+    Case-insensitive, and ``prod`` is accepted for ``production``. Anything
+    else is refused by name: an environment is the pair of hosts this machine
+    will hand an authorization code to, so a typo must not become a guess.
+    """
+    candidate = str(name or "").strip()
+    if not candidate:
+        candidate = default_environment()
+    canonical = candidate.lower()
+    canonical = _ENVIRONMENT_ALIASES.get(canonical, canonical)
+    if canonical not in ENVIRONMENTS:
+        accepted = " and ".join(f'"{key}"' for key in ENVIRONMENTS)
+        raise HusshIdentityError(
+            f'Unknown Hussh One environment "{candidate}". '
+            f"Accepted values are {accepted}."
+        )
+    return canonical
 
 
 def _profile_id(profile_home: Path) -> str:
@@ -178,6 +235,7 @@ class HusshIdentityClient:
         replaces_device_id: str | None = None,
         on_connected: Callable[[bytes | None], None] | None = None,
         expected_account_email: str | None = None,
+        environment: str | None = None,
     ) -> dict[str, Any]:
         """Open a browser approval, optionally to repair an existing device.
 
@@ -186,7 +244,17 @@ class HusshIdentityClient:
         local state is overwritten. Without it, a repair could silently rebind
         a machine that still holds one account's vault envelope and encrypted
         replica to a different account's identity.
+
+        ``environment`` names which One this device links to (``"uat"`` or
+        ``"production"``); blank means ``hussh_one.environment`` from config,
+        then UAT. It is resolved exactly once, here, and carried on the
+        pending authorization so the code exchange goes to the same API the
+        approval page belongs to. A code minted by one host and handed to the
+        other would be refused at best and, at worst, bind this machine to an
+        identity its browser approval never saw.
         """
+        environment_name = resolve_environment(environment)
+        api_base, web_base = ENVIRONMENTS[environment_name]
         verifier = secrets.token_urlsafe(64)[:86]
         challenge = (
             base64
@@ -233,6 +301,9 @@ class HusshIdentityClient:
                 "on_connected": on_connected,
                 "vault_handoff_private_key": vault_handoff_private_key,
                 "expected_account_email": (expected_account_email or "").strip().lower(),
+                "environment": environment_name,
+                "api_base": api_base,
+                "web_base": web_base,
             }
 
         if superseded is not None and superseded.get("status") == "waiting":
@@ -259,7 +330,7 @@ class HusshIdentityClient:
             request_params["replaces_device_id"] = replaces_device_id
         params = urllib.parse.urlencode(request_params)
         authorization_url = (
-            f"{UAT_WEB_BASE}/one/profile/security/devices/authorize?{params}"
+            f"{web_base}/one/profile/security/devices/authorize?{params}"
         )
         threading.Thread(
             target=self._serve_authorization,
@@ -270,6 +341,8 @@ class HusshIdentityClient:
             "status": "waiting",
             "authorization_url": authorization_url,
             "expires_in": 300,
+            "environment": environment_name,
+            "web_base": web_base,
         }
 
     def open_authorization(
@@ -279,12 +352,14 @@ class HusshIdentityClient:
         replaces_device_id: str | None = None,
         on_connected: Callable[[bytes | None], None] | None = None,
         expected_account_email: str | None = None,
+        environment: str | None = None,
     ) -> dict[str, Any]:
         result = self.start_authorization(
             device_name=device_name,
             replaces_device_id=replaces_device_id,
             on_connected=on_connected,
             expected_account_email=expected_account_email,
+            environment=environment,
         )
         webbrowser.open(result["authorization_url"])
         return result
@@ -326,8 +401,22 @@ class HusshIdentityClient:
                 raise HusshIdentityError(
                     result.get("error") if result else "Authorization timed out."
                 )
+            # The environment chosen when this approval started, never a
+            # constant: the code came from that environment's approval page
+            # and is redeemable only against its API. The defaults cover a
+            # pending record written before the choice existed.
+            with self._pending_lock:
+                pending = (
+                    self._pending
+                    if self._pending is not None
+                    and self._pending.get("server") is server
+                    else {}
+                )
+                api_base = str(pending.get("api_base") or UAT_API_BASE)
+                web_base = str(pending.get("web_base") or UAT_WEB_BASE)
+                environment = str(pending.get("environment") or DEFAULT_ENVIRONMENT)
             exchange = self.http.post(
-                f"{UAT_API_BASE}/api/account/trusted-device-authorizations/exchange",
+                f"{api_base}/api/account/trusted-device-authorizations/exchange",
                 json={"code": result["code"], "code_verifier": verifier},
             )
             exchange.raise_for_status()
@@ -347,6 +436,9 @@ class HusshIdentityClient:
                 device_id=str(payload["device_id"]),
                 profile_id=self.profile_id,
                 account_email=str(payload.get("account_email") or "").strip(),
+                api_base=api_base,
+                web_base=web_base,
+                environment=environment,
             )
             if not state.account_email:
                 raise HusshIdentityError(
@@ -636,6 +728,14 @@ class HusshIdentityClient:
         call ``auth_headers``, which refreshes the token and runs the revocation
         check -- a check that can seal the device. Telemetry must never be able
         to destroy local data as a side effect of being sent.
+
+        The snapshot IS the request body: every telemetry field
+        (``current_model``, ``busy``, ``active_sessions``, hardware, battery)
+        sits at the top level. Builds from 2026-08-28 to 2026-09-03 wrapped it
+        under a ``heartbeat`` key, and the server of that time read only
+        top-level fields, so UAT stamped ``last_heartbeat_at`` and stored
+        ``heartbeat: null`` on every push. The server has since learned to
+        read both shapes; the flat body is canonical.
         """
         state = self.read_state()
         if state is None or not self._id_token:
@@ -645,7 +745,7 @@ class HusshIdentityClient:
                 f"{state.api_base}/api/account/trusted-devices/"
                 f"{state.device_id}/heartbeat",
                 headers={"Authorization": f"Bearer {self._id_token}"},
-                json={"heartbeat": snapshot},
+                json=snapshot,
             )
         except Exception:
             return False

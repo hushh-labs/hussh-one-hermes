@@ -13614,6 +13614,10 @@ class HusshOneConnectRequest(BaseModel):
     # the same account; a different one is refused rather than written over
     # custody that belongs to the account being left.
     reconnect: bool = False
+    # Which One to link to on a fresh connect: "uat" or "production". Blank
+    # means hussh_one.environment from config, then UAT. A reconnect repairs
+    # the identity's own environment and ignores this.
+    environment: Optional[str] = None
 
 
 class HusshOneNativeVaultEnrollRequest(BaseModel):
@@ -13796,10 +13800,12 @@ async def hussh_one_connect(body: HusshOneConnectRequest, request: Request):
                     bridge.begin_onboarding,
                     device_name=body.device_name,
                     reconnect=True,
+                    environment=body.environment,
                 )
             return await run_in_threadpool(
                 bridge.identity.start_authorization,
                 device_name=body.device_name,
+                environment=body.environment,
             )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

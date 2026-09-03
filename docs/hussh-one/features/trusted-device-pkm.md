@@ -149,16 +149,40 @@ Disconnect revokes the server-side device, disables the native connector,
 deletes local identity, envelope, and ciphertext-replica state, and removes
 related Keychain items.
 
-The product currently selects the immutable UAT bundle:
+A device links to one of two immutable environment bundles. Both are
+deployments of the same Firebase project behind different hosts, so they share
+the checked-in public Firebase client identifier and differ only in their two
+bases:
 
-- One web: `https://uat.one.hushh.ai`
-- Account/PKM API: `https://api.uat.hushh.ai`
-- Firebase public client identifier: the checked-in UAT value
-- Trusted-device admission: backend feature flag plus explicit allowlist
+| Environment | One web | Account/PKM API |
+| --- | --- | --- |
+| `uat` (default) | `https://uat.one.hushh.ai` | `https://api.uat.hushh.ai` |
+| `production` | `https://one.hushh.ai` | `https://api.hushh.ai` |
 
-Vault material is never used to select an environment. A later production
-switch must use an immutable production bundle, require disconnect and local
-custody cleanup first, and reject arbitrary custom origins.
+Trusted-device admission on either host is the backend feature flag plus its
+explicit allowlist.
+
+The environment is chosen once, when the browser approval starts, and the
+choice travels with that approval: the code exchange is posted to the same API
+the approval page belongs to, and the resulting identity records
+`environment`, `api_base` and `web_base`, which every later call (device
+status, heartbeat, vault, replica sync) reads back. Three ways to choose, in
+order of precedence:
+
+1. `/hussh-one connect production` (or `connect prod`, `connect uat`) names it
+   for that connect. The dashboard's `POST /api/hussh-one/connect` takes the
+   same value in its `environment` field.
+2. `hussh_one.environment: production` in `config.yaml` sets the default for a
+   bare `/hussh-one connect`.
+3. Neither set means `uat`.
+
+Names are case-insensitive. Anything other than `uat` and `production` is
+refused by name; custom origins are not accepted, and vault material is never
+used to select an environment. `/hussh-one reconnect` repairs the identity in
+the environment it was enrolled in and ignores any argument, because the
+device row it replaces, the vault envelope and the encrypted replica all live
+there. Moving a machine between environments is `/hussh-one disconnect
+confirm` (local custody cleanup) followed by a connect on the other one.
 
 ## Browser-to-Hermes handoff
 
@@ -241,7 +265,7 @@ send a passphrase or recovery key to the model.
 
 | Command | Meaning |
 | --- | --- |
-| `/hussh-one connect` | Choose and approve a One account in the browser; never accepts an email typed in chat |
+| `/hussh-one connect [uat\|production]` | Choose and approve a One account in the browser on that environment (default: `hussh_one.environment`, else `uat`); never accepts an email typed in chat |
 | `/hussh-one enroll` | Resume local custody setup; passkey first when available, protected passphrase otherwise |
 | `/hussh-one status` | Show the verified email, environment, device, enrollment, lock, and sync state |
 | `/hussh-one unlock` | Open the existing Keychain-bound envelope |
