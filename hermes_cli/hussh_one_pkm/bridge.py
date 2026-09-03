@@ -235,10 +235,70 @@ class HusshVaultBridge:
             "remedy": remedies.get(session, ""),
         }
 
+    def _rebind_envelope_to_current_device(self) -> str:
+        """Re-bind an existing vault envelope to this profile's new device id.
+
+        The envelope's AEAD is bound to (profile_id, user_id, device_id), and
+        the server mints a NEW device id for every approval -- including a
+        reconnect that replaces the old row. So a repair that promised to keep
+        the vault left an envelope whose device id no longer matched the stored
+        identity, and every later unlock raised "the local vault envelope
+        identity does not match". The only exit was the destructive disconnect:
+        exactly the trap reconnect exists to remove, one level deeper.
+
+        The key material itself is unchanged, so this unwraps with the envelope's
+        own binding and re-wraps under the new device id using the same
+        keychain-held wrapping key. It refuses across accounts or profiles: a
+        different user or profile means the custody belongs to someone else, and
+        rebinding it would hand one account's vault to another.
+
+        Never destructive. Any failure leaves the envelope exactly as it was and
+        returns a status the caller can surface.
+        """
+        state = self.identity.read_state()
+        if state is None or not self.envelope_path.exists():
+            return "no_envelope"
+        try:
+            envelope = read_envelope(self.envelope_path)
+        except Exception:
+            return "unreadable_envelope"
+        if envelope.device_id == state.device_id:
+            return "already_bound"
+        if (
+            envelope.user_id != state.user_id
+            or envelope.profile_id != self.identity.profile_id
+        ):
+            # Different account or profile: not ours to rebind.
+            return "identity_mismatch"
+        wrapping_key = self.keychain.get(self._account("device-wrapping-key"))
+        if wrapping_key is None:
+            return "no_wrapping_key"
+        try:
+            vault_key = unwrap_local_vault_key(
+                envelope=envelope, device_wrapping_key=wrapping_key
+            )
+            rebound = wrap_local_vault_key(
+                vault_key=vault_key,
+                device_wrapping_key=wrapping_key,
+                profile_id=self.identity.profile_id,
+                user_id=state.user_id,
+                device_id=state.device_id,
+            )
+            write_envelope(self.envelope_path, rebound)
+        except Exception:
+            return "rebind_failed"
+        return "rebound"
+
     def _continue_native_enrollment(self, passkey_vault_key: bytes | None = None) -> None:
         """Run the password/recovery ceremony outside chat after browser approval."""
         if self.envelope_path.exists():
-            self._onboarding_status = "ready"
+            # A reconnect lands here: the envelope survived, but the approval
+            # gave this machine a new device id, so the envelope must follow it
+            # or the vault it "kept" can never be opened again.
+            outcome = self._rebind_envelope_to_current_device()
+            self._onboarding_status = (
+                "ready" if outcome in {"rebound", "already_bound"} else f"vault_rebind_{outcome}"
+            )
             return
         try:
             from .native_prompt import (

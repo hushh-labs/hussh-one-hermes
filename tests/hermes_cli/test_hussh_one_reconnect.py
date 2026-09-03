@@ -359,6 +359,193 @@ class TestAnAbandonedApprovalNeverLocksTheOwnerOut:
         client.cancel_pending_authorization()
 
 
+class TestOnlyAnAnswerMaySeal:
+    """Sealing destroys the vault, so a server that fails to answer must not.
+
+    `id_token` treated ANY non-200 from the device list as revocation, and
+    `_handle_revoked` destroys the envelope, the wrapping key, the encrypted PKM
+    replica and Source Library custody. A 502 during a backend deploy would have
+    wiped the owner's local data -- and the status surfaces added this session
+    (the resource monitor's link section, the 15-minute doctor) call this path
+    on a timer, so the blast radius grew before anyone noticed the trigger.
+    """
+
+    def _client(self, tmp_path: Path, *, status_code: int, devices: object):
+        class FakeResponse:
+            def __init__(self) -> None:
+                self.status_code = status_code
+
+            def json(self):
+                if isinstance(devices, Exception):
+                    raise devices
+                return devices
+
+        class FakeHttp:
+            def post(self, url: str, **_kwargs):
+                return FakeResponse() if False else _TokenResponse()
+
+            def get(self, url: str, **_kwargs):
+                return FakeResponse()
+
+        class _TokenResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return
+
+            def json(self):
+                return {"id_token": "fresh-token", "expires_in": "3600"}
+
+        client = _connected_client(tmp_path, http=FakeHttp())
+        sealed: list[bool] = []
+        client.on_revoked = lambda: sealed.append(True)
+        return client, sealed
+
+    def test_a_server_error_never_seals(self, tmp_path: Path) -> None:
+        client, sealed = self._client(tmp_path, status_code=503, devices={"devices": []})
+
+        with pytest.raises(HusshIdentityError, match="could not confirm"):
+            client.id_token()
+
+        assert sealed == [], "a 503 destroyed local custody"
+
+    def test_an_unreadable_body_never_seals(self, tmp_path: Path) -> None:
+        client, sealed = self._client(
+            tmp_path, status_code=200, devices=ValueError("not json")
+        )
+
+        with pytest.raises(HusshIdentityError, match="unreadable"):
+            client.id_token()
+
+        assert sealed == []
+
+    def test_an_actual_revocation_still_seals(self, tmp_path: Path) -> None:
+        # The server answered, and this device is not in the active list.
+        client, sealed = self._client(
+            tmp_path,
+            status_code=200,
+            devices={"devices": [{"device_id": "someone-else", "status": "active"}]},
+        )
+
+        with pytest.raises(HusshIdentityError, match="revoked"):
+            client.id_token()
+
+        assert sealed == [True], "a real revocation must still seal"
+
+
+class TestReconnectKeepsTheVaultOpenable:
+    """The repair promises the vault survives. It has to still open.
+
+    The envelope's AEAD binds (profile_id, user_id, device_id), and every
+    approval mints a NEW device id -- including a reconnect that replaces the
+    row. Without rebinding, the envelope "kept" by the repair could never be
+    unwrapped again: every unlock raised "the local vault envelope identity does
+    not match", and the only exit was the destructive disconnect.
+    """
+
+    def _bridge_with_envelope(self, tmp_path: Path, *, old_device: str, new_device: str):
+        import os
+
+        from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
+        from hermes_cli.hussh_one_pkm.crypto import (
+            read_envelope,
+            unwrap_local_vault_key,
+            wrap_local_vault_key,
+            write_envelope,
+        )
+
+        bridge = HusshVaultBridge(profile_home=tmp_path)
+        vault_key = os.urandom(32)
+        wrapping_key = os.urandom(32)
+        bridge.keychain.set(bridge._account("device-wrapping-key"), wrapping_key)
+
+        envelope = wrap_local_vault_key(
+            vault_key=vault_key,
+            device_wrapping_key=wrapping_key,
+            profile_id=bridge.identity.profile_id,
+            user_id="user-1",
+            device_id=old_device,
+        )
+        bridge.envelope_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        write_envelope(bridge.envelope_path, envelope)
+
+        class _Identity:
+            profile_id = bridge.identity.profile_id
+
+            def lock_identity(self) -> None:
+                return
+
+            def read_state(self):
+                return IdentityState(
+                    user_id="user-1",
+                    device_id=new_device,
+                    profile_id=self.profile_id,
+                    account_email="owner@example.com",
+                )
+
+        bridge.identity = _Identity()  # type: ignore[assignment]
+        return bridge, vault_key, wrapping_key, read_envelope, unwrap_local_vault_key
+
+    def test_a_new_device_id_rebinds_and_the_same_key_comes_back(
+        self, tmp_path: Path
+    ) -> None:
+        bridge, vault_key, wrapping_key, read_envelope, unwrap = self._bridge_with_envelope(
+            tmp_path, old_device="tdv_old", new_device="tdv_new"
+        )
+
+        assert bridge._rebind_envelope_to_current_device() == "rebound"
+
+        rebound = read_envelope(bridge.envelope_path)
+        assert rebound.device_id == "tdv_new"
+        # The vault key itself must be untouched, or the "kept" vault is a
+        # different vault.
+        assert unwrap(envelope=rebound, device_wrapping_key=wrapping_key) == vault_key
+
+    def test_an_unchanged_device_id_is_left_alone(self, tmp_path: Path) -> None:
+        bridge, _key, _wk, _read, _unwrap = self._bridge_with_envelope(
+            tmp_path, old_device="tdv_same", new_device="tdv_same"
+        )
+
+        assert bridge._rebind_envelope_to_current_device() == "already_bound"
+
+    def test_a_different_account_is_never_rebound(self, tmp_path: Path) -> None:
+        bridge, _key, _wk, read_envelope, _unwrap = self._bridge_with_envelope(
+            tmp_path, old_device="tdv_old", new_device="tdv_new"
+        )
+
+        class _OtherAccount:
+            profile_id = bridge.identity.profile_id
+
+            def lock_identity(self) -> None:
+                return
+
+            def read_state(self):
+                return IdentityState(
+                    user_id="someone-else",
+                    device_id="tdv_new",
+                    profile_id=self.profile_id,
+                    account_email="other@example.com",
+                )
+
+        bridge.identity = _OtherAccount()  # type: ignore[assignment]
+
+        assert bridge._rebind_envelope_to_current_device() == "identity_mismatch"
+        # Untouched: this custody belongs to the original account.
+        assert read_envelope(bridge.envelope_path).device_id == "tdv_old"
+
+    def test_a_missing_wrapping_key_is_reported_not_destructive(
+        self, tmp_path: Path
+    ) -> None:
+        bridge, _key, _wk, read_envelope, _unwrap = self._bridge_with_envelope(
+            tmp_path, old_device="tdv_old", new_device="tdv_new"
+        )
+        bridge.keychain.delete(bridge._account("device-wrapping-key"))
+
+        assert bridge._rebind_envelope_to_current_device() == "no_wrapping_key"
+        assert bridge.envelope_path.exists()
+        assert read_envelope(bridge.envelope_path).device_id == "tdv_old"
+
+
 class TestSessionHealth:
     def test_it_names_the_remedy_for_an_expired_login(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

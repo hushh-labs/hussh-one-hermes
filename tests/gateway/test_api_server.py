@@ -715,7 +715,15 @@ class TestHealthDetailedEndpoint:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data["status"] == "ok"
+                # NOT `== "ok"`. The overall status folds in a disk check, so on
+                # any host above the disk threshold this asserted the machine's
+                # free space rather than the endpoint's behaviour, and failed
+                # for a reason the test has no opinion about. What this test is
+                # for is that the endpoint answers with a well-formed readiness
+                # document; the per-check statuses below are the real subject.
+                assert data["status"] in {"ok", "degraded"}
+                assert data["readiness"]["checks"]["state_db"]["status"] == "ok"
+                assert data["readiness"]["checks"]["model"]["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
@@ -3328,6 +3336,34 @@ class TestHusshOneResources:
         }
 
 
+class TestRoutesAreActuallyRegistered:
+    """The harness hand-registers routes, so it cannot see a missing one.
+
+    `_create_app` above wires each handler explicitly. That is convenient, and
+    it means deleting a row from `_http_route_table()` leaves every handler test
+    green while real clients get 404 — which is exactly the bug
+    `POST /api/model/set` shipped as (the handler lived only in the dashboard).
+    These assert the table itself.
+    """
+
+    def test_the_routes_this_server_advertises_are_in_its_table(self, adapter):
+        table = {(method, path) for method, path, _handler in adapter._http_route_table()}
+
+        assert ("POST", "/api/model/set") in table
+        assert ("GET", "/api/hussh-one/resources") in table
+        assert ("GET", "/api/model/options") in table
+
+    def test_every_advertised_endpoint_has_a_route(self, adapter):
+        """Capabilities must not promise an endpoint the router does not serve."""
+        table = {(method, path) for method, path, _handler in adapter._http_route_table()}
+        advertised = {
+            ("POST", "/api/model/set"),
+            ("GET", "/api/hussh-one/resources"),
+        }
+
+        assert advertised <= table
+
+
 class TestModelSet:
     """POST /api/model/set on the loopback API server.
 
@@ -3410,6 +3446,30 @@ class TestModelSet:
         assert data["confirm_required"] is True
         assert data["confirm_message"] == "gpt-5 bills per token."
         assert applied == []  # nothing written until the caller confirms
+
+    @pytest.mark.asyncio
+    async def test_it_refuses_to_take_an_endpoint_or_credential_from_the_body(self, adapter):
+        """The loopback key changes which model answers, not where it lives.
+
+        Accepting base_url/api_key would let this route persist an arbitrary
+        endpoint and credential (and register a custom provider) — a much larger
+        authority than "pick a model". `profile` is refused for the same reason
+        every other route on this server scopes its key per profile.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for field, value in (
+                ("base_url", "https://attacker.example/v1"),
+                ("api_key", "sk-attacker"),
+                ("profile", "someone-else"),
+            ):
+                resp = await cli.post(
+                    "/api/model/set",
+                    json={"provider": "lmstudio", "model": "m", field: value},
+                )
+                assert resp.status == 400, field
+                body = await resp.json()
+                assert field in body["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_main_scope_requires_provider_and_model(self, adapter):

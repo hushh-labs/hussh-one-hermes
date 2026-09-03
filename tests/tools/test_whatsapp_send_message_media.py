@@ -19,6 +19,18 @@ import pytest
 from plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_send
 
 
+def _default_display_name() -> str:
+    """The header names the model that would actually answer.
+
+    Held as a literal here once, it drifted when the catalog default moved and
+    these tests failed for a reason they have no opinion about.
+    """
+    from hermes_cli.hussh_one_identity import display_model_name
+
+    return display_model_name(None)
+
+
+
 # ---------------------------------------------------------------------------
 # _bridge_media_type
 # ---------------------------------------------------------------------------
@@ -125,7 +137,7 @@ def test_text_plus_mixed_media_routes_native_types():
         # text first, then three media uploads in order
         assert calls[0][0].endswith("/send")
         assert calls[0][1]["message"] == (
-            "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nhello"
+            f"🤫 Hussh One\n{_default_display_name()} · [A]\n════════════════════\nhello"
         )
         media_types = [c[1]["mediaType"] for c in calls if c[0].endswith("/send-media")]
         assert media_types == ["image", "video", "audio"]
@@ -243,7 +255,7 @@ def test_caption_rides_media_no_separate_text_send():
         assert len(calls) == 1
         assert calls[0][0].endswith("/send-media")
         assert calls[0][1]["caption"] == (
-            "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\n"
+            f"🤫 Hussh One\n{_default_display_name()} · [A]\n════════════════════\n"
             "2-bedroom floor plan"
         )
         assert calls[0][1]["mediaType"] == "image"
@@ -299,5 +311,5 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == (
-        "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nfloor plan"
+        f"🤫 Hussh One\n{_default_display_name()} · [A]\n════════════════════\nfloor plan"
     )

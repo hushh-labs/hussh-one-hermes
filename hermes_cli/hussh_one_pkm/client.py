@@ -496,9 +496,30 @@ class HusshIdentityClient:
             f"{state.api_base}/api/account/trusted-devices",
             headers={"Authorization": f"Bearer {self._id_token}"},
         )
-        if devices.status_code != 200 or not any(
+        # Only an ANSWER may seal. `_handle_revoked` destroys the vault
+        # envelope, the device wrapping key, the encrypted PKM replica and
+        # Source Library custody, so the bar for reaching it is that the server
+        # actually said this device is not active. A 500, 502, 503, 429 or an
+        # unparseable body is the server failing to answer, and treating that
+        # as revocation meant a backend blip during a deploy could destroy the
+        # owner's local data. This is the same fail-safe `device_status` states
+        # in its own docstring: every ambiguous outcome must be
+        # indistinguishable from "don't act".
+        if devices.status_code != 200:
+            self.lock_identity()
+            raise HusshIdentityError(
+                "Hussh One could not confirm this device right now; nothing was changed locally."
+            )
+        try:
+            listed = devices.json().get("devices") or []
+        except Exception:
+            self.lock_identity()
+            raise HusshIdentityError(
+                "Hussh One returned an unreadable device list; nothing was changed locally."
+            ) from None
+        if not any(
             item.get("device_id") == state.device_id and item.get("status") == "active"
-            for item in (devices.json().get("devices") or [])
+            for item in listed
         ):
             self._handle_revoked()
             raise HusshIdentityError("This Hussh trusted device was revoked.")

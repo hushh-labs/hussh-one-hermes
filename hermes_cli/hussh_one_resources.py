@@ -251,8 +251,12 @@ def link_section(*, ttl: float = _LINK_TTL_SECONDS, now: Optional[float] = None)
         }
 
     value = _safe("link", _probe, {}) or {}
-    _link_cache["at"] = moment
-    _link_cache["value"] = value
+    # Only cache an answer. Caching an empty probe result would keep the link
+    # section missing for the full TTL after the transient failure that caused
+    # it had already cleared.
+    if value:
+        _link_cache["at"] = moment
+        _link_cache["value"] = value
     return dict(value)
 
 

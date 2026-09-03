@@ -3464,12 +3464,36 @@ class APIServerAdapter(BasePlatformAdapter):
         provider = str(body.get("provider") or "").strip()
         model = str(body.get("model") or "").strip()
         task = str(body.get("task") or "").strip().lower()
-        base_url = str(body.get("base_url") or "").strip()
-        api_key = str(body.get("api_key") or "").strip()
         confirm_expensive = _coerce_request_bool(
             body.get("confirm_expensive_model"), default=False
         )
-        profile = body.get("profile")
+        # Deliberately NOT read from the body, unlike the dashboard's own copy
+        # of this route:
+        #
+        #   base_url / api_key — accepting these lets a caller point the agent
+        #   at an arbitrary endpoint with an arbitrary credential and have it
+        #   persisted, including a `custom_providers` entry. "Change which of
+        #   the models you already have answers" is the whole job here;
+        #   "introduce a new endpoint" is a different, larger authority and
+        #   belongs to the dashboard's local-only surface.
+        #
+        #   profile — every other route on this server scopes its key per
+        #   profile (`_expected_api_key`). A body-sourced profile would let one
+        #   profile's key write another profile's config, which is the one
+        #   thing that scoping exists to prevent.
+        base_url = ""
+        api_key = ""
+        profile = None
+        for forbidden in ("base_url", "api_key", "profile"):
+            if body.get(forbidden):
+                return web.json_response(
+                    _openai_error(
+                        f"{forbidden} cannot be set through the API server; "
+                        "use the local dashboard for endpoint and profile changes.",
+                        code="unsupported_field",
+                    ),
+                    status=400,
+                )
         if scope not in {"main", "auxiliary"}:
             return web.json_response(
                 _openai_error("scope must be 'main' or 'auxiliary'.", code="invalid_scope"),
