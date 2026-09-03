@@ -273,6 +273,145 @@ class TestLinkSection:
         assert resources.link_section(now=2000.0) == {}
 
 
+class TestSelectableModels:
+    """What the picker may show: real backends, each model once, build named.
+
+    The raw inventory lists every canonical provider whether or not this
+    machine has credentials, and lists the local server TWICE (`lmstudio` and
+    the user-defined `custom:lmstudio`). The picker built on it showed five
+    dead rows and every local model a second time.
+    """
+
+    OPTIONS = {
+        "model": "google/gemma-4-26b-a4b-qat",
+        "provider": "lmstudio",
+        "providers": [
+            {
+                "slug": "nous",
+                "name": "Nous Portal",
+                "authenticated": False,
+                "models": [],
+                "capabilities": {},
+            },
+            {
+                "slug": "lmstudio",
+                "name": "LM Studio",
+                "authenticated": True,
+                "is_current": True,
+                "models": ["google/gemma-4-26b-a4b-qat", "nvidia/nemotron-3-nano-omni"],
+                "capabilities": {"google/gemma-4-26b-a4b-qat": {"reasoning": True}},
+            },
+            {
+                "slug": "custom:lmstudio",
+                "name": "LM Studio (custom)",
+                "authenticated": True,
+                # The same server again, plus one it also serves.
+                "models": ["google/gemma-4-26b-a4b-qat", "google/gemma-4-12b"],
+                "capabilities": {},
+            },
+            {
+                "slug": "anthropic",
+                "name": "Anthropic",
+                "authenticated": True,
+                "models": ["claude-opus-5"],
+                "capabilities": {},
+            },
+            {
+                "slug": "openrouter",
+                "name": "OpenRouter",
+                "authenticated": True,
+                "models": [],  # authenticated but has nothing to offer
+                "capabilities": {},
+            },
+        ],
+    }
+
+    DETAIL = [
+        {
+            "id": "google/gemma-4-26b-a4b-qat",
+            "compatibility_type": "mlx",
+            "quantization": "4bit",
+            "state": "loaded",
+            "max_context_length": 262144,
+        },
+        {
+            "id": "nvidia/nemotron-3-nano-omni",
+            "compatibility_type": "gguf",
+            "quantization": "Q4_K_M",
+            "state": "not-loaded",
+            "max_context_length": 262144,
+        },
+        {"id": "google/gemma-4-12b", "compatibility_type": "", "quantization": ""},
+    ]
+
+    def _result(self, monkeypatch: pytest.MonkeyPatch):
+        from hermes_cli import hussh_one_lmstudio as lms
+
+        monkeypatch.setattr(lms, "list_models", lambda *a, **k: self.DETAIL)
+        return resources.selectable_models(options=self.OPTIONS)
+
+    def test_an_unauthenticated_provider_never_appears(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._result(monkeypatch)
+        assert "nous" not in {p["id"] for p in result["providers"]}
+
+    def test_an_authenticated_provider_with_nothing_to_offer_is_omitted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._result(monkeypatch)
+        assert "openrouter" not in {p["id"] for p in result["providers"]}
+
+    def test_the_local_server_is_one_row_even_though_it_is_listed_twice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._result(monkeypatch)
+        local = [p for p in result["providers"] if p["onDevice"]]
+
+        assert len(local) == 1, "LM Studio must not appear twice"
+        assert local[0]["id"] == "lmstudio"
+        assert local[0]["isCurrent"] is True
+        ids = [m["id"] for m in local[0]["models"]]
+        # Union of both listings, each id once, in first-seen order.
+        assert ids == [
+            "google/gemma-4-26b-a4b-qat",
+            "nvidia/nemotron-3-nano-omni",
+            "google/gemma-4-12b",
+        ]
+        assert len(ids) == len(set(ids))
+
+    def test_a_local_model_carries_the_build_it_actually_is(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._result(monkeypatch)
+        rows = {m["id"]: m for m in result["providers"][0]["models"]}
+
+        assert rows["google/gemma-4-26b-a4b-qat"]["variant"] == "MLX"
+        assert rows["google/gemma-4-26b-a4b-qat"]["quantization"] == "4bit"
+        assert rows["google/gemma-4-26b-a4b-qat"]["state"] == "loaded"
+        assert rows["nvidia/nemotron-3-nano-omni"]["variant"] == "GGUF"
+        # Unknown build is ABSENT, never guessed: a wrong build label is acted on.
+        assert "variant" not in rows["google/gemma-4-12b"]
+
+    def test_a_cloud_model_is_not_given_a_build(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._result(monkeypatch)
+        anthropic = next(p for p in result["providers"] if p["id"] == "anthropic")
+
+        assert anthropic["onDevice"] is False
+        assert "variant" not in anthropic["models"][0]
+
+    def test_the_current_selection_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = self._result(monkeypatch)
+        assert result["current"] == {
+            "model": "google/gemma-4-26b-a4b-qat",
+            "provider": "lmstudio",
+        }
+
+
 class TestCollectResources:
     def test_the_snapshot_carries_every_section_and_the_runtime_counters(
         self, monkeypatch: pytest.MonkeyPatch

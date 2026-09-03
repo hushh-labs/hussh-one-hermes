@@ -318,7 +318,7 @@ configure_hussh_persona() {
   fi
 
   if [[ ! -f "$destination" ]] \
-    || grep -q '<!-- hussh-one-persona:v1 -->' "$destination" \
+    || grep -q '<!-- hussh-one-persona:v' "$destination" \
     || [[ "$(tr -d '\r\n' < "$destination")" == "$stock_persona" ]]; then
     run_cmd mkdir -p "$HERMES_HOME"
     run_cmd cp "$source" "$destination"

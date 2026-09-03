@@ -2322,6 +2322,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/api/model/options", self._handle_model_options),
             ("POST", "/api/model/set", self._handle_model_set),
             ("GET", "/api/hussh-one/resources", self._handle_hussh_one_resources),
+            ("GET", "/api/hussh-one/models", self._handle_hussh_one_models),
             ("GET", "/v1/capabilities", self._handle_capabilities),
             # Authenticated browser-control surface: POST registration
             # mints a short-lived ticket; the controller then opens the WS with
@@ -3435,6 +3436,40 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    async def _handle_hussh_one_models(self, request: "web.Request") -> "web.Response":
+        """GET /api/hussh-one/models — the models a person can actually choose.
+
+        `/api/model/options` is the full inventory: every canonical provider,
+        credentialled or not, and the local server listed twice (once as
+        `lmstudio`, once as the user-defined `custom:lmstudio`). A picker built
+        on it shows five dead rows and every local model twice.
+
+        This is the same data with the three rules a chooser needs applied
+        once, server-side, so every client gets them: authenticated providers
+        only, one row per real backend, each model once, and for local models
+        the build it actually is (MLX or GGUF, with its quantization) — because
+        two files with the same name are not the same model.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.hussh_one_resources import selectable_models
+
+            # Inventory assembly reads provider catalogs and the local model
+            # server; keep it off the event loop.
+            payload = await asyncio.to_thread(selectable_models)
+            return web.json_response(payload)
+        except Exception:
+            logger.exception("[%s] GET /api/hussh-one/models failed", self.name)
+            return web.json_response(
+                _openai_error(
+                    "Failed to list selectable models.", code="models_unavailable"
+                ),
+                status=500,
+            )
+
     async def _handle_model_set(self, request: "web.Request") -> "web.Response":
         """POST /api/model/set — pin the main (or an auxiliary) model.
 
@@ -3648,6 +3683,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "model_options": True,
                 "model_set": True,
                 "hussh_one_resources": True,
+                "hussh_one_models": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
@@ -3698,6 +3734,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "method": "GET",
                     "path": "/api/hussh-one/resources",
                 },
+                "hussh_one_models": {"method": "GET", "path": "/api/hussh-one/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},

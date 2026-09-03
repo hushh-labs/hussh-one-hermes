@@ -185,6 +185,17 @@ def list_models(
                 "state": str(raw.get("state") or "").strip(),
                 "type": str(raw.get("type") or "").strip(),
                 "max_context_length": _positive_int(raw.get("max_context_length")),
+                # LM Studio is the only source that knows which build of a
+                # model is on disk. Two models with the same name are not the
+                # same file: an MLX 4-bit and a GGUF Q4_K_M differ in speed,
+                # memory and sometimes in what they can do, and the owner
+                # choosing between them needs to see which is which.
+                "compatibility_type": str(raw.get("compatibility_type") or "").strip(),
+                "quantization": str(raw.get("quantization") or "").strip(),
+                "publisher": str(raw.get("publisher") or "").strip(),
+                "capabilities": [
+                    str(c) for c in (raw.get("capabilities") or []) if isinstance(c, str)
+                ],
             }
         )
     return models

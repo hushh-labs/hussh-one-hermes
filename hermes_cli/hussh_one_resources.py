@@ -260,6 +260,158 @@ def link_section(*, ttl: float = _LINK_TTL_SECONDS, now: Optional[float] = None)
     return dict(value)
 
 
+#: LM Studio's `compatibility_type` values, rendered the way people write them.
+_VARIANT_LABELS = {"mlx": "MLX", "gguf": "GGUF"}
+
+
+def _is_local_provider(slug: str) -> bool:
+    """Whether this provider serves models from this machine.
+
+    A user-defined entry pointing at the local server arrives as
+    ``custom:lmstudio``, which is the same LM Studio the canonical ``lmstudio``
+    slug names. Matching only the canonical slug is what let the same ten
+    models appear twice.
+    """
+    lowered = slug.strip().lower()
+    if lowered in LOCAL_PROVIDERS:
+        return True
+    bare = lowered.split(":", 1)[-1]
+    return bare in LOCAL_PROVIDERS
+
+
+def _lmstudio_detail() -> Dict[str, Dict[str, Any]]:
+    """What LM Studio knows about each model on disk, keyed by id."""
+    from hermes_cli import hussh_one_lmstudio as lms
+
+    detail: Dict[str, Dict[str, Any]] = {}
+    for entry in _safe("lmstudio_detail", lms.list_models, []) or []:
+        identifier = str(entry.get("id") or "").strip()
+        if identifier:
+            detail[identifier] = entry
+    return detail
+
+
+def selectable_models(*, options: Optional[dict] = None) -> Dict[str, Any]:
+    """The models a person can actually choose, and nothing else.
+
+    The picker used to render the raw provider inventory, which lists every
+    canonical provider whether or not this machine has credentials for it. The
+    owner scrolled past five dead rows (Nous, Fireworks, OpenRouter, NovitaAI,
+    OpenAI, each with zero models) to reach the ones that exist. Three rules
+    fix that, and they belong here rather than in the browser because they are
+    the same rules for any client:
+
+    * a provider appears only when it is authenticated -- for LM Studio that
+      means reachable, which is the same question for a local server;
+    * a provider with no models does not appear at all;
+    * a model id appears once. LM Studio can report the same name twice, and a
+      list that repeats itself reads as a bug in the agent.
+
+    Each LM Studio model also carries the build it actually is. An MLX 4-bit
+    and a GGUF Q4_K_M of the same name are different files with different
+    speed and memory, so choosing between them blind is choosing at random.
+    """
+    from hermes_cli.inventory import build_model_options_payload, load_picker_context
+
+    payload = (
+        options
+        if isinstance(options, dict)
+        else _safe(
+            "model_options",
+            lambda: build_model_options_payload(
+                load_picker_context(), include_unconfigured=False, refresh=False
+            ),
+            {},
+        )
+        or {}
+    )
+
+    detail = _lmstudio_detail()
+    providers: List[Dict[str, Any]] = []
+    local_bucket: Optional[Dict[str, Any]] = None
+    local_seen: set = set()
+
+    for entry in payload.get("providers") or []:
+        if not isinstance(entry, dict):
+            continue
+        slug = str(entry.get("slug") or entry.get("id") or "").strip()
+        if not slug or not entry.get("authenticated"):
+            continue
+
+        capabilities = entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else {}
+        on_device = _is_local_provider(slug)
+
+        # Every provider that serves this machine's own LM Studio is ONE row.
+        # The inventory reports the same server twice, as `lmstudio` and as the
+        # user-defined `custom:lmstudio`, so the picker listed all ten models
+        # a second time and the agent looked like it was double-counting what
+        # the owner has.
+        seen: set = local_seen if on_device else set()
+        models: List[Dict[str, Any]] = []
+        for raw in entry.get("models") or []:
+            model_id = raw if isinstance(raw, str) else str((raw or {}).get("id") or "")
+            model_id = model_id.strip()
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            row: Dict[str, Any] = {"id": model_id}
+            caps = capabilities.get(model_id) if isinstance(capabilities, dict) else None
+            if isinstance(caps, dict) and caps.get("reasoning") is not None:
+                row["supportsReasoning"] = bool(caps.get("reasoning"))
+            if on_device:
+                info = detail.get(model_id) or {}
+                variant = _VARIANT_LABELS.get(str(info.get("compatibility_type") or "").lower())
+                # Absent means unknown, never guessed: a wrong build label is
+                # worse than none, because it is acted on.
+                if variant:
+                    row["variant"] = variant
+                if info.get("quantization"):
+                    row["quantization"] = info["quantization"]
+                if info.get("state"):
+                    row["state"] = info["state"]
+                if info.get("max_context_length"):
+                    row["contextLength"] = info["max_context_length"]
+            models.append(row)
+
+        if not models:
+            continue
+        if on_device:
+            if local_bucket is None:
+                local_bucket = {
+                    "id": "lmstudio",
+                    "name": "LM Studio",
+                    "onDevice": True,
+                    "authenticated": True,
+                    "isCurrent": bool(entry.get("is_current")),
+                    "models": models,
+                }
+                providers.append(local_bucket)
+            else:
+                local_bucket["models"].extend(models)
+                local_bucket["isCurrent"] = local_bucket["isCurrent"] or bool(
+                    entry.get("is_current")
+                )
+            continue
+        providers.append(
+            {
+                "id": slug,
+                "name": str(entry.get("name") or slug),
+                "onDevice": on_device,
+                "authenticated": True,
+                "isCurrent": bool(entry.get("is_current")),
+                "models": models,
+            }
+        )
+
+    return {
+        "current": {
+            "model": str(payload.get("model") or "") or None,
+            "provider": str(payload.get("provider") or "") or None,
+        },
+        "providers": providers,
+    }
+
+
 def collect_resources(
     *,
     config: Optional[dict] = None,
