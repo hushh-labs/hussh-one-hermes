@@ -180,12 +180,41 @@ change needed.
 |---|---|---|---|---|
 | 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
 | 7.2 Mock provider | ✅ credential-free — **proven with the environment stripped** | testable path | none | — |
-| 7.3 CI coverage | ❌ **PR cannot reach green**; the suite was run locally instead | green in CI | required test jobs are *cancelled* at 31min — runners never assigned | Needs org access: runner capacity |
+| 7.3 CI coverage | ❌ **PR cannot reach green**; the suite was run locally instead | green in CI | the two large-runner jobs are **never assigned a runner** | Needs org access: runner capacity |
 | 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
 Verified live on this machine: `device_status` measured 4 cores / 15.09GB available;
 `decide` routed both presets to cloud with coherent reasons; `plan` returned 4× B200 at
 $84/hr, ~$126 total.
+
+### Why CI cannot tell us — measured, and my earlier reading corrected
+
+I had been reporting that the two required test jobs are "cancelled at exactly 31 minutes."
+That figure does not describe what the runs actually do, and two of the cancellations were
+my own fault. Read off the GitHub API rather than off the review bot's summary:
+
+| Run | `Python tests / Run tests` | Why |
+|---|---|---|
+| `fb837c6` | cancelled at **10s** | The *whole run* was cancelled — jobs already mid-checkout included. I pushed the next commit ~30s later and the concurrency group killed it. Self-inflicted. |
+| `cce8b00` | cancelled at **82s**, no runner ever assigned | The run had already concluded: both blocking lints fail within ~20s, so the aggregator ran and the still-queued jobs were cancelled with it. |
+| `f24d28e0` | **still queued at 18 minutes**, no runner | Not superseded, run not concluded. Same two lint failures as `cce8b00`. |
+
+The third row is the controlled comparison, and it is the answer. Inside that one run every
+`ubuntu-latest` and `macos-latest` job was assigned a runner **within 2–9 seconds** and
+finished; the two jobs labelled `ubuntu-latest-96-core` and `windows-latest-32-core` have no
+`runner_id`, no `runner_name` and no steps after eighteen minutes. The label is the only
+variable. That is a runner-capacity or runner-group configuration problem, and nothing in
+this branch can move it.
+
+It also rules out the hypothesis the second row suggests. Fixing the inherited lint failures
+would **not** free the test jobs: this run has those same failures and is not cancelling
+them — they are simply never scheduled. Worth stating because the opposite conclusion is
+the natural one to draw from `cce8b00` alone, and it would have sent someone to fix the
+wrong thing.
+
+The other lesson is about method: pushing a commit every one to three minutes cancelled
+several runs before they could produce evidence, and then I read the cancellations as data
+about CI rather than as data about my own cadence.
 
 ### What CI could not tell us, run locally instead
 
