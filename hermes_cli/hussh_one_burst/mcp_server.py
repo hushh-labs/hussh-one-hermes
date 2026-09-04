@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from .devices import WORKLOAD_PRESETS, find_workload_preset
 from .hardware import benchmark_hardware, recommend_hardware
 from .placement import decide_placement
-from .telemetry import measure_device
+from .telemetry import MeasuredDevice, measure_device
 from .types import AcceleratorKind, WorkloadEstimate
 
 try:
@@ -86,8 +86,15 @@ def _estimate_from(
     return estimate, "gpu", 1, float(minutes or 0.0), "this workload"
 
 
-def _device_view() -> dict[str, Any]:
-    device = measure_device()
+def _device_view(device: Optional[MeasuredDevice] = None) -> dict[str, Any]:
+    """Render a measured machine for a person to read.
+
+    Takes the device rather than probing for one, so a caller that already
+    measured shows the *same* reading it decided from. Two probes are two
+    different moments, and evidence printed beside a conclusion it did not
+    produce is worse than no evidence.
+    """
+    device = measure_device() if device is None else device
     return {
         "label": device.label,
         "cpu_cores": device.cpu_cores,
@@ -187,20 +194,27 @@ def _build_server():
             "target": decision.target,
             "reason": decision.reason,
             "fits_locally": decision.fits_locally,
-            "measured_device": _device_view(),
+            "measured_device": _device_view(device),
         }
         if decision.headroom is not None:
             result["headroom"] = dataclasses.asdict(decision.headroom)
-        if device.on_battery and decision.target == "device":
-            result["advisory"] = (
-                "This machine is on battery. Running locally will drain it — "
-                "offer the cloud as an alternative."
-            )
-        if device.throttled and decision.target == "device":
-            result["advisory"] = (
-                "This machine appears thermally throttled, so a local run may take "
-                "considerably longer than the estimate."
-            )
+        # A list, not a single slot. Both of these were written to one
+        # ``advisory`` key, so a machine that was unplugged *and* running hot
+        # reported only the heat — losing the warning that actually ends a run.
+        advisories: list[str] = []
+        if decision.target == "device":
+            if device.on_battery:
+                advisories.append(
+                    "This machine is on battery. Running locally will drain it — "
+                    "offer the cloud as an alternative."
+                )
+            if device.throttled:
+                advisories.append(
+                    "This machine appears thermally throttled, so a local run may take "
+                    "considerably longer than the estimate."
+                )
+        if advisories:
+            result["advisories"] = advisories
         return result
 
     @mcp.tool(
@@ -230,7 +244,7 @@ def _build_server():
             "workload": label,
             "target": decision.target,
             "reason": decision.reason,
-            "measured_device": _device_view(),
+            "measured_device": _device_view(device),
             "recommended": {
                 "accelerator": rec.accel.label,
                 "count": rec.count,

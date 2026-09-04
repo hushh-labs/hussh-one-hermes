@@ -59,13 +59,13 @@ things are still true and matter more than the green cells below:
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 1.1 Decision-layer correctness | ✅ 140 tests green | 100% | none | Re-run on every change |
+| 1.1 Decision-layer correctness | ✅ 151 tests green | 100% | none | Re-run on every change |
 | 1.2 Placement rules ported | ✅ 6 rules + two-pool model | parity + discrete GPUs | none | Hold |
 | 1.3 Provenance accuracy | ✅ corrected 2026-08-07 | claims survive checking | none | Keep ported/originating split |
 | 1.4 Design record migrated | ✅ 4 docs + OpenAPI | durable in Hermes | none | — |
 | 1.5 Module is pure (no I/O) | ✅ I/O isolated in `telemetry` | invariant holds | none | **Guard this** |
 
-**Counted:** 2,344 lines across 12 modules in `hermes_cli/hussh_one_burst/`.
+**Counted:** 2,382 lines across 12 modules in `hermes_cli/hussh_one_burst/`.
 
 ## 2. Remaining implementation gaps
 
@@ -82,7 +82,7 @@ things are still true and matter more than the green cells below:
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 3.1 `psutil` available | ✅ pinned 7.2.2 | present | none | — |
-| 3.2 Power / battery sensing | ✅ reused, feeds an advisory | usable signal | none | — |
+| 3.2 Power / battery sensing | ✅ feeds advisories, which now **accumulate** | usable signal | advises, never decides — placement ignores power | Decide whether power should bind placement |
 | 3.3 System RAM headroom | ✅ measured 15.09GB available here | queryable free RAM | none | — |
 | 3.4 CPU load sampling | ✅ non-blocking `cpu_percent` | rolling load | none | — |
 | 3.5 GPU / VRAM detection | ⚠️ **written, never seen a real GPU** | measured VRAM | nvidia-smi and Apple paths unit-tested by injection only | Run on a machine with an accelerator |
@@ -111,7 +111,7 @@ independently.
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 5.1 Wire contract | ✅ `wire.py` translates and refuses both ways | one contract | none | Use it at any husshone boundary |
+| 5.1 Wire contract | ✅ `wire.py` translates and refuses both ways | one contract | **no caller** — correct but unapplied | Use it at the first husshone boundary, before anyone hand-rolls the mapping |
 | 5.2 Provider abstraction | ✅ Protocol + mock + GCP | pluggable | none | — |
 | 5.3 Credential broker | ✅ precedence mirrors hushh-research | key never persisted | none | — |
 | 5.4 **Teardown guarantee** | ✅ 11 tests; **confirms absence**, not an accepted delete | always released | none | Extend to bucket+secret at 2.5 |
@@ -174,7 +174,7 @@ $84/hr, ~$126 total.
 | 9.2 Consent + audit receipts | ⚠️ receipts now **durable**, append-only | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
 | 9.4 Ops runbook | ✅ [runbook](../operations/xtreme-burst-runbook.md) written from the live burst | runbook + teardown drill | none | Re-check pre-flight list after each real run |
-| 9.5 Privacy invariant | ✅ stronger than before | holds every phase | none | Regression-test each phase |
+| 9.5 Privacy invariant | ✅ pinned token-by-token across a whole burst | holds every phase | none | Re-check when payload transfer (2.5) lands |
 
 The privacy invariant got three new guards: measurement is isolated in one module,
 reachability is inferred from local link state rather than by contacting a host, and

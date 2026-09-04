@@ -601,3 +601,81 @@ def test_the_label_does_survive_locally_so_the_person_can_read_their_receipt():
     )
     assert receipt.label == _REVEALING_LABEL
     assert receipt.as_dict()["workload"] == _REVEALING_LABEL
+
+
+# --------------------------------------------------------------------------
+# What the decide tool tells the person about their machine
+# --------------------------------------------------------------------------
+
+
+def _stressed_device(**overrides):
+    """A machine that is unplugged *and* running hot, with room for the job."""
+    from hermes_cli.hussh_one_burst.telemetry import MeasuredDevice
+
+    base = dict(
+        label="Laptop On A Sofa",
+        cpu_cores=8,
+        cpu_load_pct=20.0,
+        ram_total_gb=64.0,
+        ram_available_gb=48.0,
+        disk_free_gb=500.0,
+        online=True,
+        on_ac_power=False,  # -> on_battery
+        max_temp_c=95.0,  # -> throttled
+    )
+    base.update(overrides)
+    return MeasuredDevice(**base)
+
+
+def _decide(device, **args):
+    """Call hussh_burst_decide against a fixed, fake machine."""
+    import asyncio
+    from unittest.mock import patch
+
+    import hermes_cli.hussh_one_burst.mcp_server as srv_mod
+
+    with patch.object(srv_mod, "measure_device", return_value=device) as probe:
+        result = asyncio.run(
+            _run_tool().call_tool("hussh_burst_decide", {"vram_gb": 1.0, **args})
+        )
+    payload = result[1] if isinstance(result, tuple) else result
+    return payload, probe
+
+
+def test_a_battery_warning_is_not_erased_by_a_thermal_one():
+    """Both were written to a single `advisory` slot, so the second won.
+
+    A person on battery who is also thermally throttled got told about the heat
+    and never about the drain — and the drain is the one that ends the run.
+    """
+    payload, _probe = _decide(_stressed_device())
+
+    assert payload["target"] == "device", "the fake machine must fit the job"
+    advisories = " ".join(payload["advisories"])
+    assert "battery" in advisories
+    assert "throttled" in advisories
+    assert len(payload["advisories"]) == 2
+
+
+def test_no_advisories_key_when_the_machine_is_healthy():
+    payload, _probe = _decide(_stressed_device(on_ac_power=True, max_temp_c=55.0))
+    assert "advisories" not in payload
+
+
+def test_advisories_are_withheld_when_the_answer_is_the_cloud():
+    """Neither warning is about a cloud run, so neither belongs on one."""
+    payload, _probe = _decide(_stressed_device(), vram_gb=5000.0)
+    assert payload["target"] == "cloud"
+    assert "advisories" not in payload
+
+
+def test_the_machine_shown_is_the_machine_decided_from():
+    """It was measured twice: once to decide, once to display.
+
+    Two probes are two different moments, so `measured_device` could disagree
+    with the `reason` printed beside it — evidence that did not produce the
+    conclusion it is offered as.
+    """
+    payload, probe = _decide(_stressed_device())
+    assert probe.call_count == 1, "one decision, one measurement"
+    assert payload["measured_device"]["label"] == "Laptop On A Sofa"
