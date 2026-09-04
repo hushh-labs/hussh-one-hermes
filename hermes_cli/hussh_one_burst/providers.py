@@ -160,10 +160,16 @@ class GcpBurstProvider:
     :class:`~.credentials.CredentialRef` is retained, which is safe to put in a
     receipt.
 
-    **Never executed against real GCP.** The request body below is built from
-    the documented ``instances.insert`` contract and is typed and unit-tested,
-    but no burst has been provisioned with it. Treat the first real run as the
-    test, and expect to fix something.
+    **Verified against real GCP on 2026-08-08.** A T4 spot instance was
+    provisioned in ``hushh-pda-dev``/``us-central1`` through this code path,
+    released, and independently confirmed absent (404) afterwards — 33.9s,
+    $0.0033. What that run cost was worth: it exposed two defects no test had,
+    the boot-image family being a 404 and ``teardown`` reporting success on an
+    accepted-but-unfinished delete. Both are fixed.
+
+    Exercised so far: ``nvidia-t4`` on ``n1-standard-8`` with a ``guestAccelerators``
+    attachment. The A2/A3/A4 machine-type branch — where the accelerator is baked
+    into the machine type rather than attached — has still only been unit-tested.
     """
 
     _API_ROOT = "https://compute.googleapis.com/compute/v1"
