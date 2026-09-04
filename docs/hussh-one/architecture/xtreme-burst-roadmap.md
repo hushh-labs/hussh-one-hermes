@@ -179,7 +179,7 @@ change needed.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
-| 7.2 Mock provider | ✅ credential-free | testable path | none | — |
+| 7.2 Mock provider | ✅ credential-free — **proven with the environment stripped** | testable path | none | — |
 | 7.3 CI coverage | ❌ **PR cannot reach green** | green in CI | required test jobs are *cancelled* at 31min — runners never assigned | Needs org access: runner capacity |
 | 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
@@ -212,7 +212,7 @@ $84/hr, ~$126 total.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 9.1 Reachable by a person | ✅ 5 MCP tools | 1 entry point | none | — |
-| 9.2 Consent + audit receipts | ⚠️ receipts now **durable**, append-only | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
+| 9.2 Consent + audit receipts | ⚠️ receipts now **durable**, append-only | every offload leaves a receipt | elicitation unexercised via a real client, **and no real burst has yet written a ledger line** — the one that ran predates the ledger | Exercise the approval path; check the ledger after the next real burst |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
 | 9.4 Ops runbook | ✅ **its snippets were run**, not just written | runbook + teardown drill | the `run` snippet costs money, so it is the one still unexercised as written | Re-run the checks after each real burst |
 | 9.5 Privacy invariant | ✅ pinned token-by-token across a whole burst | holds every phase | none | Re-check when payload transfer (2.5) lands |

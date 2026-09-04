@@ -897,3 +897,37 @@ def test_an_orphan_that_cannot_be_confirmed_gone_is_named_on_the_receipt():
     assert receipt.leaked_instance is True
     assert "ORPHAN" in " ".join(receipt.events)
     assert "may still be running and billing" in receipt.as_dict()["warning"]
+
+
+def test_the_mock_path_runs_with_every_credential_stripped_from_the_environment(monkeypatch):
+    """"Credential-free" has to be checked without credentials in the room.
+
+    This container has `GCP_DEPLOY_SA_KEY_B64` set, so a mock-path test can pass
+    while quietly depending on it. Strip every variable the broker consults, and
+    every variable Google's own ADC discovery consults, and run the full
+    lifecycle: it must still complete and release.
+    """
+    for var in (
+        "GCP_DEPLOY_SA_KEY_B64",
+        "HUSSH_BURST_SA_KEY_B64",
+        "GCP_DEPLOY_REF",
+        "GCP_DEPLOY_REGION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "CLOUDSDK_CONFIG",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    provider = resolve_provider("mock")
+    receipt = run_burst(
+        BurstRequest(
+            label="no-creds", accelerator_id="nvidia-t4", chip_count=1, usd_per_hour=0.35
+        ),
+        provider,
+        record=False,
+    )
+    assert receipt.status == "completed"
+    assert receipt.leaked_instance is False
+    assert receipt.credential is None, "the mock must not resolve a credential at all"
+    assert provider.live_instances == []
