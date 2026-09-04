@@ -160,11 +160,21 @@ $84/hr, ~$126 total.
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 8.1 Decision latency | ✅ **median 2.7µs, p99 11µs** | <10ms | none — ~900× under | — |
+| 8.1 Decision latency | ✅ **2.3ms median / 4.7ms p95 over real MCP**; the pure function is 2.7µs | <10ms | none | Re-measure on a machine with a GPU probe to shell out to |
 | 8.2 Cost-model accuracy | ⚠️ *modeled* | within 10% of invoice | never validated | Compare against one real burst |
 | 8.3 Teardown SLO | ✅ **33.9s** full lifecycle, confirmed absent | 100% within 60s | single sample | Re-measure across shapes |
 | 8.4 Concurrent jobs | ❌ no job store | ≥1 tracked | full | Next phase |
 | 8.5 Monitoring overhead | ✅ **0.5ms median** measurement | <1% CPU | GPU path shells out, untimed | Re-measure on GPU hardware |
+
+> **8.1 measures what a person waits for, not what the function costs.** The 2.7µs
+> figure was `decide_placement` called in a loop — real, and answering a question the
+> `<10ms` target was not asking. Spoken to over stdio MCP the way a client speaks to it,
+> `hussh_burst_decide` returns in **2.3ms median, 4.7ms p95, 6.0ms worst of 30**, with the
+> first call after start at 14ms and server boot plus handshake at 581ms once. `plan` and
+> `device_status` sit at 2.4ms and 2.2ms. Measured on this container *while the full test
+> suite ran four ways in parallel*, so they are a loaded machine's numbers, not an idle
+> one's. The transport and the measurement dominate the decision by roughly 850×, which is
+> the honest shape of it: the arithmetic was never going to be the cost.
 
 ## 9. Production readiness
 
