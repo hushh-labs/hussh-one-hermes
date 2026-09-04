@@ -74,6 +74,19 @@ class BurstReceipt:
         """
         return self.instance_id is not None and not self.torn_down
 
+    @property
+    def simulated(self) -> bool:
+        """True when nothing was really provisioned and nothing could be billed.
+
+        The mock provider exists so the whole lifecycle is testable without a
+        cloud account, and driving the real ``hussh_burst_run`` tool against it
+        writes a receipt that is indistinguishable at a glance from one for a
+        genuine burst — same ``status: completed``, same ``success: true``. That
+        is noise in exactly the file somebody opens to answer "what did this
+        cost" and "is anything still running".
+        """
+        return (self.destination or "").startswith("mock://")
+
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "workload": self.label,
@@ -88,6 +101,8 @@ class BurstReceipt:
             "torn_down": self.torn_down,
             "events": list(self.events),
         }
+        if self.simulated:
+            payload["simulated"] = True
         if self.credential is not None:
             payload.update(self.credential.as_dict())
         if self.error:

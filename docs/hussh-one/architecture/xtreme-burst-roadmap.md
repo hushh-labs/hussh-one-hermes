@@ -99,9 +99,30 @@ things are still true and matter more than the green cells below:
 | 4.1 Placement rules correct | ✅ tested | invariants hold | none | Hold |
 | 4.2 **Inputs are live** | ✅ decides from the real machine | measured state | none | — |
 | 4.3 Cost-aware selection | ⚠️ structure fixed; prices still *modeled* | validated pricing | never checked vs invoice | Compare against one real burst |
-| 4.4 Consent gate before offload | ⚠️ elicitation written | approval before spend | not exercised through a real MCP client | Exercise end-to-end |
+| 4.4 **Consent gate before offload** | ✅ **exercised through a real MCP client**, all four answers | approval before spend | none | Re-check when payload transfer lands |
 | 4.5 Deadline handling | ✅ **enforced by GCP**, detected locally | drives teardown | a hung `execute` is not interrupted — `run_burst` reads the clock after it returns | Revisit when the payload seam (2.5) can be interrupted |
 | 4.6 **Quote is purchasable** | ✅ sellable counts **and a live zone/quota pre-flight in both `plan` and `run`** | quote = what is billed | none | Validate a quote against a real invoice |
+
+**The consent gate is now exercised, not just written.** Every other test of
+`hussh_burst_run` mocks the elicitation away, which proves the handler branches and proves
+nothing about whether a person is ever asked. Driven by a real MCP client through the SDK's
+`elicitation_callback`, all four answers behave: accept runs and tears down, decline and
+cancel provision nothing, and **accept-with-the-box-unticked is a refusal** — a person who
+opened the dialog and said no. The prompt itself is asserted to name the hardware, the rate,
+the total and the teardown promise, because consent to an unnamed price is not consent.
+
+Two defects fell out of doing it for real rather than in-process:
+
+* **Driving the real tool wrote mock receipts into the owner's ledger.** `hussh_burst_run`
+  records unconditionally, so a simulated burst landed in `~/.hermes/burst-receipts.jsonl`
+  looking like any other — same `status: completed`, same `success: true` — in the one file
+  somebody opens to ask what a burst cost. Receipts now carry `simulated: true`, and the
+  consent tests point `HERMES_HOME` at a temp profile, with a test pinning that the receipt
+  lands *there* and a refusal writes nothing at all.
+* **The first fix was too blunt.** Filtering simulated rows out of `leaked_instances()`
+  broke the leak test, and rightly: `MockBurstProvider(fail_on_teardown=True)` is exactly
+  how the leak path gets exercised without spending money. Rows are marked, not dropped; a
+  caller wanting real bursts only can say so explicitly.
 
 The two-pool memory model closed a real defect: a 96GB workstation with an 8GB card used
 to read as "fits locally". Accelerator need is now gated on VRAM and host need on RAM
@@ -308,7 +329,7 @@ confirmed to restore it.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 9.1 Reachable by a person | ✅ 5 MCP tools | 1 entry point | none | — |
-| 9.2 Consent + audit receipts | ⚠️ receipts now **durable**, append-only | every offload leaves a receipt | elicitation unexercised via a real client, **and no real burst has yet written a ledger line** — the one that ran predates the ledger | Exercise the approval path; check the ledger after the next real burst |
+| 9.2 Consent + audit receipts | ✅ approval exercised; receipts durable, **simulated ones marked** | every offload leaves a receipt | no *real* burst has written a ledger line — the one that ran predates the ledger | Check the ledger after the next real burst |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
 | 9.4 Ops runbook | ✅ **its snippets were run**, not just written | runbook + teardown drill | the `run` snippet costs money, so it is the one still unexercised as written | Re-run the checks after each real burst |
 | 9.5 Privacy invariant | ✅ pinned token-by-token across a whole burst | holds every phase | none | Re-check when payload transfer (2.5) lands |

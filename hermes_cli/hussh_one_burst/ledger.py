@@ -152,5 +152,12 @@ def leaked_instances(path: Optional[Path] = None) -> list[dict[str, Any]]:
 
     The reason this module exists. These are the instances that may still be
     billing, and until now they were reported once to a caller and then lost.
+
+    Simulated bursts are **not** excluded, deliberately. Marking them was the
+    first instinct and filtering them here was the second, and the second is
+    wrong: simulating an unreleased instance is precisely what
+    ``MockBurstProvider(fail_on_teardown=True)`` is for, so dropping mock rows
+    would make the leak path untestable without spending money. Rows now carry
+    ``simulated: true``, and a caller who wants real bursts only can say so.
     """
     return [row for row in read_receipts(path) if row.get("torn_down") is False]
