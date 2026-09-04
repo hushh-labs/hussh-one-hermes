@@ -149,7 +149,7 @@ change needed.
 |---|---|---|---|---|
 | 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
 | 7.2 Mock provider | ✅ credential-free | testable path | none | — |
-| 7.3 CI coverage | ⚠️ draft PR #18 opened | green in CI | awaiting first CI run | Drive it to green |
+| 7.3 CI coverage | ❌ **PR cannot reach green** | green in CI | required test jobs are *cancelled* at 31min — runners never assigned | Needs org access: runner capacity |
 | 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
 Verified live on this machine: `device_status` measured 4 cores / 15.09GB available;
@@ -181,7 +181,7 @@ reachability is inferred from local link state rather than by contacting a host,
 `InstanceSpec` carries no workload fields by construction — a test asserts its exact
 field set.
 
-**Overall: 84% of 46 KPIs met (33 met, 11 partial, 2 open).** Reachable, measured, safe to
+**Overall: 83% of 46 KPIs met (33 met, 10 partial, 3 open).** Reachable, measured, safe to
 stop, and now quoting hardware that can actually be bought. Not yet proven against a real
 cloud.
 
