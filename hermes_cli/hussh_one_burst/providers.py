@@ -205,6 +205,22 @@ class UnsupportedAccelerator(ValueError):
     """The requested accelerator cannot be provisioned by this backend."""
 
 
+class OrphanedInstance(RuntimeError):
+    """Provisioning failed *after* the request may already have created a machine.
+
+    A POST that times out or has its connection dropped is not the same as a
+    POST that was rejected: Compute Engine may have accepted it and started
+    building. :meth:`GcpBurstProvider.provision` sweeps for the name it chose
+    before the request, and raises this when something is there and could not be
+    confirmed gone — carrying the id, so the receipt can report a leak instead of
+    "nothing to release".
+    """
+
+    def __init__(self, message: str, instance_id: str) -> None:
+        super().__init__(message)
+        self.instance_id = instance_id
+
+
 class GcpBurstProvider:
     """Provisions a Compute Engine instance in the person's own project.
 
@@ -399,6 +415,40 @@ class GcpBurstProvider:
 
         return Preflight(blockers=tuple(blockers), warnings=tuple(warnings))
 
+    def _sweep_orphan(
+        self, session: Any, project: str, zone: str, name: str, *, cause: BaseException
+    ) -> None:
+        """After a failed create, delete whatever that create may have started.
+
+        Silent when nothing is there — the overwhelmingly common case is that the
+        request never landed. Raises :class:`OrphanedInstance` when something is
+        there and could not be confirmed gone, because that is the case where a
+        person needs to be told a name and a zone.
+
+        SPOT plus ``maxRunDuration`` bounds the damage either way; this is about
+        the receipt not claiming "nothing to release" while something bills.
+        """
+        url = f"{self._API_ROOT}/projects/{project}/zones/{zone}/instances/{name}"
+        try:
+            found = session.get(url, timeout=60)
+        except Exception:
+            return  # cannot look; the deadline brake is what is left
+        if found.status_code == 404:
+            return
+        if found.status_code >= 400:
+            return
+        handle = InstanceHandle(id=name, destination=f"{project}/{zone}", detail={"zone": zone})
+        try:
+            if self.teardown(handle):
+                return
+        except Exception:
+            pass
+        raise OrphanedInstance(
+            f"Provisioning failed ({cause}) but instance {name} exists in {zone} and could "
+            "not be confirmed released. It may be billing — check your cloud console.",
+            name,
+        )
+
     def provision(self, spec: InstanceSpec) -> InstanceHandle:
         machine, accelerator_type, chips = self.resolve_shape(
             spec.accelerator_id, spec.chip_count
@@ -442,7 +492,14 @@ class GcpBurstProvider:
                     "acceleratorCount": chips,
                 }
             ]
-        response = session.post(url, json=body, timeout=60)
+        try:
+            response = session.post(url, json=body, timeout=60)
+        except Exception as exc:
+            # The name was chosen before the request, which is what makes this
+            # recoverable: a dropped connection tells us nothing about whether
+            # Compute Engine accepted the create, so go and look.
+            self._sweep_orphan(session, ref.project, zone, name, cause=exc)
+            raise RuntimeError(f"Could not reach Compute Engine to provision: {exc}") from exc
         if response.status_code >= 400:
             raise RuntimeError(f"Could not provision the burst instance: {response.text[:200]}")
         return InstanceHandle(

@@ -126,13 +126,22 @@ reading is a confident guess pointed the other way.
 | 5.1 Wire contract | ✅ `wire.py` translates and refuses both ways | one contract | **no caller** — correct but unapplied | Use it at the first husshone boundary, before anyone hand-rolls the mapping |
 | 5.2 Provider abstraction | ✅ Protocol + mock + GCP | pluggable | none | — |
 | 5.3 Credential broker | ✅ precedence mirrors hushh-research | key never persisted | none | — |
-| 5.4 **Teardown guarantee** | ✅ 11 tests; **confirms absence**, not an accepted delete | always released | none | Extend to bucket+secret at 2.5 |
+| 5.4 **Teardown guarantee** | ✅ confirms absence, **and sweeps after a create that never answered** | always released | none | Extend to bucket+secret at 2.5 |
 | 5.5 Native client retarget | ❌ points at husshone | points at Hermes | full | Later phase |
 
 Teardown runs in a `finally` and survives workload exceptions, deadline overruns and
 Ctrl-C. A 404 on delete counts as success — the invariant is "not running", not "deleted
 by us". A teardown that fails surfaces a warning naming the instance rather than being
 swallowed.
+
+**`provision_failed` used to mean "nothing to release" unconditionally**, and a POST that
+times out or has its connection dropped says nothing about whether Compute Engine accepted
+the create — the same mistake as trusting an accepted `DELETE`, pointed the other way. The
+instance name is chosen *before* the request, which is what makes it recoverable: on a
+failed create the provider goes and looks for that name, deletes what it finds, and raises
+`OrphanedInstance` carrying the id when it cannot confirm removal. The receipt then reports
+a leak with a name somebody can act on, rather than a bill nobody can trace. SPOT plus
+`maxRunDuration` bounds the loss either way; this is about the receipt telling the truth.
 
 ## 6. ADK runtime and subagent integration
 

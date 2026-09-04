@@ -158,7 +158,16 @@ def run_burst(
         except Exception as exc:
             receipt.status = "provision_failed"
             receipt.error = str(exc)
-            receipt.events.append("provision failed — nothing to release")
+            orphan = getattr(exc, "instance_id", None)
+            if orphan:
+                # The create may have landed even though the call failed. Naming
+                # it here is what turns `leaked_instance` True and puts the id in
+                # the ledger, instead of a receipt that says "nothing to release"
+                # while a machine bills.
+                receipt.instance_id = str(orphan)
+                receipt.events.append(f"POSSIBLE ORPHAN {orphan} — could not confirm released")
+            else:
+                receipt.events.append("provision failed — nothing to release")
             return receipt
 
         receipt.instance_id = handle.id

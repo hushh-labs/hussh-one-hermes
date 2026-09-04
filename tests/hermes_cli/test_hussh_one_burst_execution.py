@@ -820,3 +820,80 @@ def test_the_run_tool_refuses_an_unprovisionable_burst_before_asking_for_money()
     assert payload["success"] is False
     assert payload["status"] == "not_provisionable"
     ctx.elicit.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# A create that failed is not proof that nothing was created
+# --------------------------------------------------------------------------
+
+
+def _provision_with_dropped_post(get_statuses):
+    """A provider whose create raises after the request may already have landed."""
+    from unittest.mock import MagicMock, patch
+
+    provider = GcpBurstProvider(
+        project="p", region="us-central1", sleep=lambda _s: None,
+        teardown_confirm_seconds=5.0,
+    )
+    session = MagicMock()
+    session.post.side_effect = OSError("connection reset by peer")
+    session.get.side_effect = [MagicMock(status_code=c) for c in get_statuses]
+    session.delete.return_value = MagicMock(status_code=200)
+    ref = MagicMock(project="p", region="us-central1")
+    return provider, session, patch.object(
+        provider, "_authed_session", return_value=(session, ref)
+    )
+
+
+def test_a_dropped_create_that_left_nothing_behind_is_just_a_failure():
+    provider, session, ctx = _provision_with_dropped_post([404])
+    with ctx, pytest.raises(RuntimeError, match="Could not reach Compute Engine"):
+        provider.provision(InstanceSpec("nvidia-t4", 1, "job", 5.0))
+    session.delete.assert_not_called()
+
+
+def test_a_dropped_create_that_did_land_is_swept():
+    """The name is chosen before the request, which is what makes this fixable."""
+    # GET: exists -> then teardown's confirm loop sees it gone.
+    provider, session, ctx = _provision_with_dropped_post([200, 404])
+    with ctx, pytest.raises(RuntimeError, match="Could not reach Compute Engine"):
+        provider.provision(InstanceSpec("nvidia-t4", 1, "job", 5.0))
+    session.delete.assert_called_once()
+
+
+def test_an_orphan_that_cannot_be_confirmed_gone_is_named_on_the_receipt():
+    """`provision_failed` used to mean "nothing to release" unconditionally.
+
+    A POST that times out says nothing about whether Compute Engine accepted the
+    create. If one is there and cannot be confirmed released, the receipt has to
+    carry the id — that is the difference between an incident someone can act on
+    and a bill nobody can trace.
+    """
+    from unittest.mock import MagicMock, patch
+
+    ticks = iter([0.0, 0.0, 999.0])
+    provider = GcpBurstProvider(
+        project="p", region="us-central1", sleep=lambda _s: None,
+        teardown_confirm_seconds=1.0, clock=lambda: next(ticks),
+    )
+    session = MagicMock()
+    session.post.side_effect = OSError("connection reset by peer")
+    session.get.return_value = MagicMock(status_code=200)  # never disappears
+    session.delete.return_value = MagicMock(status_code=200)
+    ref = MagicMock(project="p", region="us-central1")
+
+    with patch.object(provider, "_authed_session", return_value=(session, ref)):
+        receipt = run_burst(
+            BurstRequest(
+                label="job", accelerator_id="nvidia-t4", chip_count=1,
+                usd_per_hour=0.35, deadline_minutes=5.0,
+            ),
+            provider,
+            record=False,
+        )
+
+    assert receipt.status == "provision_failed"
+    assert receipt.instance_id and receipt.instance_id.startswith("hussh-burst-nvidia-t4-")
+    assert receipt.leaked_instance is True
+    assert "ORPHAN" in " ".join(receipt.events)
+    assert "may still be running and billing" in receipt.as_dict()["warning"]
