@@ -187,34 +187,44 @@ Verified live on this machine: `device_status` measured 4 cores / 15.09GB availa
 `decide` routed both presets to cloud with coherent reasons; `plan` returned 4× B200 at
 $84/hr, ~$126 total.
 
-### Why CI cannot tell us — measured, and my earlier reading corrected
+### Why CI cannot tell us — and two corrections to my own reporting
 
-I had been reporting that the two required test jobs are "cancelled at exactly 31 minutes."
-That figure does not describe what the runs actually do, and two of the cancellations were
-my own fault. Read off the GitHub API rather than off the review bot's summary:
+**Correction 2 supersedes correction 1.** Both are recorded because the second one is the
+more instructive failure.
 
-| Run | `Python tests / Run tests` | Why |
+I first reported the two required test jobs as "cancelled at exactly 31 minutes." Then I
+corrected that to "still queued at 18 minutes," and built a conclusion on it. **The 18
+minutes never happened.** I inferred elapsed time from a wall clock I assumed rather than
+read; the actual gap was under three. What the API says, read properly:
+
+| Run | Both test jobs | Runner |
 |---|---|---|
-| `fb837c6` | cancelled at **10s** | The *whole run* was cancelled — jobs already mid-checkout included. I pushed the next commit ~30s later and the concurrency group killed it. Self-inflicted. |
-| `cce8b00` | cancelled at **82s**, no runner ever assigned | The run had already concluded: both blocking lints fail within ~20s, so the aggregator ran and the still-queued jobs were cancelled with it. |
-| `f24d28e0` | **still queued at 18 minutes**, no runner | Not superseded, run not concluded. Same two lint failures as `cce8b00`. |
+| `33833329598` | queued **~31 min**, then cancelled | never assigned |
+| `fb837c6` | cancelled at **10s** — I pushed 30s later and the concurrency group killed the whole run | never assigned |
+| `cce8b00` | cancelled at **82s**, when the aggregator concluded | never assigned |
+| `f24d28e0` | cancelled at **3m24s**, `runner_id: 0`, `runner_name: ""` | never assigned |
 
-The third row is the controlled comparison, and it is the answer. Inside that one run every
-`ubuntu-latest` and `macos-latest` job was assigned a runner **within 2–9 seconds** and
-finished; the two jobs labelled `ubuntu-latest-96-core` and `windows-latest-32-core` have no
-`runner_id`, no `runner_name` and no steps after eighteen minutes. The label is the only
-variable. That is a runner-capacity or runner-group configuration problem, and nothing in
-this branch can move it.
+The `f24d28e0` run was *not* superseded by me — my push landed 36 seconds after the
+cancellation. It died the same way `cce8b00` did: both blocking lints fail within ~20s, the
+aggregator runs, and the still-queued jobs are cancelled with it.
 
-It also rules out the hypothesis the second row suggests. Fixing the inherited lint failures
-would **not** free the test jobs: this run has those same failures and is not cancelling
-them — they are simply never scheduled. Worth stating because the opposite conclusion is
-the natural one to draw from `cce8b00` alone, and it would have sent someone to fix the
-wrong thing.
+**What is established:** these jobs are never assigned a runner in the window they get,
+while inside the same run every `ubuntu-latest` and `macos-latest` job is assigned one in
+**2–9 seconds** and finishes. The one long observation, `33833329598`, gave them ~31 minutes
+and they still got nothing.
 
-The other lesson is about method: pushing a commit every one to three minutes cancelled
-several runs before they could produce evidence, and then I read the cancellations as data
-about CI rather than as data about my own cadence.
+**What I claimed and cannot support:** that fixing the inherited lint failures would *not*
+free the test jobs. I asserted that from the imaginary 18-minute run. On the real evidence
+every unsuperseded run is cancelled shortly after the lints fail, so the opposite is
+entirely plausible — a run that stayed alive might see those runners assigned. Unresolved,
+and only testable on a run where the lints pass, which needs the `PLW1514` decision that is
+still with the founder.
+
+**Method, twice over.** The first error was reading superseded runs as data about CI when
+they were data about my own push cadence — a commit every one to three minutes killed runs
+mid-flight. The second was worse: correcting a fabricated number with another fabricated
+number, in the same breath. A duration is a measurement. It needs two clock readings, not
+one reading and an assumption.
 
 ### What CI could not tell us, run locally instead
 
