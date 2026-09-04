@@ -187,6 +187,41 @@ cloud.
 
 ---
 
+## The host-metrics overlap — decision-ready
+
+`main` landed `hermes_cli/hussh_one_host_metrics.py` while `hussh_one_burst/telemetry.py`
+was being written. Both read the same machine. Measured on the same container:
+
+| | `hussh_one_host_metrics` | `hussh_one_burst/telemetry` |
+|---|---|---|
+| CPU cores | ✅ `4` | ✅ `4` |
+| RAM total / available | ✅ `16461028` / `14273264` KiB | ✅ `15.7` / `15.09` GB |
+| Battery | ✅ `{"present": false}` | ⚠️ `battery_pct=None, on_ac_power=None` |
+| Processor name | ✅ `Intel(R) Xeon(R) @ 2.10GHz` | ❌ |
+| Swap, process RSS | ✅ | ❌ |
+| GPU / VRAM / memory model | ❌ | ✅ |
+| Disk free | ❌ | ✅ |
+| CPU load, thermal, throttle | ❌ | ✅ |
+| Reachability | ❌ | ✅ |
+| Converts to a `DeviceProfile` | ❌ | ✅ |
+
+They are **complementary far more than duplicative**, and the overlap is exactly the host
+half: cores, memory, battery.
+
+**Recommendation: `telemetry` delegates the host half to `host_metrics` and keeps the
+accelerator, thermal and placement half.** Not merely to remove duplication — delegating
+*fixes a real weakness*. On a machine with no battery, `host_metrics` returns
+`{"present": false}` while `telemetry` returns `None`/`None`. Those are not the same
+answer: one says "this machine has no battery", the other says "I could not tell". The
+placement advisory that warns about draining a battery should never fire on a desktop, and
+only the first shape makes that distinction reliable. `host_metrics` also reads Darwin
+battery through `pmset`, which is better than the `agent.battery` fallback `telemetry`
+currently uses.
+
+**This is still a human's call**, because it makes burst depend on a module owned by
+another workstream, and that coupling is a real cost. It is recorded here rather than
+actioned, and deliberately not smuggled into a merge commit.
+
 ## Priority order from here
 
 1. **One real burst.** 7.1 / 7.4 / 8.2 / 8.3 / 9.2 all resolve on the first genuine
