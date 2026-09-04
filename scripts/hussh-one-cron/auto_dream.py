@@ -252,7 +252,7 @@ def run_self_checks():
         alerts.append("⚠️ Long-Term Memory (MEMORY.md) is missing.")
     if os.path.exists(INDEX_PATH):
         try:
-            with open(INDEX_PATH, "r") as f:
+            with open(INDEX_PATH, "r", encoding="utf-8") as f:
                 json.load(f)
         except Exception as je:
             alerts.append(f"⚠️ memory/index.json is malformed or corrupted: {je}")
