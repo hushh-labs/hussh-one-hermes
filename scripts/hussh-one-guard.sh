@@ -23,12 +23,26 @@ require_file "hermes_cli/skins/hussh-one.yaml"
 require_file "hermes_cli/dashboard_themes/hussh-one.yaml"
 require_file "plugins/model-providers/google-vertex-claude/__init__.py"
 require_file "scripts/hussh-one-bootstrap.sh"
+require_file "scripts/hussh-one-consent-repair.sh"
 require_file "scripts/hussh-one-supervisor.sh"
 require_file "scripts/hussh-one-doctor.sh"
 require_file "scripts/hussh-one-restart.sh"
+require_file "scripts/hussh-one-upstream-update.sh"
+require_file ".github/workflows/hussh-one-fresh-sync.yml"
 require_file "scripts/hussh-one-license-audit.py"
+require_file "hermes_cli/hussh_one_source_library/service.py"
+require_file "hermes_cli/hussh_one_source_library/steward.py"
+require_file "tools/hussh_one_source_library_tool.py"
 
-python3 scripts/hussh-one-license-audit.py
+if [[ -x ".venv/bin/python3" ]]; then
+  PYTHON=".venv/bin/python3"
+elif [[ -x ".venv/bin/python" ]]; then
+  PYTHON=".venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
+"$PYTHON" scripts/hussh-one-license-audit.py
 
 legacy_brand_pattern='hushh''-puppy|hussh ''puppy|HUSSH''_PUPPY'
 if rg -n "$legacy_brand_pattern" --glob '!tests/hermes_cli/test_hussh_one_branding.py'; then
@@ -49,7 +63,15 @@ if [[ -x "scripts/run_tests.sh" ]]; then
     tests/agent/test_vertex_claude_integration.py \
     tests/hermes_cli/test_model_switch*.py \
     tests/gateway/test_whatsapp_reply_prefix.py \
+    tests/gateway/test_telegram_format.py \
+    tests/agent/test_tool_guardrails.py \
+    tests/agent/test_stall_guards.py \
     tests/hermes_cli/test_hussh_one_branding.py \
+    tests/hermes_cli/test_hussh_one_source_library.py \
+    tests/test_hussh_one_source_library_tool.py \
+    tests/agent/test_system_prompt.py \
+    tests/scripts/test_hussh_one_scripts.py \
+    tests/scripts/test_hussh_one_doctor_reliability.py \
     tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py \
     -- -q
 else
@@ -63,7 +85,15 @@ else
     tests/agent/test_vertex_claude_integration.py \
     tests/hermes_cli/test_model_switch*.py \
     tests/gateway/test_whatsapp_reply_prefix.py \
+    tests/gateway/test_telegram_format.py \
+    tests/agent/test_tool_guardrails.py \
+    tests/agent/test_stall_guards.py \
     tests/hermes_cli/test_hussh_one_branding.py \
+    tests/hermes_cli/test_hussh_one_source_library.py \
+    tests/test_hussh_one_source_library_tool.py \
+    tests/agent/test_system_prompt.py \
+    tests/scripts/test_hussh_one_scripts.py \
+    tests/scripts/test_hussh_one_doctor_reliability.py \
     tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py \
     -q
 fi
@@ -75,9 +105,11 @@ command -v node >/dev/null 2>&1 || {
 node --check scripts/whatsapp-bridge/bridge.js
 bash -n \
   scripts/hussh-one-bootstrap.sh \
+  scripts/hussh-one-consent-repair.sh \
   scripts/hussh-one-supervisor.sh \
   scripts/hussh-one-doctor.sh \
-  scripts/hussh-one-restart.sh
+  scripts/hussh-one-restart.sh \
+  scripts/hussh-one-upstream-update.sh
 
 dashboard_url="${HUSSH_ONE_DASHBOARD_URL:-http://127.0.0.1:9119}"
 if [[ "${HUSSH_ONE_SKIP_DASHBOARD_HEALTH:-0}" != "1" ]]; then

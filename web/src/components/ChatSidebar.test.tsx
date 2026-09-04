@@ -1,0 +1,639 @@
+// @vitest-environment jsdom
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { EVENTS_CONNECT_TIMEOUT_MS } from "@/lib/events-reconnect";
+
+const apiMocks = vi.hoisted(() => ({
+  buildWsUrl: vi.fn(async () => "ws://localhost/api/events?channel=chat-1"),
+  getSessionDetail: vi.fn(async (): Promise<{ model: string | null }> => ({
+    model: null,
+  })),
+  getModelInfo: vi.fn(async () => ({
+    capabilities: { supports_reasoning: false },
+    model: "test/model",
+  })),
+}));
+
+const gatewayMocks = vi.hoisted(() => {
+  const handlers = new Map<string, (event: unknown) => void>();
+  return {
+    close: vi.fn(),
+    connect: vi.fn(async () => undefined),
+    handlers,
+    on: vi.fn((event: string, handler: (event: unknown) => void) => {
+      handlers.set(event, handler);
+      return () => handlers.delete(event);
+    }),
+    onState: vi.fn((handler: (state: string) => void) => {
+      handler("open");
+      return () => undefined;
+    }),
+    request: vi.fn(async () => ({ session_id: "sidecar-1" })),
+  };
+});
+
+const reloadMocks = vi.hoisted(() => ({
+  maybeReloadForLoopbackWsAuthFailure: vi.fn(() => true),
+}));
+
+vi.mock("@/lib/api", () => ({
+  api: {
+    getModelInfo: apiMocks.getModelInfo,
+    getSessionDetail: apiMocks.getSessionDetail,
+  },
+  buildWsUrl: apiMocks.buildWsUrl,
+}));
+vi.mock("@/lib/dashboard-auth-reload", () => ({
+  maybeReloadForLoopbackWsAuthFailure:
+    reloadMocks.maybeReloadForLoopbackWsAuthFailure,
+}));
+vi.mock("@/lib/gatewayClient", () => ({
+  GatewayClient: class {
+    close = gatewayMocks.close;
+    connect = gatewayMocks.connect;
+    on = gatewayMocks.on;
+    onState = gatewayMocks.onState;
+    request = gatewayMocks.request;
+  },
+}));
+vi.mock("@/components/ModelPickerDialog", () => ({
+  ModelPickerDialog: () => null,
+}));
+vi.mock("@/components/ModelReloadConfirm", () => ({
+  ModelReloadConfirm: () => null,
+}));
+vi.mock("@/components/ReasoningPicker", () => ({
+  ReasoningPicker: () => null,
+}));
+vi.mock("@nous-research/ui/ui/components/button", () => ({
+  Button: ({ children }: { children?: ReactNode }) => <button>{children}</button>,
+}));
+vi.mock("@nous-research/ui/ui/components/badge", () => ({
+  Badge: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+}));
+vi.mock("@nous-research/ui/ui/components/card", () => ({
+  Card: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+}));
+
+type EventLike = { code?: number; data?: string };
+
+class FakeWebSocket {
+  static instances: FakeWebSocket[] = [];
+
+  private listeners = new Map<string, Array<(event: EventLike) => void>>();
+  readonly url: string;
+  closed = false;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: EventLike) => void) {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  close() {
+    this.closed = true;
+  }
+
+  emit(type: string, event: EventLike) {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+}
+
+let container: HTMLDivElement;
+let root: Root;
+
+async function render(ui: ReactNode) {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  await act(async () => root.render(ui));
+}
+
+beforeEach(() => {
+  FakeWebSocket.instances = [];
+  vi.clearAllMocks();
+  apiMocks.buildWsUrl.mockReset();
+  apiMocks.buildWsUrl.mockResolvedValue(
+    "ws://localhost/api/events?channel=chat-1",
+  );
+  apiMocks.getSessionDetail.mockReset();
+  apiMocks.getSessionDetail.mockResolvedValue({ model: null });
+  reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(true);
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+});
+
+afterEach(async () => {
+  await act(async () => root?.unmount());
+  container?.remove();
+  vi.unstubAllGlobals();
+});
+
+describe("ChatSidebar event socket", () => {
+  it("routes loopback 4401 closes through stale-token recovery", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledWith("/api/events", {
+      channel: "chat-1",
+    });
+
+    FakeWebSocket.instances[0].emit("close", { code: 4401 });
+
+    expect(
+      reloadMocks.maybeReloadForLoopbackWsAuthFailure,
+    ).toHaveBeenCalledWith(4401);
+  });
+
+  it("shows a TUI session model switch as soon as its PTY event arrives", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    apiMocks.getModelInfo.mockResolvedValueOnce({
+      capabilities: { supports_reasoning: false },
+      model: "configured-default",
+    });
+
+    await render(<ChatSidebar channel="chat-1" />);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("configured-default"),
+    );
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("message", {
+        data: JSON.stringify({
+          method: "event",
+          params: {
+            type: "session.info",
+            payload: {
+              model: "google/gemma-4-31b@q4_k_m",
+              provider: "lmstudio",
+            },
+          },
+        }),
+      });
+    });
+
+    // The config fallback is `configured-default`; the active PTY session must win
+    // immediately after `/model`, even when its switch is still pending.
+    expect(container.textContent).toContain("gemma-4-31b@q4_k_m");
+    expect(container.textContent).not.toContain("configured-default");
+  });
+
+  it("seeds a resumed chat from its durable session model before PTY events", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    apiMocks.getModelInfo.mockResolvedValueOnce({
+      capabilities: { supports_reasoning: false },
+      model: "configured-default",
+    });
+    apiMocks.getSessionDetail.mockResolvedValueOnce({
+      model: "google/gemma-4-26b-a4b-qat",
+    });
+
+    await render(
+      <ChatSidebar channel="chat-1" resumeSessionId="saved-session-1" />,
+    );
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("gemma-4-26b-a4b-qat"),
+    );
+    expect(apiMocks.getSessionDetail).toHaveBeenCalledWith(
+      "saved-session-1",
+      undefined,
+    );
+  });
+
+  it("does not let a delayed stored-model read overwrite a live /model event", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    let resolveStoredModel!: (value: { model: string | null }) => void;
+    apiMocks.getSessionDetail.mockImplementationOnce(
+      () =>
+        new Promise<{ model: string | null }>((resolve) => {
+          resolveStoredModel = resolve;
+        }),
+    );
+
+    await render(
+      <ChatSidebar channel="chat-1" resumeSessionId="saved-session-1" />,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("message", {
+        data: JSON.stringify({
+          method: "event",
+          params: {
+            type: "session.info",
+            payload: { model: "google/live-model" },
+          },
+        }),
+      });
+      resolveStoredModel({ model: "google/stored-model" });
+    });
+
+    expect(container.textContent).toContain("live-model");
+    expect(container.textContent).not.toContain("stored-model");
+  });
+});
+
+describe("ChatSidebar event socket reconnect", () => {
+  beforeEach(() => {
+    // Not loopback: exercise the gated-mode path so closes fall through to
+    // the reconnect logic instead of triggering a page reload.
+    reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(false);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function renderSidebar() {
+    const { ChatSidebar } = await import("./ChatSidebar");
+    await render(<ChatSidebar channel="chat-1" />);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+  }
+
+  /** Advance timers and flush the async `connect()` that fires on the tick. */
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it("reconnects after a transient close", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps retrying when reconnect URL construction fails", async () => {
+    await renderSidebar();
+    apiMocks.buildWsUrl
+      .mockRejectedValueOnce(new Error("ticket endpoint unavailable"))
+      .mockResolvedValue("ws://localhost/api/events?channel=chat-1");
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(container.textContent).toContain("reconnecting in 2s");
+
+    await advance(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("times out a stalled URL request and retries", async () => {
+    let resolveStalledRequest!: (url: string) => void;
+    await renderSidebar();
+    apiMocks.buildWsUrl
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveStalledRequest = resolve;
+          }),
+      )
+      .mockResolvedValue("ws://localhost/api/events?channel=chat-1");
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    await advance(1_000 + EVENTS_CONNECT_TIMEOUT_MS);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(container.textContent).toContain("reconnecting in 2s");
+
+    // A late ticket response from the timed-out attempt must not create a
+    // superseded socket alongside the scheduled replacement.
+    await act(async () => {
+      resolveStalledRequest("ws://localhost/api/events?channel=stale");
+      await Promise.resolve();
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await advance(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("times out a stalled WebSocket handshake and retries", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    await advance(EVENTS_CONNECT_TIMEOUT_MS);
+    expect(FakeWebSocket.instances[1].closed).toBe(true);
+    expect(container.textContent).toContain("reconnecting in 2s");
+
+    await advance(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+  });
+
+  it("backs off exponentially across repeated failures", async () => {
+    await renderSidebar();
+
+    // 1s, then 2s, then 4s — a socket that never opens keeps backing off.
+    for (const [index, delay] of [1_000, 2_000, 4_000].entries()) {
+      await act(async () => {
+        FakeWebSocket.instances[index].emit("close", { code: 1006 });
+      });
+
+      // The previous (shorter) delay must not be enough to fire this one.
+      if (index > 0) {
+        await advance(delay - 1);
+        expect(FakeWebSocket.instances).toHaveLength(index + 1);
+      }
+
+      await advance(delay);
+      expect(FakeWebSocket.instances).toHaveLength(index + 2);
+    }
+  });
+
+  it("schedules only one retry when error and close both fire", async () => {
+    await renderSidebar();
+
+    // A failed socket emits `error` then `close`. Scheduling from both
+    // paths would queue two timers and leak the untracked one.
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("error", {});
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    await advance(1_000);
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+    });
+    await advance(29_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("resets the backoff after a successful reconnect", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // Reconnected, and the socket actually SERVED: it carries a frame. That
+    // is what resets the backoff now, because a handshake alone no longer
+    // distinguishes a working feed from a credential the gateway accepts and
+    // then refuses. The next drop should start from 1s again, not 2s.
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+      FakeWebSocket.instances[1].emit("message", {
+        data: JSON.stringify({ jsonrpc: "2.0", method: "hello", params: {} }),
+      });
+      FakeWebSocket.instances[1].emit("close", { code: 1006 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+  });
+
+  it("retries a rejected credential once, then tells the user to reload", async () => {
+    // The founder's case: the gateway restarted, so this tab's session token
+    // is dead and every reconnect is refused with 4401. One retry proves the
+    // credential is dead rather than merely late; after that the feed must
+    // stop and say so instead of reconnecting forever.
+    //
+    // `open` is emitted before every close ON PURPOSE. The gateway rejects a
+    // bad credential by ACCEPTING the upgrade and then closing 4401, because
+    // a close sent before accept carries no frame and reaches the browser as
+    // a bare 1006. So `open` fires on doomed attempts too. An earlier version
+    // of this test closed without opening, which is why it stayed green while
+    // the running tab reconnected forever: the open handler was clearing the
+    // very counter that decides when to stop.
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("open", {});
+      FakeWebSocket.instances[0].emit("close", { code: 4401 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+      FakeWebSocket.instances[1].emit("close", { code: 4401 });
+    });
+    await advance(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(container.textContent).toContain("reload the page");
+  });
+
+  it("stops on a dead credential no matter how many times the socket opens first", async () => {
+    // The regression guard. Every rejected attempt completes a handshake, so
+    // if anything ever clears the credential counter on `open` again this
+    // loops without bound and this test fails on socket count.
+    await renderSidebar();
+
+    for (let i = 0; i < 6; i += 1) {
+      const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+      await act(async () => {
+        socket.emit("open", {});
+        socket.emit("close", { code: 4401 });
+      });
+      await advance(5_000);
+    }
+
+    // One retry allowed for a merely-late ticket, then terminal.
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(container.textContent).toContain("reload the page");
+  });
+
+  it("a socket that carried a frame is trusted again, so a later drop still retries", async () => {
+    // The counter reset moved from `open` to the first frame. This is the
+    // other half of that: a socket that genuinely served must be allowed to
+    // reconnect normally after a real network drop.
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("open", {});
+      FakeWebSocket.instances[0].emit("close", { code: 4401 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // The retry works and the feed carries a frame.
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+      FakeWebSocket.instances[1].emit("message", {
+        data: JSON.stringify({ jsonrpc: "2.0", method: "hello", params: {} }),
+      });
+    });
+
+    // A later ordinary drop must still reconnect rather than inherit the
+    // earlier rejection.
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("close", { code: 1006 });
+    });
+    await advance(5_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+  });
+
+  it("does not retry auth rejections", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 4403 });
+    });
+
+    await advance(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("does not retry a normal closure", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1000 });
+    });
+
+    await advance(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("gives up after the attempt cap instead of retrying forever", async () => {
+    await renderSidebar();
+
+    for (let i = 0; i < 40; i++) {
+      const socket =
+        FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+      await act(async () => {
+        socket.emit("close", { code: 1006 });
+      });
+      await advance(30_000);
+    }
+
+    // 15 retries + the initial connection.
+    expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(16);
+  });
+
+  it("clears its own banner on a successful reconnect", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    expect(container.textContent).toContain("events feed disconnected");
+
+    await advance(1_000);
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+    });
+
+    // Banner gone entirely — including the "reconnect events feed" button,
+    // which only renders while `error` is set.
+    expect(container.textContent).not.toContain("events feed");
+  });
+
+  it("does not clear a credential warning when the feed recovers", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    await advance(1_000);
+
+    // A sidecar error lands while the events socket is still reconnecting.
+    // The banner is shared, so a blind `setError(null)` on reconnect would
+    // hide a real problem the user needs to see.
+    await act(async () => {
+      gatewayMocks.handlers.get("error")?.({
+        payload: { message: "ANTHROPIC_API_KEY is not set" },
+      });
+    });
+
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+    });
+
+    expect(container.textContent).toContain("ANTHROPIC_API_KEY is not set");
+  });
+
+  it("does not overwrite a sidecar error when the feed drops", async () => {
+    await renderSidebar();
+
+    // A sidecar error is already on the banner...
+    await act(async () => {
+      gatewayMocks.handlers.get("error")?.({
+        payload: { message: "ANTHROPIC_API_KEY is not set" },
+      });
+    });
+
+    // ...when the events feed drops. `error` is that message's only home,
+    // so overwriting it loses the warning permanently — the feed's own
+    // banner would later clear itself to null and the sidecar never
+    // re-emits.
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("error", {});
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    expect(container.textContent).toContain("ANTHROPIC_API_KEY is not set");
+    // The disconnect message must not have replaced it. (Matching the
+    // banner text specifically — "reconnect events feed" is the button
+    // label, which is expected to be present whenever a banner shows.)
+    expect(container.textContent).not.toContain("events feed disconnected");
+  });
+
+  it("still reconnects while a foreign banner suppresses its message", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      gatewayMocks.handlers.get("error")?.({
+        payload: { message: "ANTHROPIC_API_KEY is not set" },
+      });
+    });
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    // Declining to write the banner must not disable the retry itself.
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("clears the reconnect timer and closes the socket on unmount", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    await act(async () => root.unmount());
+
+    expect(FakeWebSocket.instances[0].closed).toBe(true);
+    // The pending retry timer must be cleared, not merely neutered by the
+    // `unmounting` flag — a live timer keeps the effect closure alive.
+    expect(vi.getTimerCount()).toBe(0);
+
+    await advance(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+});

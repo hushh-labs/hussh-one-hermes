@@ -128,6 +128,7 @@ git pull origin main
 
 ## See also
 - [Feature — Session-Model Persistence & Resume](../features/session-model-resume.md)
+- [Gateway resilience — launchd + doctor cron, incident SOP](./gateway-resilience.md)
 - [Operations Runbook](./README.md)
 - [Upgrading from upstream](./upgrading.md)
 - [Contracts](../contracts/README.md) — invariants **H** and **I**

@@ -1,0 +1,70 @@
+name: Hussh One fresh sync verification
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hussh-one-fresh-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Fresh Hussh One runtime and upstream check
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out the canonical Hussh One trunk
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+
+      - name: Re-establish the Hussh One remote contract
+        run: |
+          git switch main || git switch --track -c main origin/main
+          # actions/checkout retains an authenticated origin URL. Normalize it
+          # before asserting the product contract, so CI verifies the same
+          # public Hussh One remote local installs use.
+          git remote set-url origin https://github.com/hushh-labs/hussh-one-hermes.git
+          test "$(git remote get-url origin)" = "https://github.com/hushh-labs/hussh-one-hermes.git"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git 2>/dev/null || \
+            git remote set-url upstream https://github.com/NousResearch/hermes-agent.git
+          git remote set-url --push upstream DISABLED
+          test "$(git remote get-url --push upstream)" = "DISABLED"
+
+      - name: Build a clean runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e ".[all,dev]"
+          corepack enable
+          corepack npm@11.17.0 ci
+          corepack npm@11.17.0 run build --workspace @hermes/ink
+          corepack npm@11.17.0 --prefix ui-tui run build
+          corepack npm@11.17.0 --prefix web run build
+
+      - name: Verify the Hussh overlay end to end
+        env:
+          HUSSH_ONE_SKIP_DASHBOARD_HEALTH: "1"
+        run: scripts/hussh-one-guard.sh
+
+      - name: Check the latest official Hermes source
+        run: scripts/hussh-one-upstream-update.sh --check

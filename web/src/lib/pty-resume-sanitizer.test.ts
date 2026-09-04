@@ -144,6 +144,96 @@ describe("PtyResumeSanitizer — stateful frame handling", () => {
     expect(s.next("[")).toBe("");
     expect(s.next("2Kb")).toBe("b");
   });
+
+  it("buffers a DEC private-mode sequence split right after the '?' prefix, then emits it whole", () => {
+    // e.g. re-enabling focus reporting on reconnect: "\x1b[?1004h" split as
+    // "\x1b[?100" | "4h". Reproduces the reconnect-time corruption: before
+    // the PARTIAL_ESC fix, "\x1b[?100" wasn't recognised as incomplete and
+    // was emitted immediately instead of held in #pending. Fixed, the two
+    // fragments reassemble into one intact sequence delivered to xterm in a
+    // single write — not split, not dropped, not stripped (only ERASE_LINE/
+    // ERASE_CHAR are ever stripped; a real mode-toggle must reach xterm).
+    const s = new PtyResumeSanitizer();
+    expect(s.next("before\x1b[?100")).toBe("before");
+    expect(s.next("4hafter")).toBe("\x1b[?1004hafter");
+  });
+
+  it("buffers a DEC private-mode sequence split right after '['", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b[")).toBe("x");
+    expect(s.next("?1004ly")).toBe("\x1b[?1004ly");
+  });
+
+  it("drops a buffered DEC private-mode partial on flush instead of writing a dangling sequence", () => {
+    // The exact production failure mode: the socket closes mid-DEC-sequence
+    // (e.g. a backgrounded tab's connection is force-closed) before the
+    // terminating byte arrives. flush() must drop it, not emit it — an
+    // emitted dangling "\x1b[?100" would leave xterm's parser stuck
+    // in-escape across the reconnect, corrupting whatever renders next.
+    const s = new PtyResumeSanitizer();
+    s.next("before\x1b[?100");
+    expect(s.flush()).toBe("");
+  });
+
+  it("buffers intermediate bytes in a partial DEC locator sequence (e.g. \\x1b[0')", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("a\x1b[0'")).toBe("a");
+    expect(s.next("zb")).toBe("\x1b[0'zb");
+  });
+
+  it("does not treat a complete DEC sequence as partial", () => {
+    const s = new PtyResumeSanitizer();
+    // "\x1b[?1004h" arrives whole in one frame — must pass through, not be
+    // held back waiting for a final byte that already arrived.
+    expect(s.next("a\x1b[?1004hb")).toBe("a\x1b[?1004hb");
+  });
+
+  it("buffers an OSC window-title sequence split before the BEL terminator", () => {
+    // Real Ink output, e.g. "\x1b]0;Hermes\x07" — a live capture of a session
+    // resume replay found 53 of these per replay. Every possible split point
+    // inside one was verified to leak a dangling fragment under the old
+    // CSI-only PARTIAL_ESC regex; this is the exact fix.
+    const s = new PtyResumeSanitizer();
+    expect(s.next("hello \x1b]0;Herme")).toBe("hello ");
+    expect(s.next("s\x07world")).toBe("\x1b]0;Hermes\x07world");
+  });
+
+  it("buffers an OSC sequence split right after the ']' introducer", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b]")).toBe("x");
+    expect(s.next("2;title\x07y")).toBe("\x1b]2;title\x07y");
+  });
+
+  it("buffers an OSC sequence split right after the ';' with no payload yet", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b]0;")).toBe("x");
+    expect(s.next("Hermes\x07y")).toBe("\x1b]0;Hermes\x07y");
+  });
+
+  it("does not treat a complete OSC sequence as partial", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("a\x1b]0;Hermes\x07b")).toBe("a\x1b]0;Hermes\x07b");
+  });
+
+  it("drops a buffered OSC partial on flush instead of writing a dangling sequence", () => {
+    // Same failure mode as the DEC-CSI case: the socket closes mid-title
+    // before the BEL arrives. flush() must drop it, not emit a fragment
+    // that leaves xterm's parser stuck "in OSC string" across reconnect.
+    const s = new PtyResumeSanitizer();
+    s.next("before\x1b]0;Herme");
+    expect(s.flush()).toBe("");
+  });
+
+  it("recognizes an OSC terminated by ST (\\x1b\\\\) instead of BEL", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("a\x1b]0;Hermes\x1b\\b")).toBe("a\x1b]0;Hermes\x1b\\b");
+  });
+
+  it("buffers an OSC sequence split right at the start of its ST terminator", () => {
+    const s = new PtyResumeSanitizer();
+    expect(s.next("x\x1b]0;Hermes\x1b")).toBe("x");
+    expect(s.next("\\y")).toBe("\x1b]0;Hermes\x1b\\y");
+  });
 });
 
 describe("PtyResumeSanitizer — cross-frame blank-line bursts", () => {

@@ -36,7 +36,7 @@ START_SERVICES=0
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 WRITE_VSCODE=1
 USE_LAUNCHD=0
-ALLOW_UNAUTHENTICATED_LOOPBACK=0
+ALLOW_UNAUTHENTICATED_LOOPBACK=1
 PROXY_PORT=8643
 SHIM_PORT=8644
 
@@ -288,6 +288,8 @@ url = f"http://127.0.0.1:{shim_port}/v1"
 # summarization heuristics — understating it makes the agent truncate context
 # 5x too early; overstating it causes hard API 400s mid-conversation.
 vertex_models = [
+    {"id": "gemini-3.7-flash", "name": "Gemini 3.7 Flash (Vertex ADC)",
+     "maxInputTokens": 1048576, "maxOutputTokens": 65536},
     {"id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash (Vertex ADC)",
      "maxInputTokens": 1048576, "maxOutputTokens": 65536},
     {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash (Vertex ADC)",
@@ -304,18 +306,21 @@ vertex_models = [
      "maxInputTokens": 1000000, "maxOutputTokens": 128000},
 ]
 for m in vertex_models:
-    m.update({"url": url, "toolCalling": True, "vision": True,
-              "thinking": True, "streaming": True})
+    m.update({
+        "url": url,
+        "apiKey": master_key,
+        "headers": {"Authorization": f"Bearer {master_key}"},
+        "toolCalling": True,
+        "vision": True,
+        "thinking": True,
+        "streaming": True,
+    })
 
 vertex_block = {
     "name": "Hussh One Vertex ADC",
     "vendor": "customendpoint",
-    # `customendpoint` reads credentials at the provider level.  Model-level
-    # apiKey/headers fields are ignored by current VS Code Insiders builds,
-    # which results in a request with no Authorization header at all.
-    # Keep the literal loopback-only key here instead of a VS Code secret-store
-    # reference: the latter can disappear after a keychain or editor update.
     "apiKey": master_key,
+    "headers": {"Authorization": f"Bearer {master_key}"},
     "apiType": "chat-completions",
     "models": vertex_models,
 }
@@ -772,7 +777,7 @@ PY
   # never blocks setup (a single flaky/no-tool-support model shouldn't take
   # down every other model), but any FAIL is surfaced loudly so a model
   # that can't do native tool calling is never silently handed to Copilot.
-  SMOKE_MODELS="gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,claude-sonnet-4-6,claude-opus-4-8,claude-sonnet-5,claude-fable-5"
+  SMOKE_MODELS="gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3.1-pro-preview,claude-sonnet-4-6,claude-opus-4-8,claude-sonnet-5,claude-fable-5"
   log "Tool-calling smoke test (native OpenAI tools -> tool_calls, anyOf schema) ..."
   if ! SMOKE_MODELS="$SMOKE_MODELS" tool_call_smoke_test; then
     warn "One or more models FAILED native tool calling — see above. Setup continues,"
@@ -784,7 +789,7 @@ log ""
 log "VS Code Copilot BYOK (Vertex ADC) setup complete."
 log "  Endpoint URL : http://127.0.0.1:$SHIM_PORT/v1   (the auth shim)"
 log "  Local auth   : configured automatically in the VS Code endpoint"
-log "  Models       : gemini-3.6-flash, gemini-3.5-flash, gemini-3.1-pro-preview, claude-sonnet-4-6, claude-opus-4-8"
+log "  Models       : gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-3.1-pro-preview, claude-sonnet-4-6, claude-opus-4-8"
 if [[ "$started_via_launchd" == "1" ]]; then
   log "  Resilience   : launchd KeepAlive ($PROXY_LABEL, $SHIM_LABEL) — instant restart"
 fi

@@ -83,6 +83,11 @@ the short-lived owner capability in memory, so its 15-minute lease is not a
 
 - Device signing key, Firebase refresh credential, and random vault-envelope
   wrapping key: macOS Keychain.
+- Source Library's separate 32-byte custody secret: macOS Data Protection
+  Keychain with `WhenUnlockedThisDeviceOnly` and local user-presence policy. It
+  combines with the unlocked vault key to derive source-plane AES-GCM keys and
+  is zeroized from bridge memory on every lock/revocation path. This is not
+  represented as a PKM scope or a non-exportable Secure Enclave `SecKey`.
 - Encrypted vault-key envelope and non-secret identity metadata: active Hermes
   profile with owner-only file permissions.
 - Unwrapped vault key and ID/owner tokens: process memory only. A new local
@@ -104,11 +109,24 @@ refresh.
 
 ## Read and write behavior
 
-Reads remain PCHP consent requests and scoped encrypted exports. This bridge
-does not return a decrypted PKM domain to the agent. Writes are two-step:
-proposal, then commit. Commit displays the affected domain/path, human-readable
-summary, and current sharing/export impact; it re-reads the source revision and
-fails closed if content or sharing changed.
+Owner reads and external sharing are separate lanes. A locally enrolled
+Desktop/dashboard session may use `read_my_pkm` to decrypt the narrowest
+requested owner scope in process memory. The tool labels that result
+`decrypted_in_memory_projection`; it is not the JSON stored by the vault.
+Standalone TUI and messaging sessions do not receive this native owner tool.
+External agents continue through PCHP consent and scoped encrypted exports.
+
+The durable vault, cloud PKM, and local replica contain ciphertext envelopes
+only. A response that mixes plaintext fields with `[VAULT_ENCRYPTED]`,
+`[VAULT_REF:*]`, or similar placeholders is invalid and must never be described
+as exact vault state. Documentation and simulations contain field inventories,
+not vault values. If an owner read is locked or unavailable, Hermes directs the
+person to the protected `/hussh-one` lifecycle instead of asking for a key or
+passphrase in chat or falling back to direct replica decryption.
+
+Writes are two-step: proposal, then commit. Commit displays the affected
+domain/path, human-readable summary, and current sharing/export impact; it
+re-reads the source revision and fails closed if content or sharing changed.
 
 Create, update, merge, path/scope delete, and whole-domain delete use the same
 confirmed mutation plan. Whole-domain deletion is compare-and-delete on the
@@ -131,16 +149,40 @@ Disconnect revokes the server-side device, disables the native connector,
 deletes local identity, envelope, and ciphertext-replica state, and removes
 related Keychain items.
 
-The product currently selects the immutable UAT bundle:
+A device links to one of two immutable environment bundles. Both are
+deployments of the same Firebase project behind different hosts, so they share
+the checked-in public Firebase client identifier and differ only in their two
+bases:
 
-- One web: `https://uat.one.hushh.ai`
-- Account/PKM API: `https://api.uat.hushh.ai`
-- Firebase public client identifier: the checked-in UAT value
-- Trusted-device admission: backend feature flag plus explicit allowlist
+| Environment | One web | Account/PKM API |
+| --- | --- | --- |
+| `uat` (default) | `https://uat.one.hushh.ai` | `https://api.uat.hushh.ai` |
+| `production` | `https://one.hushh.ai` | `https://api.hushh.ai` |
 
-Vault material is never used to select an environment. A later production
-switch must use an immutable production bundle, require disconnect and local
-custody cleanup first, and reject arbitrary custom origins.
+Trusted-device admission on either host is the backend feature flag plus its
+explicit allowlist.
+
+The environment is chosen once, when the browser approval starts, and the
+choice travels with that approval: the code exchange is posted to the same API
+the approval page belongs to, and the resulting identity records
+`environment`, `api_base` and `web_base`, which every later call (device
+status, heartbeat, vault, replica sync) reads back. Three ways to choose, in
+order of precedence:
+
+1. `/hussh-one connect production` (or `connect prod`, `connect uat`) names it
+   for that connect. The dashboard's `POST /api/hussh-one/connect` takes the
+   same value in its `environment` field.
+2. `hussh_one.environment: production` in `config.yaml` sets the default for a
+   bare `/hussh-one connect`.
+3. Neither set means `uat`.
+
+Names are case-insensitive. Anything other than `uat` and `production` is
+refused by name; custom origins are not accepted, and vault material is never
+used to select an environment. `/hussh-one reconnect` repairs the identity in
+the environment it was enrolled in and ignores any argument, because the
+device row it replaces, the vault envelope and the encrypted replica all live
+there. Moving a machine between environments is `/hussh-one disconnect
+confirm` (local custody cleanup) followed by a connect on the other one.
 
 ## Browser-to-Hermes handoff
 
@@ -193,7 +235,11 @@ sidebar, or use `/hussh-one` from a local Hermes chat.
 1. Select **Connect in browser** and confirm the full verified email shown on
    the Hussh One approval page.
 2. Approve the new Mac as a trusted device in the Hussh One UAT surface.
-3. Return to Desktop after identity reports connected as that same email.
+3. Wait until the browser confirms that Hermes completed the connection, then
+   return to Desktop after identity reports connected as that same email. The
+   callback page no longer claims success merely because it received the
+   one-time approval code; exchange or persistence failures are reported as
+   incomplete and remain retryable from `/hussh-one status`.
 4. Select **Secure this device**. For an existing vault, the approval browser
    first offers its compatible One passkey. If none exists or that ceremony is
    canceled, enter the vault passphrase in the native macOS protected prompt.
@@ -209,19 +255,23 @@ secret through chat: `/hussh-one connect` opens browser approval, then
 through native protected prompts. `/hussh-one status` shows the linked verified
 email and vault state; `/hussh-one unlock` opens the existing Keychain-bound
 envelope without asking for the passphrase again; `/hussh-one lock` clears local vault memory; and
-`/hussh-one disconnect` confirms locally, revokes the device, and removes local
-custody. None of these commands send a passphrase or recovery key to the model.
+`/hussh-one disconnect` shows the exact destructive impact, and
+`/hussh-one disconnect confirm` performs the revocation and local cleanup. This
+explicit two-step command works consistently in Desktop, TUI, and the loopback
+dashboard without relying on a background native dialog. None of these commands
+send a passphrase or recovery key to the model.
 
 ### What each command means
 
 | Command | Meaning |
 | --- | --- |
-| `/hussh-one connect` | Choose and approve a One account in the browser; never accepts an email typed in chat |
+| `/hussh-one connect [uat\|production]` | Choose and approve a One account in the browser on that environment (default: `hussh_one.environment`, else `uat`); never accepts an email typed in chat |
 | `/hussh-one enroll` | Resume local custody setup; passkey first when available, protected passphrase otherwise |
 | `/hussh-one status` | Show the verified email, environment, device, enrollment, lock, and sync state |
 | `/hussh-one unlock` | Open the existing Keychain-bound envelope |
 | `/hussh-one lock` | Clear the vault key and action capabilities from memory |
-| `/hussh-one disconnect` | Confirm locally, revoke the device, and delete profile and Keychain custody |
+| `/hussh-one disconnect` | Review what local state will be removed; makes no changes |
+| `/hussh-one disconnect confirm` | Revoke the device and delete profile, PKM replica, Source Library index, and Keychain custody |
 
 `connect` proves identity and registers the installation. `enroll` proves
 cryptographic access to the existing remote encrypted vault or creates the
@@ -268,9 +318,13 @@ device identity and vault envelope remain bound to that machine.
 - Revoked/invalid device: reconnect through browser approval.
 - Vault contract mismatch: stop; update Hussh One and the UAT service before
   retrying. Do not rewrite the vault or bypass golden-vector validation.
-- Disconnect: use the trusted local control-plane disconnect action. It revokes
-  the server-side device, removes the local envelope, and deletes related
-  Keychain items.
+- Disconnect: run `/hussh-one disconnect`, review the impact, then run
+  `/hussh-one disconnect confirm`. Hermes revokes the server-side device before
+  removing the local envelope and related Keychain items. If remote revocation
+  cannot be verified, Hermes still removes this installation's private device
+  key and local custody so account switching remains possible, reports the
+  remote status as unverified, and directs the owner to review trusted devices
+  in One after connectivity returns.
 - Full rollback: disconnect first, then use the normal Hussh One repository
   rollback procedure. Never restore trusted-device secrets from Git.
 
@@ -304,6 +358,50 @@ shell arguments, logs, or MCP configuration.
   unaffected.
 - Existing Hermes approval and Hussh PKM validation/store regression
   suites remain the integration owners.
+
+## Reconnecting a device whose login expired
+
+A trusted device holds two different things, and until 2026-09-02 the product
+treated them as one. **Trust** is the device row in One, revoked only when the
+owner says so. **A login** is a Firebase refresh token that ages out on its own,
+and dies outright when the account's sessions are reset.
+
+When the login died, the symptom was silent and the remedy was catastrophic.
+Silent, because `post_heartbeat` deliberately does not refresh the token (so
+telemetry can never trigger a seal): no token, no heartbeat, and One shows the
+machine as gone while everything on the machine looks healthy. `/hussh-one
+status` still read "connected", which was true of the enrollment and useless as
+an answer. Catastrophic, because `begin_onboarding` refused to run while an
+account email was stored, so the only route out was `/hussh-one disconnect
+confirm`, which removes the vault envelope, the encrypted PKM replica and
+Source Library custody. Local data destroyed to fix a token.
+
+`/hussh-one reconnect` is the repair:
+
+- It re-approves **the same account** in the browser. The client carries the
+  stored email as an expectation and refuses the exchange if a different
+  account comes back, before writing anything, because the custody already on
+  this machine belongs to the account being replaced.
+- It passes `replaces_device_id`, so the server swaps the device row atomically
+  instead of leaving an orphan behind.
+- It removes nothing. The vault envelope, the encrypted replica and Source
+  Library custody survive, and the native passphrase ceremony is skipped
+  because the envelope is already there.
+- The presence heartbeat resumes on its own once a token exists again.
+
+Switching to a *different* account is still the explicit disconnect path, and
+that is the point of the split: only an account change should cost you custody.
+
+`session_state()` names what a status read should have answered all along:
+`not_connected`, `ok`, `expired`, `revoked`, or `indeterminate`. Expired and
+revoked are deliberately distinct. Revoked means the owner took access away and
+the local copy is sealed; expired means a token aged out. Every ambiguous
+outcome is `indeterminate`, which nothing acts on, because the caller of this
+information destroys user data on `revoked`.
+
+The same repair is available as `POST /api/hussh-one/connect {"reconnect": true}`
+on the dashboard, and to any second machine: the flow is per device, so each
+one repairs itself without touching the others.
 
 ## Status
 

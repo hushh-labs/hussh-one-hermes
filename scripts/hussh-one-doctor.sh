@@ -157,6 +157,50 @@ check_branch_and_remote() {
   fi
 }
 
+# 2026-08-23 incident: a merge (`upstream/main` -> a `sync/upstream-*` branch)
+# was run directly in this production checkout and left mid-conflict with an
+# unresolved `<<<<<<< HEAD` marker in hermes_cli/providers.py. The live
+# gateway process kept running on old, already-imported modules, but any
+# fresh restart (manual or launchd/doctor-triggered after a crash) hit a
+# SyntaxError on import and could not come back up — the self-healing layers
+# in docs/hussh-one/operations/gateway-resilience.md were silently unable to
+# do their job. Catch both symptoms here instead of discovering them at the
+# next crash.
+check_working_tree_mergeable() {
+  if [[ -f "$REPO_ROOT/.git/MERGE_HEAD" ]]; then
+    fail "an unfinished 'git merge' is in progress in this checkout — a" \
+      "future restart (manual, launchd, or doctor-triggered) can fail on" \
+      "unresolved conflict markers. Finish or 'git merge --abort' it; do" \
+      "upstream syncs in an isolated worktree, never this live checkout" \
+      "(see docs/hussh-one/operations/upgrading.md)."
+    return
+  fi
+  if git -C "$REPO_ROOT" grep -lI '^<<<<<<< ' -- '*.py' >/tmp/hussh-one-conflict-markers.$$ 2>/dev/null; then
+    fail "unresolved '<<<<<<<' conflict marker(s) in tracked .py files:" \
+      "$(tr '\n' ' ' <"/tmp/hussh-one-conflict-markers.$$")"
+  else
+    pass "no in-progress merge or conflict markers in the working tree"
+  fi
+  rm -f "/tmp/hussh-one-conflict-markers.$$"
+}
+
+check_cli_importable() {
+  local py
+  py="$(python_bin)"
+  if [[ -z "$py" ]]; then
+    warn "no python interpreter found to smoke-test hermes_cli.main import"
+    return
+  fi
+  if (cd "$REPO_ROOT" && "$py" -c "import hermes_cli.main" >/tmp/hussh-one-cli-import.$$ 2>&1); then
+    pass "hermes_cli.main imports cleanly (the gateway can actually restart)"
+  else
+    fail "hermes_cli.main failed to import — the gateway cannot restart" \
+      "right now, even if the currently-running process still looks" \
+      "healthy: $(tail -3 "/tmp/hussh-one-cli-import.$$" | tr '\n' ' ')"
+  fi
+  rm -f "/tmp/hussh-one-cli-import.$$"
+}
+
 check_required_files() {
   local files=(
     HUSSH_ONE.md
@@ -237,14 +281,17 @@ else:
     provider = ""
     default_model = str(model_cfg or "").strip()
 
-if provider and provider != "gemini":
-    warnings.append(f"model.provider is {provider}, expected gemini for global default")
-if default_model and default_model != "gemini-3.6-flash":
-    warnings.append(f"model.default is {default_model}, expected gemini-3.6-flash")
+is_local_provider = provider == "lmstudio" or provider.startswith("custom:")
+if provider and provider != "gemini" and not is_local_provider:
+    warnings.append(f"model.provider is {provider}, expected gemini, lmstudio, or a custom:<name> local provider")
+if provider == "gemini" and default_model and default_model not in ("gemini-3.7-flash", "gemini-3.6-flash"):
+    warnings.append(f"model.default is {default_model}, expected gemini-3.7-flash or gemini-3.6-flash")
+if is_local_provider and not default_model:
+    warnings.append(f"model.default is unset; select a loaded local model with 'hermes model' ({provider})")
 if not provider:
-    warnings.append("model.provider is unset; bootstrap will set it to gemini")
-if not default_model:
-    warnings.append("model.default is unset; bootstrap will set it to gemini-3.6-flash")
+    warnings.append("model.provider is unset; bootstrap will set the first-install default to gemini")
+if not default_model and not is_local_provider:
+    warnings.append("model.default is unset; select a model before starting the gateway")
 
 reasoning_effort = cfg.get("agent", {}).get("reasoning_effort")
 if reasoning_effort not in ("high", "max"):
@@ -610,6 +657,8 @@ check_changelog_freshness() {
 }
 
 check_branch_and_remote
+check_working_tree_mergeable
+check_cli_importable
 check_required_files || true
 check_legacy_branding
 check_config

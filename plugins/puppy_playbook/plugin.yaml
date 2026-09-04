@@ -1,0 +1,4 @@
+name: puppy-playbook
+version: 1.0.0
+description: "Injects the tactics an on-device model learned from its own graded failures into the system prompt, keyed by the model actually serving. Zero cost at serve time: the learning happened offline."
+author: "Hushh Labs"

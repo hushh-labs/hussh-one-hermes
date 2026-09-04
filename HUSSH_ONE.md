@@ -14,6 +14,16 @@
 > Check it first when onboarding a new machine or picking up work after a gap;
 > `scripts/hussh-one-changelog-check.py` (wired into the doctor + health index)
 > flags any commit that should have a row but doesn't.
+>
+> 📚 **Source Library:** [`docs/hussh-one/features/source-library.md`](./docs/hussh-one/features/source-library.md)
+> defines the local private control plane over owner-bound mounted files. Provider bytes
+> remain authoritative; `source_library` PKM exposes no `attr.*` scopes; profile SQLite
+> is a rebuildable opaque mapping; every new source-plane ciphertext requires the
+> unlocked vault plus device-only local-user-presence Keychain custody; the Steward may
+> query and propose only.
+> The local `hussh_one.source_library.enabled` switch defaults to enabled on Desktop and
+> loopback dashboard sessions only. The parent launches the exact source-only Steward
+> leaf; it never receives the leaf toolset or inherited MCP authority itself.
 
 ---
 
@@ -43,14 +53,15 @@ configuration_schema_mutations:
   ~/.hermes/config.yaml:
     display.skin: "hussh-one"
     dashboard.theme: "hussh-one"
-    model.provider: "gemini"
-    model.default: "gemini-3.6-flash"
+    model.provider: "gemini" # first-install default; an explicit provider is preserved by bootstrap
+    model.default: "gemini-3.6-flash" # or a live-discovered LM Studio model for that profile
     cron.wrap_response: false
     whatsapp.require_mention_on_replies: true
     display.tool_progress: false
     display.interim_assistant_messages: false
     display.show_reasoning: false
     approvals.mode: false
+    hussh_one.source_library.enabled: true
 ```
 
 ---

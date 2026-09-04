@@ -30,9 +30,90 @@ const ERASE_LINE = /\x1b\[\d*K/g;
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
 const ERASE_CHAR = /\x1b\[\d*X/g;
 
-/** Still-incomplete trailing escape: "\x1b", "\x1b[", "\x1b[\d*". */
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
-const PARTIAL_ESC = /^\x1b(?:\[\d*)?$/;
+const CSI_PARTIAL_BODY = /^[0-9:;<=>?]*[\x20-\x2f]*$/;
+
+/**
+ * Index of the start of a still-open escape sequence in `combined`, or -1
+ * if none is open (everything is either plain text or fully terminated
+ * sequences). Covers the two sequence families Ink's output actually uses:
+ *
+ * - **CSI** (`\x1b[...`): open while only param bytes (0x30-0x3F: digits
+ *   plus `:;<=>?`) and/or intermediate bytes (0x20-0x2F) have arrived,
+ *   with no final byte (0x40-0x7E) yet. See ui-tui's termio/csi.ts
+ *   CSI_RANGE for the canonical byte ranges this mirrors (a separate
+ *   package, not importable here).
+ * - **OSC** (`\x1b]...`): open until a BEL (`\x07`) or ST (`\x1b\\`)
+ *   terminator has arrived. Window/tab-title and default-color payloads
+ *   are free-form text, so no character-class restriction applies to the
+ *   body — only whether a terminator has shown up yet.
+ *
+ * `combined.lastIndexOf("\x1b")` alone isn't a sufficient way to find the
+ * open sequence's start: an OSC terminated by ST (`\x1b\\`, two bytes)
+ * contains its OWN embedded ESC as part of the terminator, so once
+ * complete, "the last ESC in the buffer" points at that terminator, not
+ * at the (already-resolved) opener — treating that position as the
+ * pending start would wrongly re-buffer an already-complete sequence
+ * forever (verified: `"a\x1b]0;Hermes\x1b\\b"` never released "b" without
+ * checking each opener independently — `flush()` would eventually drop
+ * the whole thing, corrupting output far worse than the original
+ * split-frame bug this function exists to fix). So this checks each
+ * opener on its own: is the last `\x1b[` still missing its final byte? Is
+ * the last `\x1b]` still missing its terminator? Is the buffer's last
+ * byte a bare, not-yet-classified `\x1b`? Ink's output is well-formed
+ * (one sequence open at a time), so at most one of these is ever
+ * genuinely open; if more than one somehow were, the earliest position is
+ * returned — safe, since holding back more only delays emission, never
+ * corrupts it.
+ *
+ * History: this used to be a single regex, `/^\x1b(?:\[[0-9:;<=>?]*[\x20-
+ * \x2f]*)?$/`, tested only against the tail from `lastIndexOf("\x1b")`.
+ * That missed two things:
+ *
+ * 1. DEC private-mode sequences (`CSI ? Pn h/l` — focus reporting 1004,
+ *    mouse tracking, bracketed paste, cursor visibility) split right
+ *    after the `?` (e.g. "\x1b[?100" | "4l").
+ * 2. Every OSC sequence, full stop — window/tab title (`\x1b]0;...\x07`,
+ *    `\x1b]2;...\x07`) and default-color paint/query (`\x1b]10/11;...`)
+ *    are used constantly by Ink's output; a live capture of one session
+ *    resume replay found 53 OSC sequences and confirmed synthetically
+ *    that 10 of 11 possible split points inside a real one
+ *    (`\x1b]0;Hermes\x07`) shipped a dangling fragment immediately.
+ *
+ * Either miss ships an incomplete sequence straight into `term.write()`
+ * instead of holding it in `#pending`. If the socket then closes before
+ * the rest arrives (a background tab's connection being force-closed, or
+ * simply a page refresh landing mid-sequence), `flush()`'s partial-escape
+ * drop (below) never triggers — the dangling fragment was already
+ * written — leaving xterm's parser stuck "in-escape" or "in-OSC-string"
+ * across the reconnect and misinterpreting whatever real output arrives
+ * next, e.g. swallowing it as OSC payload until some later byte
+ * (frequently a CSI final byte like `l`, 0x6c) happens to look like a
+ * terminator.
+ */
+function findOpenEscapeStart(combined: string): number {
+  let start = -1;
+
+  const csiOpen = combined.lastIndexOf("\x1b[");
+  if (csiOpen !== -1 && CSI_PARTIAL_BODY.test(combined.slice(csiOpen + 2))) {
+    start = csiOpen;
+  }
+
+  const oscOpen = combined.lastIndexOf("\x1b]");
+  if (oscOpen !== -1) {
+    const afterOpener = combined.slice(oscOpen + 2);
+    if (!afterOpener.includes("\x07") && !afterOpener.includes("\x1b\\")) {
+      start = start === -1 ? oscOpen : Math.min(start, oscOpen);
+    }
+  }
+
+  if (combined.endsWith("\x1b")) {
+    const bareEsc = combined.length - 1;
+    start = start === -1 ? bareEsc : Math.min(start, bareEsc);
+  }
+
+  return start;
+}
 
 /**
  * A trailing run of newlines that may continue into the next frame. Held back
@@ -89,12 +170,12 @@ export class PtyResumeSanitizer {
       return "";
     }
 
-    // Hold back a trailing partial escape so a CSI split across frames is
-    // still recognised once its terminating byte arrives.
-    const lastEsc = combined.lastIndexOf("\x1b");
-    if (lastEsc !== -1 && PARTIAL_ESC.test(combined.slice(lastEsc))) {
-      this.#pending = combined.slice(lastEsc);
-      return applyPtyFilters(combined.slice(0, lastEsc), this.#stripErase);
+    // Hold back a trailing partial escape so a CSI or OSC sequence split
+    // across frames is still recognised once its terminator arrives.
+    const openEscape = findOpenEscapeStart(combined);
+    if (openEscape !== -1) {
+      this.#pending = combined.slice(openEscape);
+      return applyPtyFilters(combined.slice(0, openEscape), this.#stripErase);
     }
 
     // Hold back a trailing newline run so a burst spanning frames accumulates

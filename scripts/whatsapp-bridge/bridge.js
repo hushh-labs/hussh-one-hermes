@@ -24,12 +24,12 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
-import { isSelfChatJid, shouldRejectNonOwnerSelfChatEvent } from './self_chat_gate.js';
+import { isSelfChatJid, shouldRejectNonOwnerSelfChatEvent, shouldRejectFromMeEvent } from './self_chat_gate.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -48,6 +48,7 @@ import {
 } from './bridge_helpers.js';
 
 // Parse CLI args
+const SCRIPT_HASH = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex').slice(0, 12);
 const args = process.argv.slice(2);
 function getArg(name, defaultVal) {
   const idx = args.indexOf(`--${name}`);
@@ -469,14 +470,25 @@ async function startSocket() {
       if (msg.key.fromMe) {
         if (chatId.includes('status')) continue;
 
-        if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
+        if (shouldRejectFromMeEvent({
+          mode: WHATSAPP_MODE,
+          isGroup,
+          isAllowlisted,
+          isSelfChat,
+        })) {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: !isGroup && !isSelfChat ? 'non_self_dm_from_me_blocked' : 'unallowlisted_group_from_me_blocked',
+              chatId,
+              senderId,
+            }));
+          } catch {}
           continue;
         }
 
-        if (!isAllowlisted && !isSelfChat) {
-          // We only allow messages sent by "me" (whether group or private DM with someone else)
-          // if they contain an explicit trigger.
+        if (isGroup && isAllowlisted) {
+          // In allowlisted groups, owner messages still require explicit trigger
           const tempContent = getMessageContent(msg);
           let tempBody = '';
           if (tempContent.conversation) {

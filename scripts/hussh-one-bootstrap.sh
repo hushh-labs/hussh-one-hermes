@@ -17,6 +17,7 @@ LIVE_SMOKE=0
 CLEAN_CONFLICTS=0
 SETUP_COPILOT="${HUSSH_ONE_SETUP_COPILOT:-auto}"
 SETUP_OPEN_WEBUI="${HUSSH_ONE_SETUP_OPEN_WEBUI:-auto}"
+SETUP_DAILY_UPDATER="${HUSSH_ONE_SETUP_DAILY_UPDATER:-1}"
 DRY_RUN="${HUSSH_ONE_DRY_RUN:-0}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 
@@ -35,6 +36,7 @@ Options:
   --no-copilot              Skip VS Code Copilot BYOK setup
   --open-webui              Force Open WebUI companion setup
   --no-open-webui           Skip Open WebUI companion setup
+  --no-daily-updater        Do not register the standard daily official-Hermes updater
   --dry-run                 Print actions without mutating the machine
   -h, --help                Show this help
 USAGE
@@ -80,6 +82,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-open-webui)
       SETUP_OPEN_WEBUI=0
+      shift
+      ;;
+    --no-daily-updater)
+      SETUP_DAILY_UPDATER=0
       shift
       ;;
     --dry-run)
@@ -177,14 +183,16 @@ build_node_project() {
   if [[ ! -f "$dir/package.json" ]]; then
     return 0
   fi
-  if ! command -v npm >/dev/null 2>&1; then
+  local -a npm=()
+  if command -v corepack >/dev/null 2>&1; then
+    npm=(corepack npm@11.17.0)
+  elif command -v npm >/dev/null 2>&1; then
+    npm=(npm)
+  else
     warn "npm is not installed; skipping $dir build"
     return 0
   fi
-  if [[ ! -d "$dir/node_modules" ]]; then
-    run_cmd npm --prefix "$dir" install
-  fi
-  run_cmd npm --prefix "$dir" run "$script"
+  run_cmd "${npm[@]}" --prefix "$dir" run "$script"
 }
 
 build_assets() {
@@ -192,6 +200,20 @@ build_assets() {
     log "Frontend build skipped."
     return 0
   fi
+  local -a npm=()
+  if command -v corepack >/dev/null 2>&1; then
+    npm=(corepack npm@11.17.0)
+  elif command -v npm >/dev/null 2>&1; then
+    npm=(npm)
+  else
+    warn "npm is not installed; skipping frontend dependency install and builds"
+    return 0
+  fi
+  # `npm ci` makes a second bootstrap and post-upstream restart converge on
+  # the current lockfile instead of treating a stale node_modules directory as
+  # proof that new dashboard/TUI packages are already installed.
+  run_cmd "${npm[@]}" ci
+  run_cmd "${npm[@]}" run build --workspace @hermes/ink
   build_node_project ui-tui build
   build_node_project web build
 }
@@ -222,6 +244,8 @@ configure_web_search() {
 
 set_config_defaults() {
   local hermes
+  local model_provider
+  local model_default
   hermes="$(hermes_bin)"
   if [[ "$DRY_RUN" != "1" && ! -x "$hermes" ]]; then
     warn "Hermes binary unavailable; config defaults were not written"
@@ -229,8 +253,25 @@ set_config_defaults() {
   fi
   run_cmd "$hermes" config set display.skin hussh-one
   run_cmd "$hermes" config set dashboard.theme hussh-one
-  run_cmd "$hermes" config set model.provider gemini
-  run_cmd "$hermes" config set model.default gemini-3.6-flash
+
+  # Gemini is the first-install default, not a bootstrap mandate. A profile
+  # may deliberately use a native LM Studio endpoint (or another configured
+  # provider); re-running bootstrap must never silently replace that choice.
+  if [[ "$DRY_RUN" == "1" ]]; then
+    model_provider=""
+    model_default=""
+  else
+    model_provider="$("$hermes" config get model.provider 2>/dev/null || true)"
+    model_default="$("$hermes" config get model.default 2>/dev/null || true)"
+    [[ "$model_provider" == "Config key not set:"* ]] && model_provider=""
+    [[ "$model_default" == "Config key not set:"* ]] && model_default=""
+  fi
+  if [[ -n "$model_provider" || -n "$model_default" ]]; then
+    log "Preserving configured model provider: ${model_provider:-unset} (${model_default:-unset})"
+  else
+    run_cmd "$hermes" config set model.provider gemini
+    run_cmd "$hermes" config set model.default gemini-3.7-flash
+  fi
   run_cmd "$hermes" config set agent.reasoning_effort high
   run_cmd "$hermes" config set display.show_reasoning true
   # Compact sessions well before the dashboard memory ceiling so a long Hussh
@@ -240,12 +281,27 @@ set_config_defaults() {
   run_cmd "$hermes" config set compression.threshold 0.35
   run_cmd "$hermes" config set compression.hygiene_hard_message_limit 250
 
+  # A failed tool call must never consume a full 500-iteration turn. These
+  # circuit-breakers are deliberately scoped to repeated failures within one
+  # turn: normal polling, distinct queries, successful calls, and useful
+  # long-running work continue uninterrupted. The higher read-only threshold
+  # preserves legitimate re-checks while still breaking obvious no-progress
+  # loops before they exhaust the context window.
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_enabled true
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_after.exact_failure 3
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_after.same_tool_failure 5
+  run_cmd "$hermes" config set tool_loop_guardrails.hard_stop_after.idempotent_no_progress 12
+
   # 🤫 Hussh One specific robust defaults
   run_cmd "$hermes" config set approvals.mode false
   run_cmd "$hermes" config set whatsapp.require_mention_on_replies true
   run_cmd "$hermes" config set display.platforms.whatsapp.tool_progress off
   run_cmd "$hermes" config set display.platforms.whatsapp.show_reasoning false
   run_cmd "$hermes" config set display.interim_assistant_messages false
+  # The Source Library remains a local Desktop/dashboard-only capability. This
+  # explicit default gives operators a durable off switch without ever adding
+  # the toolset to messaging-platform configuration.
+  run_cmd "$hermes" config set hussh_one.source_library.enabled true
 
   configure_web_search
 }
@@ -262,7 +318,7 @@ configure_hussh_persona() {
   fi
 
   if [[ ! -f "$destination" ]] \
-    || grep -q '<!-- hussh-one-persona:v1 -->' "$destination" \
+    || grep -q '<!-- hussh-one-persona:v' "$destination" \
     || [[ "$(tr -d '\r\n' < "$destination")" == "$stock_persona" ]]; then
     run_cmd mkdir -p "$HERMES_HOME"
     run_cmd cp "$source" "$destination"
@@ -273,14 +329,139 @@ configure_hussh_persona() {
   warn "Preserving a customized SOUL.md; merge the canonical Hussh One persona manually if desired"
 }
 
+persist_env_secret() {
+  local key="$1" value="$2" python file
+  python="$(python_bin)"
+  file="$HERMES_HOME/.env"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: persist $key in the mode-0600 Hermes secret file"
+    return 0
+  fi
+  if [[ -z "$python" || ! -x "$python" ]]; then
+    warn "Cannot persist $key: repository Python is unavailable"
+    return 1
+  fi
+  run_cmd mkdir -p "$HERMES_HOME"
+  "$python" - "$file" "$key" 3<<<"$value" <<'PY'
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+destination = Path(sys.argv[1])
+key = sys.argv[2]
+with os.fdopen(3, encoding="utf-8") as secret_input:
+    value = secret_input.read().strip()
+if not value or "\n" in value or "\r" in value:
+    raise SystemExit(f"refusing to persist malformed {key}")
+
+lines = destination.read_text(encoding="utf-8").splitlines() if destination.exists() else []
+replacement = f"{key}={value}"
+updated: list[str] = []
+replaced = False
+for line in lines:
+    if line.startswith(f"{key}="):
+        if not replaced:
+            updated.append(replacement)
+            replaced = True
+        continue
+    updated.append(line)
+if not replaced:
+    if updated and updated[-1]:
+        updated.append("")
+    updated.append(replacement)
+
+destination.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(updated) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary_name, 0o600)
+    os.replace(temporary_name, destination)
+finally:
+    if os.path.exists(temporary_name):
+        os.unlink(temporary_name)
+PY
+}
+
+bootstrap_hussh_consent_token() {
+  local python token
+  if [[ -n "$(env_value HUSHH_CONSENT_MCP_TOKEN)" ]]; then
+    log "Hussh Consent MCP credential: configured in the active Hermes profile."
+    return 0
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    log "dry-run: retrieve the one-time Hussh Technologies MCP credential from GCP Secret Manager"
+    persist_env_secret HUSHH_CONSENT_MCP_TOKEN '<gcp-secret>'
+    return 0
+  fi
+  python="$(python_bin)"
+  if [[ -z "$python" || ! -x "$python" ]]; then
+    warn "Hussh Consent MCP credential is missing and repository Python is unavailable"
+    return 0
+  fi
+
+  # This is intentionally a one-time machine bootstrap. The dedicated partner
+  # credential remains in Secret Manager and is copied only into the active
+  # profile's mode-0600 .env. It is never written into Git or MCP config.
+  if ! token="$("$python" - <<'PY'
+import base64
+import os
+
+try:
+    import google.auth
+    from google.auth.transport.requests import AuthorizedSession
+except ImportError as exc:
+    raise SystemExit(f"google-auth unavailable: {exc}") from exc
+
+project = (
+    os.getenv("GOOGLE_CLOUD_PROJECT")
+    or os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+    or "hushh-pda-uat"
+).strip()
+try:
+    credentials, _ = google.auth.default(
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
+    )
+    session = AuthorizedSession(credentials)
+    url = (
+        "https://secretmanager.googleapis.com/v1/projects/"
+        f"{project}/secrets/HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN/versions/latest:access"
+    )
+    response = session.get(url, timeout=20)
+    response.raise_for_status()
+    token = base64.b64decode(response.json()["payload"]["data"]).decode().strip()
+except Exception as exc:
+    raise SystemExit(f"credential bootstrap unavailable: {exc}") from exc
+print(token)
+PY
+  )"; then
+    warn "Hussh Consent MCP credential is missing; existing GCP ADC could not access the dedicated Hussh Technologies secret"
+    return 0
+  fi
+  if [[ -z "$token" ]]; then
+    warn "Hussh Consent MCP credential is missing; GCP Secret Manager returned an empty value"
+    return 0
+  fi
+  if ! persist_env_secret HUSHH_CONSENT_MCP_TOKEN "$token"; then
+    return 0
+  fi
+  log "Hussh Consent MCP credential: securely bootstrapped from GCP Secret Manager."
+}
+
 configure_hussh_consent_connector() {
   local hermes token
   hermes="$(hermes_bin)"
+
+  bootstrap_hussh_consent_token
 
   # Keep the hosted streamable MCP as the lifecycle source of truth. Hermes'
   # transport boundary owns the local X25519 identity and decrypts approved
   # envelopes into one-time leases; config contains neither token nor key.
   run_cmd "$hermes" mcp remove hushh_consent >/dev/null 2>&1 || true
+  run_cmd "$hermes" mcp remove hushh-consent >/dev/null 2>&1 || true
   run_cmd "$hermes" config set --force \
     mcp_servers.hushh_consent.url "https://api.uat.hushh.ai/mcp/"
   run_cmd "$hermes" config set --force \
@@ -289,6 +470,7 @@ configure_hussh_consent_connector() {
 
   if command -v codex >/dev/null 2>&1; then
     run_cmd codex mcp remove hushh_consent >/dev/null 2>&1 || true
+    run_cmd codex mcp remove hushh-consent >/dev/null 2>&1 || true
     run_cmd codex mcp add hushh_consent \
       --url "https://api.uat.hushh.ai/mcp/" \
       --bearer-token-env-var HUSHH_CONSENT_MCP_TOKEN
@@ -457,6 +639,20 @@ install_managed_doctor() {
   fi
 }
 
+install_daily_updater() {
+  if [[ "$SETUP_DAILY_UPDATER" == "0" ]]; then
+    log "Daily Hussh One official-Hermes updater skipped by request."
+    return 0
+  fi
+  local args=("$SCRIPT_DIR/hussh-one-upstream-update.sh" --install-daily --manager "$MANAGER")
+  if [[ "$DRY_RUN" == "1" ]]; then
+    args+=(--dry-run)
+  fi
+  if ! run_cmd "${args[@]}"; then
+    warn "Daily Hussh One updater registration failed; rerun scripts/hussh-one-upstream-update.sh --install-daily after fixing the local scheduler."
+  fi
+}
+
 start_services() {
   local args=("$SCRIPT_DIR/hussh-one-supervisor.sh" restart --manager "$MANAGER")
   if [[ "$CLEAN_CONFLICTS" == "1" ]]; then
@@ -486,6 +682,7 @@ log "Bootstrapping Hussh One Hermes in $REPO_ROOT"
 mkdir -p "$HERMES_HOME"
 ensure_venv
 install_managed_doctor
+install_daily_updater
 build_assets
 set_config_defaults
 configure_hussh_persona

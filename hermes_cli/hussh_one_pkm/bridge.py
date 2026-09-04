@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,11 +36,40 @@ from .keychain import MacOSKeychain
 from .replica import EncryptedPkmReplica
 
 
+def _configured_lock_with_workstation() -> bool:
+    """``hussh_one.vault.lock_with_workstation`` from config.yaml; False when unset.
+
+    False is the owner-device default: the personal agent keeps its vault
+    while the screen is locked, because that is exactly when its scheduled
+    work runs. A fleet that wants the vault to follow the workstation lock
+    sets the key to true.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        return bool(
+            cfg_get(
+                load_config_readonly(),
+                "hussh_one", "vault", "lock_with_workstation",
+                default=False,
+            )
+        )
+    except Exception:  # noqa: BLE001 - an unreadable config must not lock the vault
+        return False
+
+
 class HusshVaultBridge:
     """Owns identity, vault memory, and device-bound owner capabilities."""
 
     DEVICE_SYNC_INTERVAL_SECONDS = 30
     WORKSTATION_LOCK_CHECK_SECONDS = 5
+    REVOCATION_POLL_INTERVAL_SECONDS = 300
+    # Never poll on the construction tick. Every process that touches Hussh One
+    # builds a bridge, so a zero delay means a network round trip inside
+    # __init__ -- a startup storm in production, and an unexpected request in
+    # any caller that has not finished wiring its HTTP client yet. A revoked
+    # device is still discovered within this delay of the agent starting.
+    REVOCATION_POLL_STARTUP_DELAY_SECONDS = 30
 
     def __init__(
         self,
@@ -47,27 +77,50 @@ class HusshVaultBridge:
         profile_home: Path | None = None,
         keychain: MacOSKeychain | None = None,
         http: httpx.Client | None = None,
+        lock_with_workstation: bool | None = None,
     ) -> None:
         self.profile_home = profile_home or get_hermes_home()
         self.keychain = keychain or MacOSKeychain()
         self.http = http or httpx.Client(timeout=45.0)
+        # Whether a locked macOS console clears the vault key. Off by default:
+        # this is the owner's always-on personal agent, and its cron jobs and
+        # background work run while the screen is locked (founder rule,
+        # 2026-09-02, after every vault-backed job and test failed at night
+        # with "Unlock the Hussh One vault"). Set
+        # ``hussh_one.vault.lock_with_workstation: true`` in config.yaml to
+        # couple the vault to the workstation lock again.
+        self.lock_with_workstation = (
+            lock_with_workstation
+            if lock_with_workstation is not None
+            else _configured_lock_with_workstation()
+        )
         self.identity = HusshIdentityClient(
             profile_home=self.profile_home,
             keychain=self.keychain,
             http=self.http,
+            on_revoked=self.seal,
         )
         self.envelope_path = self.profile_home / "hussh-one" / "vault-envelope.json"
         self.lock_state_path = self.profile_home / "hussh-one" / "vault-lock-state.json"
+        self.seal_state_path = self.profile_home / "hussh-one" / "seal-state.json"
         self.replica = EncryptedPkmReplica(self.profile_home)
         self._vault_key: bytearray | None = None
+        self._source_library_custody_key: bytearray | None = None
+        self._source_library_custody_phase: int | None = None
         self._last_activity = 0.0
         self._owner_token: bytearray | None = None
         self._owner_token_expires_at_ms = 0
         self._next_device_sync_at = 0.0
+        self._next_revocation_check_at = (
+            time.monotonic() + self.REVOCATION_POLL_STARTUP_DELAY_SECONDS
+        )
+        self._seal_state: str | None = None
         self._next_workstation_lock_check_at = 0.0
         self._last_device_sync_at_ms = 0
         self._device_sync_status = "idle"
         self._lock = threading.RLock()
+        self._presence: Any = None
+        self._presence_lock = threading.Lock()
         self._onboarding_status = "idle"
         self._monitor = threading.Thread(
             target=self._monitor_shared_lock_state,
@@ -76,14 +129,54 @@ class HusshVaultBridge:
         )
         self._monitor.start()
 
+    @property
+    def presence(self):
+        """Push this device's runtime state to Hussh One on transitions.
+
+        Built lazily and cached: constructing it in ``__init__`` would import
+        the host-metrics and LM Studio probes on every bridge, including the
+        ones in tests that never reach the network.
+        """
+        with self._presence_lock:
+            if self._presence is None:
+                from .presence import (
+                    PresencePublisher,
+                    agent_version,
+                    build_snapshot,
+                    current_model,
+                )
+
+                # The model and version are read inside the lambda, per push,
+                # so each push carries the pin at that moment. Pushes happen on
+                # unlock and on the 600s keepalive; nothing fires one on a
+                # model change, so a new pin reaches One on the next push, and
+                # what is reported is the CONFIGURED model, not proof that it
+                # is loaded.
+                self._presence = PresencePublisher(
+                    publish=self.identity.post_heartbeat,
+                    snapshot=lambda: build_snapshot(
+                        current_model=current_model(),
+                        active_sessions=1 if self._vault_key is not None else 0,
+                        busy=self._device_sync_status == "syncing",
+                        agent_version=agent_version(),
+                    ),
+                )
+            return self._presence
+
     def _account(self, kind: str) -> str:
         return f"{self.identity.profile_id}:{kind}"
 
     def identity_status(self) -> dict[str, Any]:
         state = self.identity.read_state()
+        authorization = self.identity.authorization_status()
         connection_state = "not_connected"
         if state is not None:
             connection_state = "connected" if state.account_email else "reconnect_required"
+        onboarding_status = self._onboarding_status
+        if authorization.get("status") == "error":
+            onboarding_status = "connection_failed"
+        elif state is None and authorization.get("status") == "waiting":
+            onboarding_status = "waiting_for_browser_approval"
         return {
             "connected": state is not None,
             "connection_state": connection_state,
@@ -91,32 +184,158 @@ class HusshVaultBridge:
             "device_id": state.device_id if state else None,
             "account_email": state.account_email if state else None,
             "profile_id": self.identity.profile_id,
-            "onboarding_status": self._onboarding_status,
+            "onboarding_status": onboarding_status,
         }
 
-    def begin_onboarding(self, *, device_name: str) -> dict[str, Any]:
+    def begin_onboarding(
+        self,
+        *,
+        device_name: str,
+        reconnect: bool = False,
+        environment: str | None = None,
+    ) -> dict[str, Any]:
         """Open One's browser approval and continue vault setup locally.
 
         A legacy state without a verified email is deliberately repaired by a
         fresh browser approval. It is not trusted for vault access while the
         repair is pending, and the server atomically replaces its device row.
+
+        ``reconnect`` repairs a device whose login died -- an expired refresh
+        token, or an account whose sessions were reset -- without destroying
+        anything. Before this existed the only route out of an expired session
+        was ``disconnect confirm``, which removes the vault envelope, the
+        encrypted PKM replica and Source Library custody: losing local data to
+        fix a token. The repair keeps all of it, re-approves the *same*
+        account (the client refuses the exchange if the browser returns a
+        different one), and passes ``replaces_device_id`` so the server swaps
+        the device row atomically rather than leaving an orphan behind.
+
+        Switching accounts is still the explicit disconnect path, because that
+        custody belongs to the account being left.
+
+        ``environment`` (``"uat"`` or ``"production"``) applies to a fresh
+        connect only. A repair stays in the environment the identity was
+        enrolled in: the device row it replaces, the vault envelope and the
+        replica all belong there, and an argument cannot move them. Moving
+        environments is a disconnect followed by a connect.
         """
         state = self.identity.read_state()
-        if state is not None and state.account_email:
+        connected = state is not None and bool(state.account_email)
+        if connected and not reconnect:
             raise VaultCryptoError(
                 "This Hermes profile is already connected. Disconnect it before choosing another account."
             )
         self._onboarding_status = "waiting_for_browser_approval"
-        return self.identity.open_authorization(
+        target_environment: str | None
+        if connected:
+            target_environment = state.environment
+        elif state is not None and not str(environment or "").strip():
+            # A legacy state being repaired keeps its own environment unless
+            # asked otherwise: the device row it replaces lives there.
+            target_environment = state.environment
+        else:
+            target_environment = environment
+        result = self.identity.open_authorization(
             device_name=device_name,
             replaces_device_id=state.device_id if state is not None else None,
             on_connected=self._continue_native_enrollment,
+            expected_account_email=state.account_email if connected else None,
+            environment=target_environment,
         )
+        return {
+            **result,
+            "mode": "reconnect" if connected else "connect",
+            "environment": str(result.get("environment") or target_environment or ""),
+        }
+
+    def session_health(self) -> dict[str, Any]:
+        """Whether this device's login still reaches Hussh One, and what to do.
+
+        ``identity_status`` answers "is an enrollment stored here", which stays
+        true after the login behind it dies. This answers the question the
+        owner is actually asking, and names the repair: a stale login stops the
+        presence heartbeat silently, so the device reads as gone in One while
+        everything on the machine looks healthy.
+        """
+        session = self.identity.session_state()
+        remedies = {
+            "not_connected": "/hussh-one connect",
+            "expired": "/hussh-one reconnect",
+            "revoked": "/hussh-one connect",
+            "indeterminate": "",
+            "ok": "",
+        }
+        return {
+            "session": session,
+            "reconnect_required": session in {"expired", "revoked"},
+            "heartbeat_live": session == "ok",
+            "remedy": remedies.get(session, ""),
+        }
+
+    def _rebind_envelope_to_current_device(self) -> str:
+        """Re-bind an existing vault envelope to this profile's new device id.
+
+        The envelope's AEAD is bound to (profile_id, user_id, device_id), and
+        the server mints a NEW device id for every approval -- including a
+        reconnect that replaces the old row. So a repair that promised to keep
+        the vault left an envelope whose device id no longer matched the stored
+        identity, and every later unlock raised "the local vault envelope
+        identity does not match". The only exit was the destructive disconnect:
+        exactly the trap reconnect exists to remove, one level deeper.
+
+        The key material itself is unchanged, so this unwraps with the envelope's
+        own binding and re-wraps under the new device id using the same
+        keychain-held wrapping key. It refuses across accounts or profiles: a
+        different user or profile means the custody belongs to someone else, and
+        rebinding it would hand one account's vault to another.
+
+        Never destructive. Any failure leaves the envelope exactly as it was and
+        returns a status the caller can surface.
+        """
+        state = self.identity.read_state()
+        if state is None or not self.envelope_path.exists():
+            return "no_envelope"
+        try:
+            envelope = read_envelope(self.envelope_path)
+        except Exception:
+            return "unreadable_envelope"
+        if envelope.device_id == state.device_id:
+            return "already_bound"
+        if (
+            envelope.user_id != state.user_id
+            or envelope.profile_id != self.identity.profile_id
+        ):
+            # Different account or profile: not ours to rebind.
+            return "identity_mismatch"
+        wrapping_key = self.keychain.get(self._account("device-wrapping-key"))
+        if wrapping_key is None:
+            return "no_wrapping_key"
+        try:
+            vault_key = unwrap_local_vault_key(
+                envelope=envelope, device_wrapping_key=wrapping_key
+            )
+            rebound = wrap_local_vault_key(
+                vault_key=vault_key,
+                device_wrapping_key=wrapping_key,
+                profile_id=self.identity.profile_id,
+                user_id=state.user_id,
+                device_id=state.device_id,
+            )
+            write_envelope(self.envelope_path, rebound)
+        except Exception:
+            return "rebind_failed"
+        return "rebound"
 
     def _continue_native_enrollment(self, passkey_vault_key: bytes | None = None) -> None:
         """Run the password/recovery ceremony outside chat after browser approval."""
         if self.envelope_path.exists():
-            self._onboarding_status = "ready"
+            # A reconnect lands here: the envelope survived, but the approval
+            # gave this machine a new device id, so the envelope must follow it
+            # or the vault it "kept" can never be opened again.
+            outcome = self._rebind_envelope_to_current_device()
+            self._onboarding_status = (
+                "ready" if outcome in {"rebound", "already_bound"} else f"vault_rebind_{outcome}"
+            )
             return
         try:
             from .native_prompt import (
@@ -200,10 +419,16 @@ class HusshVaultBridge:
             "device_id": state.device_id if state else None,
             "profile_id": self.identity.profile_id,
             "custody_mode": "trusted_device_until_lock_or_revoke",
+            "source_library_custody_mode": "device_only_user_presence",
+            "source_library_custody_unlocked": self._source_library_custody_key
+            is not None,
             "owner_capability_mode": "automatic_short_lived",
             "encrypted_replica_cursor": self.replica.cursor(),
             "device_sync_status": self._device_sync_status,
             "last_device_sync_at_ms": self._last_device_sync_at_ms or None,
+            # "active" | "needs_reinit" | "sealed" -- so status surfaces can say
+            # why a profile is empty instead of looking merely disconnected.
+            "seal_state": self._seal_state or "active",
         }
 
     def vault_preflight(self) -> dict[str, Any]:
@@ -406,6 +631,13 @@ class HusshVaultBridge:
             self._clear_vault_key_locked()
             self._vault_key = bytearray(vault_key)
             self._last_activity = time.monotonic()
+        # A transition worth pushing: this device just became usable. Dispatched
+        # in the background so an unlock never waits on the network, and wrapped
+        # because telemetry must not be able to fail an unlock that succeeded.
+        try:
+            self.presence.on_event_background("unlock")
+        except Exception:
+            pass
         return {"unlocked": True}
 
     def _write_lock_state(self, *, locked: bool, reason: str) -> None:
@@ -434,12 +666,39 @@ class HusshVaultBridge:
 
     def _monitor_shared_lock_state(self) -> None:
         while True:
+            # Unconditional, and ahead of the lock/sync chain below on purpose.
+            # Those branches are an if/elif ladder, so a locked profile or a
+            # locked console short-circuits everything after it. As an `elif`
+            # this poll would never run on a locked device -- exactly the device
+            # that must still discover it was revoked, instead of re-opening the
+            # vault the moment the owner unlocks.
+            if time.monotonic() >= self._next_revocation_check_at:
+                self._next_revocation_check_at = (
+                    time.monotonic() + self.REVOCATION_POLL_INTERVAL_SECONDS
+                )
+                try:
+                    self._revocation_tick()
+                except Exception:
+                    # Never let a poll failure kill the monitor thread; the next
+                    # tick retries, and an ambiguous status never seals.
+                    pass
+            try:
+                # Dispatched to its own thread: a keepalive is telemetry, and a
+                # hung connection must not delay the revocation poll above it,
+                # which is the one thing in this loop that protects the vault.
+                self.presence.keepalive_background()
+            except Exception:
+                pass
             if self._profile_is_locked():
                 with self._lock:
                     self._clear_vault_key_locked()
+                    self._clear_source_library_custody_key_locked()
                     self._clear_owner_token_locked()
                 self.identity.lock_identity()
-            elif time.monotonic() >= self._next_workstation_lock_check_at:
+            elif (
+                self.lock_with_workstation
+                and time.monotonic() >= self._next_workstation_lock_check_at
+            ):
                 self._next_workstation_lock_check_at = (
                     time.monotonic() + self.WORKSTATION_LOCK_CHECK_SECONDS
                 )
@@ -489,14 +748,16 @@ class HusshVaultBridge:
 
     def _active_vault_key(self) -> bytes | None:
         with self._lock:
-            if self._macos_console_locked():
+            if self.lock_with_workstation and self._macos_console_locked():
                 self._clear_vault_key_locked()
+                self._clear_source_library_custody_key_locked()
                 self._clear_owner_token_locked()
                 self._write_lock_state(locked=True, reason="workstation_lock")
                 self.identity.lock_identity()
                 return None
             if self._profile_is_locked():
                 self._clear_vault_key_locked()
+                self._clear_source_library_custody_key_locked()
                 return None
             if self._vault_key is None:
                 try:
@@ -536,6 +797,13 @@ class HusshVaultBridge:
         self._vault_key = None
         self._last_activity = 0.0
 
+    def _clear_source_library_custody_key_locked(self) -> None:
+        if self._source_library_custody_key is not None:
+            for index in range(len(self._source_library_custody_key)):
+                self._source_library_custody_key[index] = 0
+        self._source_library_custody_key = None
+        self._source_library_custody_phase = None
+
     def _clear_owner_token_locked(self) -> None:
         if self._owner_token is not None:
             for index in range(len(self._owner_token)):
@@ -550,6 +818,81 @@ class HusshVaultBridge:
                 "Unlock the Hussh One vault in this Hermes process before saving."
             )
         return key
+
+    def require_source_library_custody_key(
+        self, *, create_if_missing: bool = False
+    ) -> bytes:
+        """Return the local Source Library gate only with owner vault + user presence.
+
+        This is deliberately separate from the trusted-device wrapping key.
+        A local Source Library ciphertext needs both the unlocked canonical
+        vault key and this device-only Keychain item; neither secret is stored
+        in the Source Library database, artifact files, or model context.
+        """
+        self.require_vault_key()
+        with self._lock:
+            if self._source_library_custody_key is not None:
+                return bytes(self._source_library_custody_key)
+        account = self._account("source-library-custody-key")
+        getter = getattr(self.keychain, "get_user_presence_secret", None)
+        setter = getattr(self.keychain, "set_user_presence_secret", None)
+        if not callable(getter) or not callable(setter):
+            raise VaultCryptoError(
+                "This Hermes installation cannot provide device-only Source Library custody."
+            )
+        # Do not hold the bridge lock while macOS presents LocalAuthentication.
+        material = getter(account, prompt="Unlock Hussh One Source Library on this Mac")
+        if material is None:
+            if not create_if_missing:
+                raise VaultCryptoError(
+                    "The Source Library custody key is unavailable. Rebuild the local index only after explicitly re-binding empty sources."
+                )
+            setter(account, b"\x01" + os.urandom(32))
+            # Re-read through the protected path so first use is not reported
+            # as user-presence protected merely because this process generated
+            # the secret.
+            material = getter(
+                account, prompt="Unlock Hussh One Source Library on this Mac"
+            )
+        if material is None or len(material) != 33 or material[0] not in {1, 2}:
+            raise VaultCryptoError("The Source Library custody key is invalid.")
+        phase = int(material[0])
+        key = material[1:]
+        with self._lock:
+            # A lock, revocation, or profile switch that raced the native prompt
+            # must win over caching the recovered secret.
+            if self._profile_is_locked() or self._vault_key is None:
+                raise VaultCryptoError("The Hussh One vault locked during Source Library unlock.")
+            self._source_library_custody_key = bytearray(key)
+            self._source_library_custody_phase = phase
+            return bytes(self._source_library_custody_key)
+
+    def source_library_custody_phase(self) -> int:
+        self.require_source_library_custody_key()
+        with self._lock:
+            if self._source_library_custody_phase is None:
+                raise VaultCryptoError("The Source Library custody key is unavailable.")
+            return self._source_library_custody_phase
+
+    def complete_source_library_custody_upgrade(self) -> None:
+        """Latch v2 after all legacy ciphertext is atomically re-encrypted."""
+        self.require_source_library_custody_key()
+        with self._lock:
+            if self._source_library_custody_phase == 2:
+                return
+            if self._source_library_custody_key is None:
+                raise VaultCryptoError("The Source Library custody key is unavailable.")
+            material = b"\x02" + bytes(self._source_library_custody_key)
+        setter = getattr(self.keychain, "set_user_presence_secret", None)
+        if not callable(setter):
+            raise VaultCryptoError(
+                "This Hermes installation cannot update device-only Source Library custody."
+            )
+        setter(self._account("source-library-custody-key"), material)
+        with self._lock:
+            if self._source_library_custody_key is None or self._profile_is_locked():
+                raise VaultCryptoError("The Hussh One vault locked during Source Library upgrade.")
+            self._source_library_custody_phase = 2
 
     def acquire_vault_owner_token(self) -> str:
         state = self.identity.read_state()
@@ -601,6 +944,7 @@ class HusshVaultBridge:
     def lock(self, *, reason: str = "explicit") -> dict[str, Any]:
         with self._lock:
             self._clear_vault_key_locked()
+            self._clear_source_library_custody_key_locked()
             self._clear_owner_token_locked()
         self.identity.lock_identity()
         self._write_lock_state(locked=True, reason=reason)
@@ -609,24 +953,148 @@ class HusshVaultBridge:
     def remove_local_vault(self) -> None:
         self.lock()
         self.keychain.delete(self._account("device-wrapping-key"))
+        delete_custody = getattr(self.keychain, "delete_user_presence_secret", None)
+        if callable(delete_custody):
+            try:
+                delete_custody(self._account("source-library-custody-key"))
+            except Exception:
+                # An owner can cancel a Keychain deletion prompt after remote
+                # revocation. Source ciphertext is still removed below and the
+                # surviving device-only secret cannot open a deleted envelope.
+                pass
         if self.envelope_path.exists():
             self.envelope_path.unlink()
         if self.lock_state_path.exists():
             self.lock_state_path.unlink()
         self.replica.clear()
+        source_library_root = self.profile_home / "hussh-one" / "source-library"
+        if source_library_root.exists():
+            shutil.rmtree(source_library_root)
+
+    def _write_seal_state(self, *, reason: str, ack_delivered: bool) -> None:
+        payload = {
+            "schema_version": 1,
+            "sealed": True,
+            "reason": reason,
+            "sealed_at_ms": int(time.time() * 1000),
+            "seal_ack_delivered": ack_delivered,
+        }
+        self.seal_state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = self.seal_state_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, separators=(",", ":")), encoding="utf-8"
+        )
+        os.chmod(temporary, 0o600)
+        temporary.replace(self.seal_state_path)
+
+    def seal(self, *, reason: str = "trusted_device_revoked") -> dict[str, Any]:
+        """Destroy every local copy of the vault after remote untrust.
+
+        This is what "unlink this device" must mean on the device. A credential
+        disconnect alone leaves the envelope, the wrapping key, the encrypted
+        PKM replica and the Source Library in place -- a revoked device could
+        still open its local copy. Ordering is deliberate:
+
+        1. lock first, so a concurrent reader cannot re-open the envelope
+           mid-seal;
+        2. ack while credentials still exist -- the destroy step deletes the
+           token the ack needs;
+        3. write the seal marker before the deletes, so a crash mid-seal still
+           explains why the profile is empty;
+        4. destroy local data, then the credentials.
+
+        Idempotent and never raises: it runs from a daemon thread and from the
+        identity client's revocation path, which can trip at the same moment.
+        """
+        with self._lock:
+            # Claim the seal atomically, BEFORE any work. Posting the ack calls
+            # auth_headers(), which refreshes the Firebase token, which polls the
+            # device list, which sees this device is no longer active and invokes
+            # the revocation callback -- which is this method. Without claiming
+            # first, that path re-enters seal() and recurses until the stack
+            # blows. The same claim also collapses a concurrent seal from the
+            # monitor thread into one.
+            if self._seal_state in {"sealed", "sealing"}:
+                return {"sealed": True, "reason": reason, "already_sealed": True}
+            self._seal_state = "sealing"
+        self.lock(reason=reason)
+        ack_delivered = False
+        try:
+            ack_delivered = self.identity.post_seal_ack()
+        except Exception:
+            ack_delivered = False
+        try:
+            self._write_seal_state(reason=reason, ack_delivered=ack_delivered)
+        except Exception:
+            pass
+        try:
+            self.remove_local_vault()
+        finally:
+            try:
+                self.identity.disconnect(remove_device_key=True)
+            except Exception:
+                pass
+            with self._lock:
+                self._seal_state = "sealed"
+        return {"sealed": True, "reason": reason, "seal_ack_delivered": ack_delivered}
+
+    def _revocation_tick(self) -> None:
+        """One revocation poll. Only an explicit ``revoked`` destroys anything."""
+        status = self.identity.device_status()
+        if status == "revoked":
+            self.seal()
+            return
+        if status == "unknown_device":
+            # The server has no row for this device. That is a re-enrollment
+            # signal, not consent to delete: destroying here would turn a
+            # server-side data problem into user data loss. Surface it instead.
+            with self._lock:
+                if self._seal_state not in {"sealed", "sealing"}:
+                    self._seal_state = "needs_reinit"
+            return
+        if status == "active":
+            with self._lock:
+                if self._seal_state == "needs_reinit":
+                    self._seal_state = None
 
     def revoke_and_disconnect(self) -> dict[str, Any]:
         state = self.identity.read_state()
+        remote_revocation = "not_connected"
         if state is not None:
-            response = self.http.delete(
-                f"{state.api_base}/api/account/trusted-devices/{state.device_id}",
-                headers=self.identity.auth_headers(),
-            )
-            if response.status_code not in {200, 404}:
-                response.raise_for_status()
-        self.remove_local_vault()
-        self.identity.disconnect(remove_device_key=True)
-        return {"connected": False, "revoked": state is not None}
+            try:
+                response = self.http.delete(
+                    f"{state.api_base}/api/account/trusted-devices/{state.device_id}",
+                    headers=self.identity.auth_headers(),
+                )
+                if response.status_code == 200:
+                    remote_revocation = "revoked"
+                elif response.status_code == 404:
+                    remote_revocation = "already_absent"
+                else:
+                    response.raise_for_status()
+            except Exception:
+                # Local account switching must remain possible while offline or
+                # after the refresh credential has expired. Removing the local
+                # device private key makes the surviving server row unusable from
+                # this installation; report the remote outcome honestly instead
+                # of claiming revocation succeeded.
+                remote_revocation = "unverified"
+        # Seal rather than removing the vault directly. A disconnect can be
+        # started from either end, and both must leave the same state: the
+        # remote row revoked AND its seal confirmed. Going straight to
+        # remove_local_vault() destroyed the credentials without ever posting
+        # the seal ack, so a device that HAD sealed sat on the cloud as
+        # "revoked, awaiting device seal confirmation" forever. seal() posts
+        # the ack while credentials still exist and then destroys, so the
+        # device-initiated path converges on the same state as the
+        # cloud-initiated one.
+        seal_result = self.seal(reason="local_disconnect")
+        return {
+            "connected": False,
+            "local_disconnected": True,
+            "remote_revocation": remote_revocation,
+            "seal_ack_delivered": bool(seal_result.get("seal_ack_delivered")),
+        }
 
 
 _PROFILE_BRIDGES: dict[str, HusshVaultBridge] = {}

@@ -81,6 +81,8 @@ def test_supervisor_service_definitions_restart_and_raise_fd_limit():
     assert 'launchctl bootstrap "$(launchd_domain)" "$plist" >/dev/null 2>&1 || true' not in text
     assert 'for attempt in 1 2 3; do' in text
     assert 'failed to bootstrap dashboard launchd service after 3 attempts' in text
+    assert 'for attempt in $(seq 1 30); do' in text
+    assert 'within 30 seconds' in text
     assert "socket.create_connection" in watchdog
     assert "hermes_cli.main" in watchdog
     assert "start_new_session=True" in watchdog
@@ -117,15 +119,121 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "gcloud auth application-default print-access-token >/dev/null" in text
     assert "safe_suffix" in text
     assert "WhatsApp pairing is per-machine" in text
+    assert "config get model.provider" in text
+    assert "config get model.default" in text
+    assert "Preserving configured model provider" in text
+    assert "Gemini is the first-install default, not a bootstrap mandate" in text
     assert "model.provider gemini" in text
-    assert "model.default gemini-3.6-flash" in text
+    assert "model.default gemini-3.7-flash" in text
+    assert "tool_loop_guardrails.hard_stop_enabled true" in text
+    assert "tool_loop_guardrails.hard_stop_after.exact_failure 3" in text
+    assert "tool_loop_guardrails.hard_stop_after.same_tool_failure 5" in text
+    assert "tool_loop_guardrails.hard_stop_after.idempotent_no_progress 12" in text
     assert "configure_hussh_persona" in text
     assert "docs/hussh-one/persona/SOUL.md" in text
     assert "Preserving a customized SOUL.md" in text
     assert "plugins enable web-ddgs" in text
     assert "tools post-setup ddgs" in text
     assert "web.search_backend ddgs" in text
+    assert "hussh_one.source_library.enabled true" in text
     assert "WHATSAPP_REPLY_PREFIX" not in text
+    assert "install_daily_updater" in text
+    assert "hussh-one-upstream-update.sh" in text
+    assert "--no-daily-updater" in text
+
+
+def test_daily_updater_preserves_the_single_hussh_one_trunk_contract():
+    text = (ROOT / "scripts/hussh-one-upstream-update.sh").read_text(encoding="utf-8")
+
+    assert "sync/upstream-" in text
+    assert 'git switch -c "$sync_branch" main' in text
+    assert "scripts/hussh-one-guard.sh" in text
+    assert "git push origin main" in text
+    assert "upstream push URL must be DISABLED" in text
+    assert "Hussh One main updated and pushed" in text
+    assert "--install-daily" in text
+    assert "launchd" in text and "systemd" in text and "crontab" in text
+    assert "refresh_runtime_dependencies" in text
+    assert 'pip install -e ".[all,dev]"' in text
+    assert "npm@11.17.0" in text
+    assert 'scripts/hussh-one-doctor.sh --manager "$MANAGER"' in text
+    assert "--require-services" not in text
+
+
+def test_each_main_push_runs_the_fresh_hussh_one_sync_verification():
+    workflow = (ROOT / ".github/workflows/hussh-one-fresh-sync.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "push:" in workflow
+    assert "branches: [main]" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "fetch-depth: 0" in workflow
+    assert "NousResearch/hermes-agent.git" in workflow
+    assert "git remote set-url --push upstream DISABLED" in workflow
+    assert 'scripts/hussh-one-upstream-update.sh --check' in workflow
+    assert "scripts/hussh-one-guard.sh" in workflow
+    assert "npm@11.17.0" in workflow
+    # The guard runs `rg` and delegates tests to scripts/run_tests.sh, which
+    # intentionally requires a project virtualenv with pytest. CI must create
+    # those prerequisites instead of relying on runner-global tools.
+    assert "apt-get install --yes ripgrep" in workflow
+    assert "python -m venv .venv" in workflow
+    assert '.venv/bin/python -m pip install -e ".[all,dev]"' in workflow
+
+
+def test_hussh_doctor_accepts_native_lmstudio_provider_choice():
+    text = (ROOT / "scripts" / "hussh-one-doctor.sh").read_text(encoding="utf-8")
+
+    assert 'provider == "lmstudio" or provider.startswith("custom:")' in text
+    assert "expected gemini, lmstudio, or a custom:<name> local provider" in text
+    assert "select a loaded local model with 'hermes model'" in text
+
+
+def test_hussh_local_inference_docs_use_live_discovery_and_profile_opt_in():
+    text = (ROOT / "docs" / "hussh-one-deployment.md").read_text(encoding="utf-8")
+
+    assert "opt-in per-profile" in text
+    assert "`/api/v1/models`" in text
+    assert "fallback_providers:" in text
+    assert "GOOGLE_GENAI_USE_VERTEXAI=true" not in text
+
+
+def test_bootstrap_packages_one_time_consent_credential_provisioning():
+    text = (ROOT / "scripts/hussh-one-bootstrap.sh").read_text(encoding="utf-8")
+
+    assert "bootstrap_hussh_consent_token" in text
+    assert "persist_env_secret" in text
+    assert "HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN" in text
+    assert "secretmanager.googleapis.com/v1/projects/" in text
+    assert "google.auth.default" in text
+    assert "HUSHH_CONSENT_MCP_TOKEN" in text
+    assert "os.chmod(temporary_name, 0o600)" in text
+    assert "os.replace(temporary_name, destination)" in text
+    assert "one-time machine bootstrap" in text
+    assert "MCP_DEVELOPER_TOKEN/versions/latest" not in text
+
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Hussh Consent Connector Contract" in agents
+    assert "CONNECTOR_KEY_REQUIRED" in agents
+    assert "Consent is not a reason to suppress approved information" in agents
+
+
+def test_consent_repair_is_explicit_atomic_and_never_leaks_the_token():
+    text = (ROOT / "scripts/hussh-one-consent-repair.sh").read_text(encoding="utf-8")
+
+    assert "HUSHH_TECHNOLOGIES_PARTNER_MCP_TOKEN" in text
+    assert "HUSHH_CONSENT_MCP_TOKEN" in text
+    assert "google.auth.default" in text
+    assert "AuthorizedSession(credentials).get" in text
+    assert '"MCP-Protocol-Version": "2025-03-26"' in text
+    assert "verification.status_code in {401, 403}" in text
+    assert "active profile was left unchanged" in text
+    assert "os.chmod(temporary_name, 0o600)" in text
+    assert "os.replace(temporary_name, destination)" in text
+    assert "never place" in text
+    assert "print(token)" not in text
+    assert 'log "$token"' not in text
 
 
 def test_bootstrap_auto_provisions_companions_only_when_prerequisites_exist():
@@ -204,8 +312,14 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert "expose_provider_models" in text
     assert "preserving the healthy gateway process" in text
     assert 'for attempt in $(seq 1 90)' in text
-    assert '"hushh-model-select"' in text
+    assert '"hushh-model-select"' not in text
     assert '"hushh-reasoning-select"' in text
+    assert 'thinkingLabel.textContent = "Thinking"' in text
+    assert '["medium", "Medium"]' in text
+    assert '["medium", "Thinking medium"]' not in text
+    assert 'id="hushh-sidebar-expand-button"' in text
+    assert 'data-hushh-compact="true"' in text
+    assert 'hussh-one-mark.svg' in text
     assert "Hussh One — Changelog &amp; Features" in text
     assert "hushh-changelog-content" in text
     assert "reasoning_effort" in text
@@ -226,6 +340,7 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
     assert '"$OPEN_WEBUI_VENV/bin/python" -c' in text
     assert "A runnable Python 3.11 or 3.12 interpreter is required." in text
     assert "if ! brew install pandoc; then" in text
+    assert "Skipping optional pandoc install because Homebrew is not writable" in text
     assert "optional pandoc installation failed; continuing" in text
     for performance_default in (
         "export ENABLE_BASE_MODELS_CACHE=True",
@@ -234,9 +349,14 @@ def test_open_webui_setup_stays_on_the_selected_hermes_runtime_and_brand():
         "export AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST=",
         "export CORS_ALLOW_ORIGIN=",
         "export ENABLE_REALTIME_CHAT_SAVE=False",
+        "export CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE=",
+        "export ENABLE_SUBAGENTS=False",
+        "export ENABLE_ORJSON=True",
         "export UVICORN_WORKERS=1",
     ):
         assert performance_default in text
+    assert "upsert_env WEBUI_SECRET_KEY" in text
+    assert 'export WEBUI_SECRET_KEY="\\$WEBUI_SECRET_KEY"' in text
     for stale in ("Google Ads", "Google Agent Development Kit", "Hussh One ADK", "applyAdkLogo"):
         assert stale not in text
 
@@ -249,6 +369,11 @@ def test_copilot_setup_writes_a_loopback_vertex_endpoint_to_a_temp_editor_profil
     hermes_home = tmp_path / "hermes"
     editor = home / "Library/Application Support/Code/User"
     editor.mkdir(parents=True)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text("#!/usr/bin/env bash\necho Darwin\n", encoding="utf-8")
+    uname.chmod(0o755)
     litellm = hermes_home / "litellm-venv/bin/litellm"
     litellm.parent.mkdir(parents=True)
     litellm.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -259,7 +384,11 @@ def test_copilot_setup_writes_a_loopback_vertex_endpoint_to_a_temp_editor_profil
         "scripts/hussh-one-copilot-setup.sh",
         "--project",
         "test-project",
-        env={"HOME": str(home), "HERMES_HOME": str(hermes_home)},
+        env={
+            "HOME": str(home),
+            "HERMES_HOME": str(hermes_home),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        },
     )
 
     assert result.returncode == 0, result.stderr

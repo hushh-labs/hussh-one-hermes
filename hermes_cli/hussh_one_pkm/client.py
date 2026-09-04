@@ -29,15 +29,85 @@ from .keychain import MacOSKeychain
 
 UAT_API_BASE = "https://api.uat.hushh.ai"
 UAT_WEB_BASE = "https://uat.one.hushh.ai"
+PRODUCTION_API_BASE = "https://api.hushh.ai"
+PRODUCTION_WEB_BASE = "https://one.hushh.ai"
+# The environments a device may enroll against. UAT and production are two
+# deployments of the same Firebase project behind different hosts, so only the
+# API and web bases differ and the one identity-provider key below serves both.
+# The names are the ones the One web binds into the passkey vault-handoff AAD
+# ("production" on one.hushh.ai, "uat" elsewhere); a different spelling here
+# would make every handoff fail to decrypt.
+ENVIRONMENTS: dict[str, tuple[str, str]] = {
+    "uat": (UAT_API_BASE, UAT_WEB_BASE),
+    "production": (PRODUCTION_API_BASE, PRODUCTION_WEB_BASE),
+}
+DEFAULT_ENVIRONMENT = "uat"
+_ENVIRONMENT_ALIASES = {"prod": "production"}
 # Firebase web API keys are public project identifiers, not credentials. The
-# refresh credential created with this key remains Keychain-only.
+# refresh credential created with this key remains Keychain-only. UAT and
+# production share one Firebase project, so this one key serves both.
 UAT_FIREBASE_WEB_API_KEY = "AIzaSyAJ0RDWrBYF6yIDvwdyoAVO4K5QkL218Yc"
+FIREBASE_WEB_API_KEY = UAT_FIREBASE_WEB_API_KEY
 VAULT_HANDOFF_ALGORITHM = "X25519-AES256-GCM"
 VAULT_HANDOFF_VERSION = "hussh-one-trusted-device-vault-handoff-v1"
 
 
 class HusshIdentityError(RuntimeError):
     pass
+
+
+class HusshSessionExpiredError(HusshIdentityError):
+    """The device's login expired; the device itself is still trusted.
+
+    Distinct from revocation on purpose. Revocation means the owner took this
+    device's access away and the local copy must be sealed. An expired refresh
+    token means only that a login aged out (or the account's sessions were
+    reset), which a fresh browser approval repairs in place -- no vault
+    envelope, PKM replica or Source Library custody has to be destroyed to fix
+    it. Conflating the two is what made an expired session look like a reason
+    to disconnect.
+    """
+
+
+def default_environment() -> str:
+    """``hussh_one.environment`` from config.yaml; ``"uat"`` when unset.
+
+    Read live rather than cached, so a person who sets the key and then runs
+    ``/hussh-one connect`` gets it on that connect, not after a restart. Any
+    failure to read the config, or an empty value, falls back to UAT rather
+    than refusing: a config problem must never make enrollment impossible.
+    The value is not validated here; ``resolve_environment`` does that, so a
+    misspelt key is named as such instead of silently becoming UAT.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        value = cfg_get(load_config_readonly(), "hussh_one", "environment")
+    except Exception:  # noqa: BLE001 - an unreadable config falls back to UAT
+        return DEFAULT_ENVIRONMENT
+    name = str(value or "").strip()
+    return name or DEFAULT_ENVIRONMENT
+
+
+def resolve_environment(name: str | None) -> str:
+    """Canonical environment name for ``name``; the config default when blank.
+
+    Case-insensitive, and ``prod`` is accepted for ``production``. Anything
+    else is refused by name: an environment is the pair of hosts this machine
+    will hand an authorization code to, so a typo must not become a guess.
+    """
+    candidate = str(name or "").strip()
+    if not candidate:
+        candidate = default_environment()
+    canonical = candidate.lower()
+    canonical = _ENVIRONMENT_ALIASES.get(canonical, canonical)
+    if canonical not in ENVIRONMENTS:
+        accepted = " and ".join(f'"{key}"' for key in ENVIRONMENTS)
+        raise HusshIdentityError(
+            f'Unknown Hussh One environment "{candidate}". '
+            f"Accepted values are {accepted}."
+        )
+    return canonical
 
 
 def _profile_id(profile_home: Path) -> str:
@@ -81,7 +151,13 @@ class HusshIdentityClient:
         profile_home: Path,
         keychain: MacOSKeychain | None = None,
         http: httpx.Client | None = None,
+        on_revoked: Callable[[], None] | None = None,
     ) -> None:
+        # Owner-supplied full seal. The identity client can only destroy its own
+        # credentials; the vault envelope, wrapping key, PKM replica and Source
+        # Library live on the bridge. When the bridge wires itself in here, a
+        # revoked device seals everything instead of only unlinking its login.
+        self.on_revoked = on_revoked
         self.profile_home = profile_home
         self.profile_id = _profile_id(profile_home)
         self.state_dir = profile_home / "hussh-one"
@@ -158,7 +234,27 @@ class HusshIdentityClient:
         device_name: str,
         replaces_device_id: str | None = None,
         on_connected: Callable[[bytes | None], None] | None = None,
+        expected_account_email: str | None = None,
+        environment: str | None = None,
     ) -> dict[str, Any]:
+        """Open a browser approval, optionally to repair an existing device.
+
+        ``expected_account_email`` makes this a *repair*: the approval must
+        come back for that same account, or the exchange is refused and no
+        local state is overwritten. Without it, a repair could silently rebind
+        a machine that still holds one account's vault envelope and encrypted
+        replica to a different account's identity.
+
+        ``environment`` names which One this device links to (``"uat"`` or
+        ``"production"``); blank means ``hussh_one.environment`` from config,
+        then UAT. It is resolved exactly once, here, and carried on the
+        pending authorization so the code exchange goes to the same API the
+        approval page belongs to. A code minted by one host and handed to the
+        other would be refused at best and, at worst, bind this machine to an
+        identity its browser approval never saw.
+        """
+        environment_name = resolve_environment(environment)
+        api_base, web_base = ENVIRONMENTS[environment_name]
         verifier = secrets.token_urlsafe(64)[:86]
         challenge = (
             base64
@@ -181,14 +277,20 @@ class HusshIdentityClient:
         redirect_uri = f"http://127.0.0.1:{server.server_port}/callback"
         server.expected_state = state  # type: ignore[attr-defined]
         server.result = None  # type: ignore[attr-defined]
+        server.callback_event = threading.Event()  # type: ignore[attr-defined]
+        server.completion_event = threading.Event()  # type: ignore[attr-defined]
+        server.completion_status = "pending"  # type: ignore[attr-defined]
 
+        superseded = None
         with self._pending_lock:
             if self._pending is not None:
-                if self._pending.get("status") == "waiting":
-                    server.server_close()
-                    raise HusshIdentityError(
-                        "A trusted-device authorization is already in progress."
-                    )
+                # A waiting authorization used to make this refuse. That turned
+                # an abandoned approval into a five-minute lockout: the browser
+                # tab had been closed or never opened, and every retry answered
+                # "already in progress" with no way to clear it. Asking to
+                # connect IS the request to start over, so the older attempt is
+                # superseded rather than allowed to block the newer one.
+                superseded = self._pending
                 self._pending = None
             self._pending = {
                 "server": server,
@@ -198,7 +300,21 @@ class HusshIdentityClient:
                 "error": None,
                 "on_connected": on_connected,
                 "vault_handoff_private_key": vault_handoff_private_key,
+                "expected_account_email": (expected_account_email or "").strip().lower(),
+                "environment": environment_name,
+                "api_base": api_base,
+                "web_base": web_base,
             }
+
+        if superseded is not None and superseded.get("status") == "waiting":
+            # Close the stale listener outside the lock: its handler thread may
+            # be mid-callback and takes the same lock.
+            stale_server = superseded.get("server")
+            if stale_server is not None:
+                try:
+                    stale_server.server_close()
+                except Exception:
+                    pass
 
         request_params = {
             "redirect_uri": redirect_uri,
@@ -214,7 +330,7 @@ class HusshIdentityClient:
             request_params["replaces_device_id"] = replaces_device_id
         params = urllib.parse.urlencode(request_params)
         authorization_url = (
-            f"{UAT_WEB_BASE}/one/profile/security/devices/authorize?{params}"
+            f"{web_base}/one/profile/security/devices/authorize?{params}"
         )
         threading.Thread(
             target=self._serve_authorization,
@@ -225,6 +341,8 @@ class HusshIdentityClient:
             "status": "waiting",
             "authorization_url": authorization_url,
             "expires_in": 300,
+            "environment": environment_name,
+            "web_base": web_base,
         }
 
     def open_authorization(
@@ -233,11 +351,15 @@ class HusshIdentityClient:
         device_name: str,
         replaces_device_id: str | None = None,
         on_connected: Callable[[bytes | None], None] | None = None,
+        expected_account_email: str | None = None,
+        environment: str | None = None,
     ) -> dict[str, Any]:
         result = self.start_authorization(
             device_name=device_name,
             replaces_device_id=replaces_device_id,
             on_connected=on_connected,
+            expected_account_email=expected_account_email,
+            environment=environment,
         )
         webbrowser.open(result["authorization_url"])
         return result
@@ -252,17 +374,49 @@ class HusshIdentityClient:
                 "error": self._pending.get("error"),
             }
 
+    def cancel_pending_authorization(self) -> bool:
+        """Invalidate a browser grant before disconnecting or switching accounts."""
+        with self._pending_lock:
+            pending = self._pending
+            self._pending = None
+        if pending is None:
+            return False
+        server = pending.get("server")
+        if server is not None:
+            try:
+                server.server_close()
+            except Exception:
+                pass
+        return True
+
     def _serve_authorization(self, server: ThreadingHTTPServer, verifier: str) -> None:
         try:
             server.timeout = 300
             server.handle_request()
+            callback_event = getattr(server, "callback_event", None)
+            if callback_event is not None:
+                callback_event.wait(timeout=5)
             result = getattr(server, "result", None)
             if not result or not result.get("code"):
                 raise HusshIdentityError(
                     result.get("error") if result else "Authorization timed out."
                 )
+            # The environment chosen when this approval started, never a
+            # constant: the code came from that environment's approval page
+            # and is redeemable only against its API. The defaults cover a
+            # pending record written before the choice existed.
+            with self._pending_lock:
+                pending = (
+                    self._pending
+                    if self._pending is not None
+                    and self._pending.get("server") is server
+                    else {}
+                )
+                api_base = str(pending.get("api_base") or UAT_API_BASE)
+                web_base = str(pending.get("web_base") or UAT_WEB_BASE)
+                environment = str(pending.get("environment") or DEFAULT_ENVIRONMENT)
             exchange = self.http.post(
-                f"{UAT_API_BASE}/api/account/trusted-device-authorizations/exchange",
+                f"{api_base}/api/account/trusted-device-authorizations/exchange",
                 json={"code": result["code"], "code_verifier": verifier},
             )
             exchange.raise_for_status()
@@ -282,26 +436,54 @@ class HusshIdentityClient:
                 device_id=str(payload["device_id"]),
                 profile_id=self.profile_id,
                 account_email=str(payload.get("account_email") or "").strip(),
+                api_base=api_base,
+                web_base=web_base,
+                environment=environment,
             )
             if not state.account_email:
                 raise HusshIdentityError(
                     "The trusted-device exchange did not provide a verified account email."
                 )
-            refresh_token = str(session["refreshToken"]).encode("utf-8")
-            self.keychain.set(self._account("firebase-refresh-token"), refresh_token)
-            self._id_token = str(session["idToken"])
-            self._id_token_expires_at = (
-                time.time() + int(session.get("expiresIn") or 3600) - 60
-            )
-            _atomic_json(self.identity_path, state.to_json())
+            with self._pending_lock:
+                expected = (
+                    str(self._pending.get("expected_account_email") or "")
+                    if self._pending is not None
+                    else ""
+                )
+            if expected and state.account_email.strip().lower() != expected:
+                # A repair may only re-approve the account this machine is
+                # already holding custody for. Writing a different account's
+                # identity over an existing vault envelope and encrypted
+                # replica would leave one account's data under another
+                # account's login; switching accounts is the explicit
+                # disconnect path, which removes that custody first.
+                raise HusshIdentityError(
+                    "This device is connected to a different Hussh One account. "
+                    "Disconnect it before connecting another account."
+                )
+            with self._pending_lock:
+                if self._pending is None or self._pending.get("server") is not server:
+                    return
+                refresh_token = str(session["refreshToken"]).encode("utf-8")
+                self.keychain.set(
+                    self._account("firebase-refresh-token"), refresh_token
+                )
+                self._id_token = str(session["idToken"])
+                self._id_token_expires_at = (
+                    time.time() + int(session.get("expiresIn") or 3600) - 60
+                )
+                _atomic_json(self.identity_path, state.to_json())
             vault_key: bytes | None = None
             try:
                 with self._pending_lock:
-                    pending_private_key = (
-                        self._pending.get("vault_handoff_private_key")
-                        if self._pending is not None
-                        else None
-                    )
+                    pending_private_key = None
+                    if (
+                        self._pending is not None
+                        and self._pending.get("server") is server
+                    ):
+                        pending_private_key = self._pending.get(
+                            "vault_handoff_private_key"
+                        )
                 if isinstance(pending_private_key, x25519.X25519PrivateKey):
                     recipient_public_key = base64.b64encode(
                         pending_private_key.public_key().public_bytes(
@@ -327,23 +509,41 @@ class HusshIdentityClient:
                 vault_key = None
             callback: Callable[[bytes | None], None] | None = None
             with self._pending_lock:
-                assert self._pending is not None
+                if self._pending is None or self._pending.get("server") is not server:
+                    return
                 self._pending["status"] = "connected"
                 callback = self._pending.get("on_connected")
+            server.completion_status = "connected"  # type: ignore[attr-defined]
+            completion_event = getattr(server, "completion_event", None)
+            if completion_event is not None:
+                completion_event.set()
             if callback is not None:
                 callback(vault_key)
         except Exception as exc:
             with self._pending_lock:
-                if self._pending is not None:
+                if (
+                    self._pending is not None
+                    and self._pending.get("server") is server
+                ):
                     self._pending["status"] = "error"
                     self._pending["error"] = str(exc)
+            server.completion_status = "error"  # type: ignore[attr-defined]
+            completion_event = getattr(server, "completion_event", None)
+            if completion_event is not None:
+                completion_event.set()
         finally:
             # The handoff key is an enrollment-only capability. Retain the
             # bounded status for /hussh-one status, but remove private key
             # material as soon as this authorization attempt terminates.
             with self._pending_lock:
-                if self._pending is not None:
+                if (
+                    self._pending is not None
+                    and self._pending.get("server") is server
+                ):
                     self._pending.pop("vault_handoff_private_key", None)
+            completion_event = getattr(server, "completion_event", None)
+            if completion_event is not None:
+                completion_event.set()
             server.server_close()
 
     def id_token(self) -> str:
@@ -367,7 +567,7 @@ class HusshIdentityClient:
         )
         if response.status_code == 400:
             self.lock_identity()
-            raise HusshIdentityError(
+            raise HusshSessionExpiredError(
                 "The Hussh device session expired. Connect it again."
             )
         response.raise_for_status()
@@ -388,16 +588,168 @@ class HusshIdentityClient:
             f"{state.api_base}/api/account/trusted-devices",
             headers={"Authorization": f"Bearer {self._id_token}"},
         )
-        if devices.status_code != 200 or not any(
+        # Only an ANSWER may seal. `_handle_revoked` destroys the vault
+        # envelope, the device wrapping key, the encrypted PKM replica and
+        # Source Library custody, so the bar for reaching it is that the server
+        # actually said this device is not active. A 500, 502, 503, 429 or an
+        # unparseable body is the server failing to answer, and treating that
+        # as revocation meant a backend blip during a deploy could destroy the
+        # owner's local data. This is the same fail-safe `device_status` states
+        # in its own docstring: every ambiguous outcome must be
+        # indistinguishable from "don't act".
+        if devices.status_code != 200:
+            self.lock_identity()
+            raise HusshIdentityError(
+                "Hussh One could not confirm this device right now; nothing was changed locally."
+            )
+        try:
+            listed = devices.json().get("devices") or []
+        except Exception:
+            self.lock_identity()
+            raise HusshIdentityError(
+                "Hussh One returned an unreadable device list; nothing was changed locally."
+            ) from None
+        if not any(
             item.get("device_id") == state.device_id and item.get("status") == "active"
-            for item in (devices.json().get("devices") or [])
+            for item in listed
         ):
-            self.disconnect(remove_device_key=True)
+            self._handle_revoked()
             raise HusshIdentityError("This Hussh trusted device was revoked.")
         return self._id_token
 
+    def session_state(self) -> str:
+        """Classify this device's login: the question a status read must answer.
+
+        Returns ``not_connected`` | ``ok`` | ``expired`` | ``revoked`` |
+        ``indeterminate``. ``identity_status`` reports the stored identity, so
+        a device whose refresh token died still reads there as "connected" --
+        true of the enrollment and useless as an answer to "is my agent
+        reaching Hussh One right now?". A stale login stops the presence
+        heartbeat silently, which is what makes a live machine read as gone.
+
+        Never raises. ``revoked`` comes from the token path's own device check,
+        which seals; every other failure is reported, not acted on.
+        """
+        if self.read_state() is None:
+            return "not_connected"
+        try:
+            self.id_token()
+        except HusshSessionExpiredError:
+            return "expired"
+        except HusshIdentityError as exc:
+            return "revoked" if "revoked" in str(exc).lower() else "indeterminate"
+        except Exception:
+            return "indeterminate"
+        return "ok"
+
+    def _handle_revoked(self) -> None:
+        """Seal on revocation, falling back to a credential-only disconnect.
+
+        ``disconnect`` alone is NOT a seal: it drops this device's login while
+        leaving the vault envelope, the device-wrapping key, the encrypted PKM
+        replica and the Source Library on disk -- everything a revoked device
+        needs to keep reading the local copy. The bridge injects the real seal
+        via ``on_revoked``; the fallback preserves the old behaviour for a bare
+        identity client constructed without one.
+        """
+        if self.on_revoked is not None:
+            try:
+                self.on_revoked()
+                return
+            except Exception:
+                # A failed seal must never strand the device holding a live
+                # login as well; fall through to the credential teardown.
+                pass
+        self.disconnect(remove_device_key=True)
+
     def auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.id_token()}"}
+
+    def device_status(self) -> str:
+        """Read this device's own trust status from Hussh One.
+
+        Returns exactly one of ``active`` | ``revoked`` | ``unknown_device`` |
+        ``indeterminate``. Never raises: the caller destroys user data on
+        ``revoked``, so every ambiguous outcome -- 503, timeout, transport
+        error, unparseable body -- must be indistinguishable from "don't act".
+        Fail-closed here means failing to NOT sealing.
+
+        The endpoint is Firebase-authed rather than device-token-authed on
+        purpose: a revoked device keeps its user-level Firebase session, so a
+        device-token gate would be unreachable exactly when the answer matters.
+        """
+        state = self.read_state()
+        if state is None:
+            return "indeterminate"
+        try:
+            response = self.http.get(
+                f"{state.api_base}/api/account/trusted-devices/{state.device_id}/status",
+                headers=self.auth_headers(),
+            )
+        except Exception:
+            return "indeterminate"
+        if response.status_code == 404:
+            return "unknown_device"
+        if response.status_code != 200:
+            return "indeterminate"
+        try:
+            payload = response.json() or {}
+        except Exception:
+            return "indeterminate"
+        return "revoked" if str(payload.get("status")) == "revoked" else "active"
+
+    def post_seal_ack(self) -> bool:
+        """Best-effort advisory ack that this device sealed its local copy.
+
+        Must run BEFORE the destroy step: it needs the Firebase credentials the
+        seal is about to delete. Advisory and idempotent server-side, so a retry
+        after a crash is safe, and a failure here never blocks the seal.
+        """
+        state = self.read_state()
+        if state is None:
+            return False
+        try:
+            response = self.http.post(
+                f"{state.api_base}/api/account/trusted-devices/{state.device_id}/seal-ack",
+                headers=self.auth_headers(),
+            )
+        except Exception:
+            return False
+        return 200 <= int(getattr(response, "status_code", 0)) < 300
+
+    def post_heartbeat(self, snapshot: dict[str, Any]) -> bool:
+        """Best-effort push of this device's runtime state to Hussh One.
+
+        Advisory: a failure means the dashboard shows a staler reading, never
+        that anything on this machine is wrong. So it returns False rather than
+        raising, and never blocks its caller.
+
+        Deliberately not a status probe. It reads ``read_state`` and does NOT
+        call ``auth_headers``, which refreshes the token and runs the revocation
+        check -- a check that can seal the device. Telemetry must never be able
+        to destroy local data as a side effect of being sent.
+
+        The snapshot IS the request body: every telemetry field
+        (``current_model``, ``busy``, ``active_sessions``, hardware, battery)
+        sits at the top level. Builds from 2026-08-28 to 2026-09-03 wrapped it
+        under a ``heartbeat`` key, and the server of that time read only
+        top-level fields, so UAT stamped ``last_heartbeat_at`` and stored
+        ``heartbeat: null`` on every push. The server has since learned to
+        read both shapes; the flat body is canonical.
+        """
+        state = self.read_state()
+        if state is None or not self._id_token:
+            return False
+        try:
+            response = self.http.post(
+                f"{state.api_base}/api/account/trusted-devices/"
+                f"{state.device_id}/heartbeat",
+                headers={"Authorization": f"Bearer {self._id_token}"},
+                json=snapshot,
+            )
+        except Exception:
+            return False
+        return 200 <= int(getattr(response, "status_code", 0)) < 300
 
     def sign(self, payload: str) -> str:
         signature = self._device_private_key().sign(
@@ -410,6 +762,7 @@ class HusshIdentityClient:
         self._id_token_expires_at = 0.0
 
     def disconnect(self, *, remove_device_key: bool = False) -> None:
+        self.cancel_pending_authorization()
         self.lock_identity()
         self.keychain.delete(self._account("firebase-refresh-token"))
         if remove_device_key:
@@ -428,6 +781,9 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
         expected = str(getattr(self.server, "expected_state", ""))
         if parsed.path != "/callback" or not secrets.compare_digest(state, expected):
             self.server.result = {"error": "The authorization state did not match."}  # type: ignore[attr-defined]
+            callback_event = getattr(self.server, "callback_event", None)
+            if callback_event is not None:
+                callback_event.set()
             self.send_response(400)
             body = b"Authorization failed. Return to Hermes."
         else:
@@ -436,8 +792,29 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
                 "error": (query.get("error") or [""])[0],
                 "state": state,
             }
-            self.send_response(200)
-            body = b"Device connected. You can return to Hermes."
+            callback_event = getattr(self.server, "callback_event", None)
+            if callback_event is not None:
+                callback_event.set()
+            completion_event = getattr(self.server, "completion_event", None)
+            completed = bool(completion_event and completion_event.wait(timeout=65))
+            completion_status = str(
+                getattr(self.server, "completion_status", "pending")
+            )
+            if completed and completion_status == "connected":
+                self.send_response(200)
+                body = b"Hussh One connected to Hermes. You can close this window."
+            elif completed and completion_status == "error":
+                self.send_response(502)
+                body = (
+                    b"Approval was received, but Hermes could not complete the "
+                    b"connection. Return to Hermes, run /hussh-one status, and retry."
+                )
+            else:
+                self.send_response(202)
+                body = (
+                    b"Approval was received and Hermes is still finalizing the "
+                    b"connection. Return to Hermes and run /hussh-one status."
+                )
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

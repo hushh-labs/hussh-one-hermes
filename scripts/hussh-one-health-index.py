@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import socket
 import subprocess
 import sys
@@ -212,7 +213,7 @@ def probe_cron() -> None:
         add(harness, "jobs.json", INFO, f"no cron store at {jobs_path}")
         return
     try:
-        data = json.loads(jobs_path.read_text())
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001
         add(harness, "jobs.json", FAIL, f"unparseable: {e}")
         return
@@ -305,6 +306,247 @@ def probe_changelog_freshness() -> None:
             add(harness, "changelog", WARN, f"{n} undocumented Hussh-One commit(s) — run the checker for the list")
     except Exception as e:  # noqa: BLE001
         add(harness, "changelog", WARN, f"could not run checker: {e}")
+
+
+def probe_puppy_one() -> None:
+    """Report the on-device edge tier: model host, gate, hardware, power.
+
+    Read-only and cheap. It never loads or evicts a model: a health probe that
+    changed what is resident would make the machine it describes different from
+    the one the owner has, and a load can take minutes.
+
+    The gate reading is the one that matters. ``hussh_one.on_device_only`` off
+    is not a failure, it is the default, but it IS the difference between "the
+    work stays here" and "the work may quietly reach a vendor", so it is
+    reported rather than assumed in either direction.
+    """
+    harness = "puppy-one"
+
+    # Model host. Not-running is INFO: LM Studio is the owner's app to start.
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:1234/api/v0/models", timeout=3
+        ) as resp:
+            models = (json.loads(resp.read()) or {}).get("data") or []
+        resident = [m.get("id") for m in models if m.get("state") == "loaded"]
+        if resident:
+            add(harness, "model-host", OK, f"LM Studio: {', '.join(resident)}")
+        else:
+            add(
+                harness,
+                "model-host",
+                WARN,
+                f"LM Studio up, no model resident ({len(models)} available)",
+            )
+    except Exception:
+        add(harness, "model-host", INFO, "LM Studio not reachable on 127.0.0.1:1234")
+
+    # The on-device gate, reported by what actually leaves rather than by the
+    # flag alone. "Gate off" is not itself a problem: most auxiliary tasks
+    # resolve to the local provider anyway. Naming the tasks that genuinely
+    # reach a vendor is actionable; warning about the flag is noise, and noise
+    # is what gets a safety signal ignored.
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_cli.hussh_one_egress_audit import LEAVES, build_report
+
+        config = load_config_readonly()
+        gated = bool(cfg_get(config, "hussh_one", "on_device_only"))
+        report = build_report(config, gate_on=gated)
+        leaking = [r["task"] for r in report["auxiliary"] if r["verdict"] == LEAVES]
+        if report["main_turn"]["verdict"] == LEAVES:
+            leaking.insert(0, "main_turn")
+        if leaking:
+            add(
+                harness,
+                "on-device-gate",
+                WARN,
+                f"gate {'on' if gated else 'off'}; leaves this machine: "
+                + ", ".join(leaking),
+            )
+        else:
+            add(
+                harness,
+                "on-device-gate",
+                OK,
+                f"gate {'on' if gated else 'off'}; nothing reaches a model vendor",
+            )
+    except Exception as e:  # noqa: BLE001
+        add(harness, "on-device-gate", WARN, f"egress unreadable: {e}")
+
+    # Which agents this machine is running, and at what version. Reported
+    # because "up to date" is not a claim a machine can make if it cannot name
+    # the ref it applied.
+    try:
+        from hermes_cli.hussh_one_agent_sync import STATE_FILENAME, read_state
+
+        state = read_state(HERMES_HOME / "health" / STATE_FILENAME)
+        agents = state.get("agents") or {}
+        if agents:
+            unpinned = [n for n, a in agents.items() if not a.get("applied_ref")]
+            detail = ", ".join(
+                f"{n}@{(a.get('applied_ref') or '?')[:8]}" for n, a in sorted(agents.items())
+            )
+            add(
+                harness,
+                "agent-sync",
+                WARN if unpinned else OK,
+                detail + (f"; unpinned: {', '.join(unpinned)}" if unpinned else ""),
+            )
+        else:
+            add(harness, "agent-sync", INFO, "no synced agents recorded yet")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "agent-sync", WARN, f"sync state unreadable: {e}")
+
+    # A restart in progress. Surfaced because a drain is a deliberate wait, and
+    # a silent thirty-second pause is indistinguishable from a hang -- someone
+    # will kill it, which is exactly the interrupted turn the drain prevents.
+    try:
+        from hermes_cli.hussh_one_graceful_restart import PHASE_IDLE, read_status
+
+        restart = read_status(HERMES_HOME)
+        phase = str(restart.get("phase") or PHASE_IDLE)
+        if phase != PHASE_IDLE:
+            add(harness, "restart", INFO, str(restart.get("message") or phase))
+    except Exception as e:  # noqa: BLE001
+        add(harness, "restart", WARN, f"restart status unreadable: {e}")
+
+    # The machine the agent runs on, including power state on a laptop.
+    try:
+        from hermes_cli.hussh_one_host_metrics import host_battery, host_hardware
+
+        hw = host_hardware()
+        parts = [str(hw[k]) for k in ("brand", "processor", "ram_total_gb") if hw.get(k)]
+        battery = host_battery()
+        if battery.get("present"):
+            pct = battery.get("percent")
+            state = str(battery.get("state") or "")
+            # Discharging under a fifth is worth a WARN: a long eval or a large
+            # model load will not survive it, and that failure presents as a
+            # crash rather than as a flat battery.
+            low = (
+                isinstance(pct, (int, float))
+                and pct < 20
+                and not battery.get("on_ac")
+            )
+            parts.append(f"battery {pct}% {state}".strip())
+            add(
+                harness,
+                "host",
+                WARN if low else OK,
+                " / ".join(parts) + (" -- too low for a long run" if low else ""),
+            )
+        else:
+            add(harness, "host", OK, " / ".join(parts) or "hardware unreadable")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "host", WARN, f"host probe failed: {e}")
+
+    # The Hussh One link. A device's login ages out on its own (and dies when
+    # the account's sessions are reset), and nothing on this machine notices:
+    # the presence heartbeat deliberately never refreshes a token, so a stale
+    # login just stops reporting, and One shows the machine as gone while
+    # everything here looks healthy. It went unnoticed for weeks exactly
+    # because no probe asked. Expired is a WARN with the repair named, never a
+    # FAIL: the device is still trusted and nothing local is at risk.
+    try:
+        from hermes_cli.hussh_one_pkm.bridge import get_profile_bridge
+
+        health = get_profile_bridge().session_health()
+        session = str(health.get("session") or "indeterminate")
+        if session == "ok":
+            add(harness, "hussh-one-link", OK, "signed in; presence heartbeat is live")
+        elif session == "not_connected":
+            add(harness, "hussh-one-link", INFO, "not connected to Hussh One")
+        elif session == "expired":
+            add(
+                harness,
+                "hussh-one-link",
+                WARN,
+                "device session expired -- One shows this machine as gone; "
+                "repair with /hussh-one reconnect (keeps the vault)",
+            )
+        elif session == "revoked":
+            add(harness, "hussh-one-link", WARN, "device revoked in One; local copy sealed")
+        else:
+            add(harness, "hussh-one-link", INFO, "link state could not be checked")
+    except Exception as e:  # noqa: BLE001
+        add(harness, "hussh-one-link", INFO, f"link probe unavailable: {e}")
+
+
+def probe_source_library() -> None:
+    """Report Source Library harness readiness without opening vault custody.
+
+    A health-index process cannot observe another desktop process's in-memory
+    vault key, and it must not trigger a Keychain/user-presence prompt just to
+    render status.  This probe therefore reads only enrollment markers and
+    opaque SQLite table cardinality.  It never reads source bindings, sealed
+    records, paths, provider metadata, or any file content.
+    """
+    harness = "source-library"
+    root = HERMES_HOME / "hussh-one"
+    identity_path = root / "identity.json"
+    envelope_path = root / "vault-envelope.json"
+    if not identity_path.is_file() or not envelope_path.is_file():
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "not-enrolled; connect and enroll Hussh One on the local desktop first",
+        )
+        return
+
+    lock_state = root / "vault-lock-state.json"
+    try:
+        lock_payload = json.loads(lock_state.read_text(encoding="utf-8")) if lock_state.exists() else {}
+    except (OSError, ValueError):
+        lock_payload = {}
+    if bool(lock_payload.get("locked")):
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "vault-locked; unlock in the active desktop/dashboard session before Source Library is available",
+        )
+        return
+
+    database = root / "source-library" / "source-library.db"
+    if not database.is_file():
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "unbound; no owner-approved source roots are configured",
+        )
+        return
+    try:
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM source_bindings").fetchone()
+        binding_count = int(row[0]) if row else 0
+    except (OSError, sqlite3.Error) as exc:
+        add(
+            harness,
+            "readiness",
+            WARN,
+            f"binding-unavailable; opaque binding index cannot be read ({exc.__class__.__name__})",
+        )
+        return
+    if binding_count == 0:
+        add(
+            harness,
+            "readiness",
+            INFO,
+            "unbound; no owner-approved source roots are configured",
+        )
+        return
+    add(
+        harness,
+        "readiness",
+        INFO,
+        (
+            f"{binding_count} binding(s) configured; unlock the active desktop/dashboard session "
+            "to make the Steward ready (this probe never opens custody)"
+        ),
+    )
 
 
 def _count_dir(path: Path, pattern: str = "*") -> int:
@@ -453,6 +695,8 @@ def main() -> int:
         probe_skills_plugins,
         probe_session_bloat,
         probe_changelog_freshness,
+        probe_source_library,
+        probe_puppy_one,
     ]
     for p in probes:
         try:
@@ -484,7 +728,7 @@ def main() -> int:
     if args.write:
         out = HERMES_HOME / "health"
         out.mkdir(parents=True, exist_ok=True)
-        (out / "hussh-one-health-index.md").write_text(render_markdown())
+        (out / "hussh-one-health-index.md").write_text(render_markdown(), encoding="utf-8")
         (out / "hussh-one-health-index.json").write_text(
             json.dumps({"generated": time.time(), "findings": _findings, "ok": not has_fail}, indent=2)
         )

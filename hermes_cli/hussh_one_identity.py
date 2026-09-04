@@ -20,14 +20,35 @@ AUTO_MODE: SelectionMode = "auto"
 SELECT_MODE: SelectionMode = "select"
 
 
+def _default_gemini_model() -> str:
+    """The Gemini the runtime actually picks when nothing is configured.
+
+    Read from the catalog rather than repeated here. These were two literals
+    that drifted: the catalog's first Gemini moved to 3.7 Flash while this
+    fallback still said 3.6, so a profile with no model configured was
+    *labelled* "Gemini 3.6 Flash" and *routed* to 3.7. A display name that
+    disagrees with the model answering is worse than no name at all.
+
+    Imported lazily to keep this module free of a load-order dependency on the
+    catalog, and falling back to the last known value if the catalog cannot be
+    read, since a label must never raise.
+    """
+    try:
+        from hermes_cli.models import get_default_model_for_provider
+
+        return get_default_model_for_provider("gemini") or "gemini-3.7-flash"
+    except Exception:
+        return "gemini-3.7-flash"
+
+
 def display_model_name(model: Optional[str]) -> str:
     """Return a concise, stable display name for a model identifier."""
-    raw = (model or "").strip() or "gemini-3.6-flash"
+    raw = (model or "").strip() or _default_gemini_model()
     short = raw.rsplit("/", 1)[-1].lower()
 
     if "gemini" in short:
         match = re.search(r"gemini-(\d+(?:\.\d+)?)", short)
-        version = match.group(1) if match else "3.6"
+        version = match.group(1) if match else "3.7"
         variant = "Flash" if "flash" in short else "Pro" if "pro" in short else ""
         return f"Gemini {version} {variant}".strip()
 

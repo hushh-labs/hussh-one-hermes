@@ -18,6 +18,7 @@ Fork-owned data and identity should stay in these surfaces:
 - `scripts/hussh-one-bootstrap.sh`
 - `scripts/hussh-one-supervisor.sh`
 - `scripts/hussh-one-doctor.sh`
+- `scripts/hussh-one-upstream-update.sh`
 - Hussh One regression tests under `tests/`
 - `scripts/hussh-one-guard.sh`
 
@@ -142,6 +143,72 @@ To abort a merge that has gone wrong before committing: `git merge --abort`.
 To roll back a bad merge that was already committed but not pushed:
 `git reset --hard safety/main-<TS>`.
 
+### Daily fleet synchronization
+
+`scripts/hussh-one-bootstrap.sh` registers
+`scripts/hussh-one-upstream-update.sh --apply --restart` as the standard
+per-machine daily upgrade. The updater verifies the remote and branch
+contract, writes a pushed safety tag, reconciles in a short-lived
+`sync/upstream-*` branch, updates the recorded attribution base, runs the
+guard, and only then pushes `origin/main` and restarts from clean `main`.
+
+It never force-pushes, never pushes upstream, and never changes `main` for a
+merge conflict, guard failure, or concurrent `origin/main` change.
+
+On macOS the launchd job runs through the repo's own `.venv/bin/python`,
+which changes into the checkout and runs the script, rather than through
+`/bin/bash` directly: macOS privacy (TCC) decides per launched binary whether
+a background job may read a protected folder such as `~/Documents`, and the
+first scheduled run on 2026-09-02 exited 126 ("Operation not permitted")
+before it could read this script, while the gateway job launched through the
+same interpreter reads the checkout fine. The job also starts from
+`HERMES_HOME`, so the shell never has to stand inside a folder it may not
+enter. Until the upstream conflict backlog has a resolver, a nightly run
+fetches, pushes a safety tag, fast-forwards the fork, attempts the upstream
+merge, aborts on the conflicts with `main` untouched, logs "Deferred" and
+exits 0 without restarting anything (a deferred merge is not a failed
+service; exit 1 is reserved for a contract or guard failure); `--restart`
+only fires after a fully successful merge.
+Its logs are `$HERMES_HOME/logs/hussh-one-upstream-update.log` and
+`.error.log`; the contract also requires a clean tree, so uncommitted work in
+the checkout at 07:00 makes the run refuse.
+
+A deferred upstream merge still fast-forwards the fork, and until 2026-09-02
+that was where the run stopped: the checkout moved, the gateway kept running
+the old code (on the founder's machine it was thirteen fork commits behind
+the checkout it was started from), and the daily jobs that live in
+`~/.hermes` never learned about a change committed to the fork. When
+`git pull --ff-only` moves `HEAD` the updater now runs
+`scripts/hussh-one-cron/hussh-one-cron-sync.py --apply` (the Puppy One
+daily jobs as a versioned product: every job script and prompt under
+`scripts/hussh-one-cron/`, installed into `$HERMES_HOME/scripts` and
+reconciled by job name from `jobs.manifest.json`, never touching a job's
+`deliver`, `model` or `provider`, never removing or reviving a job the
+manifest does not name) and, when `--restart` was requested, asks the
+running gateway to restart gracefully (`SIGUSR1`: drain, exit, launchd
+respawns from the new checkout). Run the sync by hand with `--check` to see
+drift without changing anything.
+
+Inspect or manage it with:
+
+```bash
+scripts/hussh-one-upstream-update.sh --status
+scripts/hussh-one-upstream-update.sh --check
+scripts/hussh-one-upstream-update.sh --apply --restart
+```
+
+### Fresh remote-push verification
+
+Every push to `origin/main` also runs `.github/workflows/hussh-one-fresh-sync.yml`.
+It starts from a fresh checkout, re-establishes the read-only official Hermes
+remote, rebuilds the Python and locked Node dependencies, runs the Hussh guard,
+and reports whether an official update is available. This catches a machine
+whose installed dependencies or remotes happened to mask an integration issue.
+
+The remote workflow is verification-only: it never writes to `main` or to
+official Hermes. The guarded daily updater remains the sole automated path
+that can merge a stable official update and push the verified result.
+
 ## Conflict-Resolution Playbook
 
 Conflicts almost always land in the same files. Resolve by intent, not by
@@ -230,8 +297,19 @@ The guard checks:
 - the old Vertex provider name did not reappear
 - branding, WhatsApp prefix, model switching, provider discovery, runtime rebuild, and auxiliary-client tests pass
 - the WhatsApp bridge remains syntactically valid
+- Telegram MarkdownV2 header formatting and tool-loop circuit-breaker tests pass
 - if the dashboard is running, it was launched with embedded chat enabled
 - the bootstrap, supervisor, doctor, and restart shell entry points remain syntactically valid
+
+## Runaway local-model protection
+
+Hussh One bootstrap enables Hermes' existing per-turn tool-loop guardrail. It
+halts only after repeated failures in the same turn (three identical failed
+calls or five failures from the same tool path). A successful call resets the
+failure streak; distinct calls, normal pollers, and ongoing work are not
+stopped. Read-only no-progress detection remains deliberately higher at twelve
+identical results. The generic Hermes visible-output repetition detector stays
+upstream-owned and continues to protect truncated responses from repeated text.
 
 When credentials are available, also run the live smoke:
 

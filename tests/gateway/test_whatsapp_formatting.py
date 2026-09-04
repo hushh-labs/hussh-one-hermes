@@ -14,6 +14,18 @@ import pytest
 from gateway.config import Platform
 
 
+def _default_display_name() -> str:
+    """The header names the model that would actually answer.
+
+    Held as a literal here once, it drifted when the catalog default moved and
+    these tests failed for a reason they have no opinion about.
+    """
+    from hermes_cli.hussh_one_identity import display_model_name
+
+    return display_model_name(None)
+
+
+
 @pytest.fixture(autouse=True)
 def _whatsapp_open_optin(monkeypatch):
     """Opt into WhatsApp allow-all so ``dm_policy: open`` dispatch tests run.
@@ -207,7 +219,7 @@ class TestSendChunking:
         # converted (**bold** -> *bold*) and appear after the brand line.
         call_args = adapter._http_session.post.call_args
         payload = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert payload["message"] == "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\n*bold text*"
+        assert payload["message"] == f"🤫 Hussh One\n{_default_display_name()} · [A]\n════════════════════\n*bold text*"
 
     @pytest.mark.asyncio
     async def test_reply_to_only_on_first_chunk(self):

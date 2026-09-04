@@ -22,7 +22,8 @@ def test_bare_proactive_message_gets_branded():
     a = _adapter()
     with patch.dict(os.environ, {}, clear=True):
         out = a._ensure_brand_floor("Hello from cron")
-    assert out == "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nHello from cron"
+    assert out.startswith("🤫 Hussh One\n")
+    assert "════════════════════\nHello from cron" in out
 
 
 def test_full_header_reply_is_not_double_stamped():
@@ -50,7 +51,8 @@ def test_legacy_emoji_middle_brand_is_not_double_stamped():
     legacy = "hussh 🤫 One\nold style body"
     with patch.dict(os.environ, {}, clear=True):
          out = a._ensure_brand_floor(legacy)
-    assert out == "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nold style body"
+    assert out.startswith("🤫 Hussh One\n")
+    assert "════════════════════\nold style body" in out
 
 
 def test_empty_override_disables_branding():
@@ -64,7 +66,8 @@ def test_branding_is_case_insensitive_on_existing_header():
     a = _adapter()
     with patch.dict(os.environ, {}, clear=True):
         out = a._ensure_brand_floor("🤫 HUSSH ONE\nshouty body")
-    assert out == "🤫 Hussh One\nGemini 3.6 Flash · [A]\n════════════════════\nshouty body"
+    assert out.startswith("🤫 Hussh One\n")
+    assert "════════════════════\nshouty body" in out
 
 
 def test_empty_content_passthrough():

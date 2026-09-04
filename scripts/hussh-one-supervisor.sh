@@ -694,13 +694,16 @@ launchd_start_dashboard() {
   if [[ "$DRY_RUN" == "1" ]]; then
     return 0
   fi
-  for attempt in 1 2 3 4 5; do
+  # A cold dashboard boot may install/build the embedded TUI and web assets
+  # before binding the port. Five seconds creates a false restart failure even
+  # though the launchd-owned watchdog becomes healthy moments later.
+  for attempt in $(seq 1 30); do
     if launchd_job_active && [[ -n "$(port_pids "$DASHBOARD_PORT")" ]]; then
       return 0
     fi
     sleep 1
   done
-  echo "error: dashboard launchd job did not become healthy on port $DASHBOARD_PORT" >&2
+  echo "error: dashboard launchd job did not become healthy on port $DASHBOARD_PORT within 30 seconds" >&2
   return 1
 }
 

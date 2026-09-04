@@ -58,16 +58,25 @@ def _recv_until(conn, frame_type: str, *, status: str | None = None) -> dict:
     raise AssertionError(f"Timed out waiting for {frame_type} frame")
 
 
-def test_console_ws_rejects_missing_or_bad_token(console_client):
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with console_client.websocket_connect("/api/console"):
-            pass
-    assert exc.value.code == 4401
+def _assert_auth_rejected(console_client, url: str) -> None:
+    """A bad credential must arrive as a READABLE 4401 close frame.
 
+    The upgrade is accepted and then immediately closed on purpose: closing
+    before accept fails the HTTP handshake, and a handshake that never
+    completed carries no close frame, so the browser only ever sees 1006 and
+    retries a credential that can never be accepted. See
+    ``web_server._ws_reject_after_accept``.
+    """
     with pytest.raises(WebSocketDisconnect) as exc:
-        with console_client.websocket_connect(_url(token="wrong")):
-            pass
+        with console_client.websocket_connect(url) as conn:
+            conn.receive_text()
     assert exc.value.code == 4401
+    assert "auth" in (exc.value.reason or "")
+
+
+def test_console_ws_rejects_missing_or_bad_token(console_client):
+    _assert_auth_rejected(console_client, "/api/console")
+    _assert_auth_rejected(console_client, _url(token="wrong"))
 
 
 def test_console_ws_cancel_returns_to_prompt(console_client, monkeypatch):

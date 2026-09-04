@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Hushh Labs
 // SPDX-License-Identifier: Apache-2.0
 
+import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { Button } from '@/components/ui/button'
@@ -14,7 +15,6 @@ import {
 } from '@/hermes'
 import { Lock, RefreshCw } from '@/lib/icons'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { useStore } from '@nanostores/react'
 
 export const HUSSH_ONE_STATUS_KEY = 'hussh-one-status'
 
@@ -76,6 +76,7 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
   const current = status.data
   const remoteVault = current?.onboarding?.remote_vault ?? 'unavailable'
   const pendingAuthorization = current?.authorization.status === 'waiting'
+
   const error =
     connect.error ||
     enroll.error ||

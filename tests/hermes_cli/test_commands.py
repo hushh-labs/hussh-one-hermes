@@ -47,6 +47,15 @@ def _completions(completer: SlashCommandCompleter, text: str):
 class TestCommandRegistry:
 
 
+    def test_save_command_supports_formats(self):
+        cmd = resolve_command("save")
+        assert cmd is not None
+        assert cmd.name == "save"
+        # /save is a cross-platform session export: json (default), md, html
+        assert not cmd.cli_only
+        for token in ("json", "md", "html"):
+            assert token in (cmd.args_hint or "")
+
     def test_no_duplicate_canonical_names(self):
         names = [cmd.name for cmd in COMMAND_REGISTRY]
         assert len(names) == len(set(names)), f"Duplicate names: {[n for n in names if names.count(n) > 1]}"
@@ -386,8 +395,19 @@ class TestSubcommands:
 
 
     def test_hussh_one_exposes_the_full_trusted_device_lifecycle(self):
+        """The picker is the only place most owners find these actions.
+
+        `reconnect` once shipped in the handler while this list still offered
+        the old seven, so the repair for an expired device login existed and
+        could not be discovered -- and the neighbour an owner reaches for
+        instead is `disconnect`, which destroys the vault envelope, the
+        encrypted replica and Source Library custody. Both the picker list and
+        the handler's usage line are now built from HUSSH_ONE_ACTIONS, so they
+        cannot drift apart again; this pins what that tuple contains.
+        """
         assert SUBCOMMANDS["/hussh-one"] == [
             "connect",
+            "reconnect",
             "enroll",
             "status",
             "unlock",

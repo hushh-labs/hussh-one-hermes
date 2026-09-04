@@ -40,3 +40,19 @@ export function shouldRejectNonOwnerSelfChatEvent({
 }) {
   return mode === 'self-chat' && !isAllowlisted && !isSelfChat && !isCapsuleGroup;
 }
+
+export function shouldRejectFromMeEvent({
+  mode = 'self-chat',
+  isGroup = false,
+  isAllowlisted = false,
+  isSelfChat = false,
+}) {
+  if (mode === 'bot') return true;
+  if (mode === 'self-chat') {
+    // 1:1 direct messages with other people: STRICT GUARDRAIL. Never respond or process.
+    if (!isGroup && !isSelfChat) return true;
+    // Unallowlisted group: reject
+    if (isGroup && !isAllowlisted) return true;
+  }
+  return false;
+}

@@ -13,6 +13,7 @@ import instances from '../instances.js'
 import {
   DECRPM_STATUS,
   INITIAL_STATE,
+  type KeyParseState,
   type ParsedInput,
   type ParsedKey,
   type ParsedMouse,
@@ -28,6 +29,7 @@ import {
   setTerminalBackgroundHex,
   setTerminalForegroundHex,
   setXtversionName,
+  skipKittyKeyboardProtocol,
   supportsExtendedKeys
 } from '../terminal.js'
 import {
@@ -123,6 +125,11 @@ type Props = {
   // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
   // terminal side. Optional so testing.tsx doesn't need to stub it.
   readonly onStdinResume?: () => void
+  // Called for DECSET 1004 terminal focus transitions. The renderer uses
+  // focus-in as a strong signal that the emulator may have coalesced hidden
+  // tab writes or lost physical cursor state, so it can force one clean
+  // repaint instead of trusting incremental damage from before the blur.
+  readonly onTerminalFocusChange?: (isFocused: boolean) => void
   // Receives the declared native-cursor position from useDeclaredCursor
   // so ink.tsx can park the terminal cursor there after each frame.
   // Enables IME composition at the input caret and lets screen readers /
@@ -171,7 +178,44 @@ export default class App extends PureComponent<Props, State> {
   // raw mode until all components don't need it anymore
   rawModeEnabledCount = 0
   inputEmitter = new EventEmitter()
-  keyParseState = INITIAL_STATE
+  /**
+   * Key-parse state, owned by the stdin stream rather than by this component.
+   *
+   * An escape sequence does not arrive atomically: the terminal can split
+   * `\x1b[?1049l` across reads, and the tokenizer buffers the prefix until the
+   * final byte lands. Holding that buffer as instance state meant a remount
+   * threw it away mid-sequence, and the tail then arrived with nothing to
+   * complete -- so `l`, the final byte of every DEC private mode reset (hide
+   * cursor, leave alt screen, disable bracketed paste, disable focus
+   * reporting), was delivered to the focused input as a literal keystroke. The
+   * owner saw a stray "l" typed into the prompt after switching tabs.
+   *
+   * The bytes belong to the stream, so the parse state does too. This mirrors
+   * `instances.ts`, which already keys the Ink instance to its stdout. Keyed
+   * weakly so a closed stream's state is collectable.
+   */
+  static keyParseStates = new WeakMap<object, KeyParseState>()
+
+  get keyParseState(): KeyParseState {
+    const stream = this.props.stdin as unknown as object | undefined
+
+    if (!stream) return this.detachedKeyParseState
+    return App.keyParseStates.get(stream) ?? INITIAL_STATE
+  }
+
+  set keyParseState(next: KeyParseState) {
+    const stream = this.props.stdin as unknown as object | undefined
+
+    if (!stream) {
+      this.detachedKeyParseState = next
+
+      return
+    }
+    App.keyParseStates.set(stream, next)
+  }
+
+  /** Fallback for a test harness or non-TTY host with no stdin object. */
+  private detachedKeyParseState: KeyParseState = INITIAL_STATE
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null
   // Timeout durations for incomplete sequences (ms)
@@ -328,9 +372,14 @@ export default class App extends PureComponent<Props, State> {
         // distinguishable from ctrl+<letter>. We write both the kitty stack
         // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
         // terminals honor whichever they implement (tmux only accepts the
-        // latter).
+        // latter). Ghostty gets only modifyOtherKeys — its kitty
+        // disambiguate mode strips Alt from Backspace (see
+        // skipKittyKeyboardProtocol).
         if (supportsExtendedKeys()) {
-          this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          if (!skipKittyKeyboardProtocol()) {
+            this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          }
+
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 
@@ -630,6 +679,7 @@ export default class App extends PureComponent<Props, State> {
     // setTerminalFocused notifies subscribers: TerminalFocusProvider (context)
     // and Clock (interval speed) — no App setState needed.
     setTerminalFocused(isFocused)
+    this.props.onTerminalFocusChange?.(isFocused)
   }
   handleSuspend = (): void => {
     if (!this.isRawModeSupported()) {

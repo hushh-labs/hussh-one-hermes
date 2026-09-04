@@ -6,10 +6,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
@@ -20,6 +22,7 @@ from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
 from hermes_cli.hussh_one_pkm.client import (
     HusshIdentityClient,
     VAULT_HANDOFF_ALGORITHM,
+    _LoopbackHandler,
     _decrypt_vault_handoff,
     _vault_handoff_aad,
 )
@@ -318,6 +321,126 @@ def test_failed_passkey_enrollment_falls_back_to_masked_passphrase(
     assert bridge._onboarding_status == "ready"
 
 
+def test_disconnect_clears_local_custody_when_remote_revocation_is_unverified(
+    tmp_path: Path,
+) -> None:
+    class FailedResponse:
+        status_code = 503
+
+        @staticmethod
+        def raise_for_status() -> None:
+            raise RuntimeError("remote unavailable")
+
+    class FakeHttp:
+        @staticmethod
+        def delete(_url: str, **_kwargs: object) -> FailedResponse:
+            return FailedResponse()
+
+    local_cleanup: list[str] = []
+    identity_cleanup: list[bool] = []
+    bridge = object.__new__(HusshVaultBridge)
+    bridge.http = FakeHttp()
+    bridge.identity = SimpleNamespace(
+        read_state=lambda: SimpleNamespace(
+            api_base="https://api.example.test",
+            device_id="device-test",
+        ),
+        auth_headers=lambda: {"Authorization": "Bearer redacted"},
+        post_seal_ack=lambda: False,
+        disconnect=lambda *, remove_device_key: identity_cleanup.append(remove_device_key),
+    )
+    bridge.remove_local_vault = lambda: local_cleanup.append("removed")  # type: ignore[method-assign]
+    # A local disconnect now seals, so the cloud can confirm it instead of
+    # sitting on "revoked, awaiting device seal confirmation" forever.
+    bridge._lock = threading.RLock()
+    bridge._seal_state = None
+    bridge.profile_home = tmp_path
+    bridge.seal_state_path = tmp_path / "hussh-one" / "seal-state.json"
+    bridge.lock = lambda *, reason="explicit": None  # type: ignore[method-assign]
+
+    result = bridge.revoke_and_disconnect()
+
+    assert result == {
+        "connected": False,
+        "local_disconnected": True,
+        "remote_revocation": "unverified",
+        "seal_ack_delivered": False,
+    }
+    assert local_cleanup == ["removed"]
+    assert identity_cleanup == [True]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_remote_status"),
+    [(200, "revoked"), (404, "already_absent")],
+)
+def test_disconnect_records_verified_remote_outcome_before_local_cleanup(
+    status_code: int,
+    expected_remote_status: str,
+    tmp_path: Path,
+) -> None:
+    class Response:
+        def __init__(self) -> None:
+            self.status_code = status_code
+
+        @staticmethod
+        def raise_for_status() -> None:
+            raise AssertionError("200 and 404 must not raise")
+
+    bridge = object.__new__(HusshVaultBridge)
+    bridge.http = SimpleNamespace(delete=lambda *_args, **_kwargs: Response())
+    bridge.identity = SimpleNamespace(
+        read_state=lambda: SimpleNamespace(
+            api_base="https://api.example.test",
+            device_id="device-test",
+        ),
+        auth_headers=lambda: {"Authorization": "Bearer redacted"},
+        post_seal_ack=lambda: True,
+        disconnect=lambda *, remove_device_key: None,
+    )
+    bridge.remove_local_vault = lambda: None  # type: ignore[method-assign]
+    bridge._lock = threading.RLock()
+    bridge._seal_state = None
+    bridge.profile_home = tmp_path
+    bridge.seal_state_path = tmp_path / "hussh-one" / "seal-state.json"
+    bridge.lock = lambda *, reason="explicit": None  # type: ignore[method-assign]
+
+    result = bridge.revoke_and_disconnect()
+
+    assert result["remote_revocation"] == expected_remote_status
+    assert result["local_disconnected"] is True
+
+
+def test_identity_disconnect_cancels_pending_browser_authorization(tmp_path: Path) -> None:
+    class Keychain:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def delete(self, account: str) -> None:
+            self.deleted.append(account)
+
+    class PendingServer:
+        closed = False
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    keychain = Keychain()
+    pending_server = PendingServer()
+    identity = HusshIdentityClient(
+        profile_home=tmp_path / "profile",
+        keychain=keychain,  # type: ignore[arg-type]
+    )
+    identity._pending = {"server": pending_server, "status": "waiting"}
+
+    identity.disconnect(remove_device_key=True)
+
+    assert identity._pending is None
+    assert pending_server.closed is True
+    assert any(item.endswith(":firebase-refresh-token") for item in keychain.deleted)
+    assert any(item.endswith(":device-signing-key") for item in keychain.deleted)
+
+
 def test_authorization_discards_ephemeral_handoff_key_after_exchange(
     tmp_path: Path,
 ) -> None:
@@ -380,13 +503,14 @@ def test_authorization_discards_ephemeral_handoff_key_after_exchange(
         http=FakeHttp(),  # type: ignore[arg-type]
     )
     callback_values: list[bytes | None] = []
+    server = FakeServer()
     client._pending = {
+        "server": server,
         "status": "waiting",
         "error": None,
         "on_connected": callback_values.append,
         "vault_handoff_private_key": x25519.X25519PrivateKey.generate(),
     }
-    server = FakeServer()
 
     client._serve_authorization(server, "v" * 43)  # type: ignore[arg-type]
 
@@ -394,6 +518,53 @@ def test_authorization_discards_ephemeral_handoff_key_after_exchange(
     assert client._pending["status"] == "connected"
     assert "vault_handoff_private_key" not in client._pending
     assert server.closed is True
+
+
+@pytest.mark.parametrize(
+    ("completion_status", "expected_status", "expected_text"),
+    [
+        ("connected", 200, "connected to Hermes"),
+        ("error", 502, "could not complete"),
+    ],
+)
+def test_loopback_callback_waits_for_persisted_connection_outcome(
+    completion_status: str,
+    expected_status: int,
+    expected_text: str,
+) -> None:
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LoopbackHandler)
+    server.expected_state = "expected-state"  # type: ignore[attr-defined]
+    server.result = None  # type: ignore[attr-defined]
+    server.callback_event = threading.Event()  # type: ignore[attr-defined]
+    server.completion_event = threading.Event()  # type: ignore[attr-defined]
+    server.completion_status = "pending"  # type: ignore[attr-defined]
+    serving = threading.Thread(target=server.handle_request, daemon=True)
+    serving.start()
+    response: dict[str, object] = {}
+
+    def request_callback() -> None:
+        result = httpx.get(
+            f"http://127.0.0.1:{server.server_port}/callback",
+            params={"state": "expected-state", "code": "one-time-code"},
+            timeout=5,
+        )
+        response.update(status=result.status_code, text=result.text)
+
+    requesting = threading.Thread(target=request_callback, daemon=True)
+    requesting.start()
+    deadline = time.monotonic() + 2
+    while server.result is None and time.monotonic() < deadline:  # type: ignore[attr-defined]
+        time.sleep(0.01)
+    server.completion_status = completion_status  # type: ignore[attr-defined]
+    server.completion_event.set()  # type: ignore[attr-defined]
+    requesting.join(timeout=5)
+    serving.join(timeout=5)
+    server.server_close()
+
+    assert response["status"] == expected_status
+    assert expected_text in str(response["text"])
 
 
 def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
@@ -453,6 +624,142 @@ def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
     dashboard_bridge.lock(reason="workstation_lock")
     with pytest.raises(VaultCryptoError, match="Unlock"):
         mcp_bridge.require_vault_key()
+
+
+def test_a_locked_console_keeps_the_personal_agents_vault_unless_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Founder rule, 2026-09-02: the always-on personal agent keeps its vault
+    # while the screen is locked, because that is exactly when its scheduled
+    # work runs. Coupling to the workstation lock is opt-in.
+    class FakeKeychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+
+        def get(self, account: str) -> bytes | None:
+            return self.values.get(account)
+
+        def set(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete(self, account: str) -> None:
+            self.values.pop(account, None)
+
+    profile = tmp_path / "profile"
+    keychain = FakeKeychain()
+    setup = HusshVaultBridge(
+        profile_home=profile,
+        keychain=keychain,  # type: ignore[arg-type]
+        lock_with_workstation=False,
+    )
+    identity = {
+        "user_id": "user-a",
+        "device_id": "tdv_device-a",
+        "profile_id": setup.identity.profile_id,
+        "environment": "uat",
+    }
+    setup.identity.identity_path.parent.mkdir(parents=True)
+    setup.identity.identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    vault_key = bytes(range(32))
+    wrapping_key = bytes(reversed(range(32)))
+    keychain.set(setup._account("device-wrapping-key"), wrapping_key)
+    write_envelope(
+        setup.envelope_path,
+        wrap_local_vault_key(
+            vault_key=vault_key,
+            device_wrapping_key=wrapping_key,
+            profile_id=setup.identity.profile_id,
+            user_id="user-a",
+            device_id="tdv_device-a",
+        ),
+    )
+    setup._write_lock_state(locked=False, reason="test_unlock")
+    monkeypatch.setattr(
+        HusshVaultBridge, "_macos_console_locked", staticmethod(lambda: True)
+    )
+
+    always_on = HusshVaultBridge(
+        profile_home=profile,
+        keychain=keychain,  # type: ignore[arg-type]
+        lock_with_workstation=False,
+    )
+    assert always_on.require_vault_key() == vault_key
+
+    coupled = HusshVaultBridge(
+        profile_home=profile,
+        keychain=keychain,  # type: ignore[arg-type]
+        lock_with_workstation=True,
+    )
+    with pytest.raises(VaultCryptoError, match="Unlock"):
+        coupled.require_vault_key()
+
+
+def test_lock_with_workstation_defaults_off_and_reads_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli import config as hermes_config
+    from hermes_cli.hussh_one_pkm import bridge as bridge_module
+
+    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: {})
+    assert bridge_module._configured_lock_with_workstation() is False
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config_readonly",
+        lambda: {"hussh_one": {"vault": {"lock_with_workstation": True}}},
+    )
+    assert bridge_module._configured_lock_with_workstation() is True
+
+
+def test_source_library_device_custody_is_cached_zeroized_and_phase_latched(
+    tmp_path: Path,
+) -> None:
+    class FakeKeychain:
+        def __init__(self) -> None:
+            self.values: dict[str, bytes] = {}
+            self.prompts: list[str] = []
+
+        def get(self, account: str) -> bytes | None:
+            return self.values.get(account)
+
+        def set(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete(self, account: str) -> None:
+            self.values.pop(account, None)
+
+        def get_user_presence_secret(self, account: str, *, prompt: str) -> bytes | None:
+            self.prompts.append(prompt)
+            return self.values.get(account)
+
+        def set_user_presence_secret(self, account: str, secret: bytes) -> None:
+            self.values[account] = secret
+
+        def delete_user_presence_secret(self, account: str) -> None:
+            self.values.pop(account, None)
+
+    keychain = FakeKeychain()
+    bridge = HusshVaultBridge(
+        profile_home=tmp_path / "profile",
+        keychain=keychain,  # type: ignore[arg-type]
+    )
+    bridge._write_lock_state(locked=False, reason="test")
+    bridge._vault_key = bytearray(bytes(range(32)))
+
+    custody_key = bridge.require_source_library_custody_key(create_if_missing=True)
+    account = bridge._account("source-library-custody-key")
+    assert len(custody_key) == 32
+    assert keychain.values[account] == b"\x01" + custody_key
+    assert len(keychain.prompts) == 2
+    assert bridge.require_source_library_custody_key() == custody_key
+    assert len(keychain.prompts) == 2
+    assert bridge.source_library_custody_phase() == 1
+
+    bridge.complete_source_library_custody_upgrade()
+    assert keychain.values[account] == b"\x02" + custody_key
+    assert bridge.source_library_custody_phase() == 2
+    bridge.lock(reason="test")
+    assert bridge._source_library_custody_key is None
+    assert bridge._source_library_custody_phase is None
 
 
 def test_local_enrollment_validate_write_and_readback_smoke(tmp_path: Path) -> None:
@@ -668,6 +975,8 @@ def test_native_owner_read_lists_domains_and_decrypts_only_requested_scope() -> 
         "success": True,
         "domain": "profile",
         "scope_path": "identity.name",
+        "representation": "decrypted_in_memory_projection",
+        "at_rest_representation": "aes-256-gcm-ciphertext",
         "content_revision": 7,
         "materialized_leaf_count": 1,
         "value": "Owner",
@@ -1149,6 +1458,68 @@ def test_encrypted_replica_persists_only_ciphertext_and_monotonic_cursor(
 
     replica.delete_domain("financial")
     assert not snapshot_path.exists()
+
+
+@pytest.mark.parametrize(
+    "encrypted_blob",
+    [
+        {
+            "ciphertext": "cipher",
+            "iv": "iv",
+            "tag": "tag",
+            "algorithm": "aes-256-gcm",
+            "plaintext": {"identity": {"name": "must-not-persist"}},
+        },
+        {
+            "ciphertext": "[VAULT_ENCRYPTED]",
+            "iv": "iv",
+            "tag": "tag",
+            "algorithm": "aes-256-gcm",
+        },
+        {
+            "ciphertext": "cipher",
+            "iv": "iv",
+            "tag": "tag",
+            "algorithm": "aes-256-gcm",
+            "segments": {
+                "identity": {
+                    "ciphertext": "cipher",
+                    "iv": "iv",
+                    "tag": "tag",
+                    "algorithm": "aes-256-gcm",
+                    "value": {"name": "must-not-persist"},
+                }
+            },
+        },
+    ],
+)
+def test_encrypted_replica_rejects_mixed_or_placeholder_representations(
+    tmp_path: Path,
+    encrypted_blob: dict,
+) -> None:
+    replica = EncryptedPkmReplica(tmp_path / "profile")
+
+    with pytest.raises(ValueError, match="ciphertext|placeholder"):
+        replica.store_snapshot("identity", {"encrypted_blob": encrypted_blob})
+
+    assert not (replica.domains / "identity.json").exists()
+
+
+def test_encrypted_replica_rejects_non_normalized_domain(tmp_path: Path) -> None:
+    replica = EncryptedPkmReplica(tmp_path / "profile")
+
+    with pytest.raises(ValueError, match="normalized domain"):
+        replica.store_snapshot(
+            "../identity",
+            {
+                "encrypted_blob": {
+                    "ciphertext": "cipher",
+                    "iv": "iv",
+                    "tag": "tag",
+                    "algorithm": "aes-256-gcm",
+                }
+            },
+        )
 
 
 def test_device_sync_applies_cloud_snapshot_then_tombstone(tmp_path: Path) -> None:

@@ -209,7 +209,7 @@ class TestAdapterInit:
         )
         monkeypatch.setattr(
             "gateway.run.GatewayRunner._load_reasoning_config",
-            staticmethod(lambda: {"enabled": True, "effort": "xhigh"}),
+            staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
@@ -309,6 +309,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/api/model/options", adapter._handle_model_options)
+    app.router.add_post("/api/model/set", adapter._handle_model_set)
+    app.router.add_get("/api/hussh-one/resources", adapter._handle_hussh_one_resources)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
@@ -713,7 +715,15 @@ class TestHealthDetailedEndpoint:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data["status"] == "ok"
+                # NOT `== "ok"`. The overall status folds in a disk check, so on
+                # any host above the disk threshold this asserted the machine's
+                # free space rather than the endpoint's behaviour, and failed
+                # for a reason the test has no opinion about. What this test is
+                # for is that the endpoint answers with a well-formed readiness
+                # document; the per-check statuses below are the real subject.
+                assert data["status"] in {"ok", "degraded"}
+                assert data["readiness"]["checks"]["state_db"]["status"] == "ok"
+                assert data["readiness"]["checks"]["model"]["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
@@ -724,6 +734,11 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_drainable"] is True
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
+                # The configured model is named at the top level: readiness
+                # only carries a status per check, and a client showing
+                # "connected, running <model>" had nothing to read before.
+                assert data["model"] == "test/model"
+                assert "provider" in data
 
 
     @pytest.mark.asyncio
@@ -2147,9 +2162,15 @@ class TestToolCallsInOutput:
             assert output[0]["name"] == "calculator"
             assert output[0]["arguments"] == '{"expression": "6*7"}'
             assert output[0]["call_id"] == "call_abc123"
+            # Replayed server-executed calls must be marked completed so
+            # OpenAI clients don't treat them as pending calls to execute.
+            assert output[0]["status"] == "completed"
+            assert output[0]["id"].startswith("fc_")
             assert output[1]["type"] == "function_call_output"
             assert output[1]["call_id"] == "call_abc123"
             assert output[1]["output"] == "42"
+            assert output[1]["status"] == "completed"
+            assert output[1]["id"].startswith("fco_")
             assert output[2]["type"] == "message"
             assert output[2]["content"][0]["text"] == "The result is 42."
 
@@ -2772,6 +2793,27 @@ class TestModelRoutesAgentCreation:
         assert captured["api_key"] == "sk-session"
 
 
+class TestStoredSessionModelFilter:
+    """A session row that persisted the advertised virtual model must read as
+    "no stored model" — replaying "hermes-agent" upstream 400s. Found live
+    (Aug 2026): the first cross-gateway `hermes peer dm` against a fresh
+    api_server failed every turn with "hermes-agent is not a valid model ID".
+    """
+
+    def test_virtual_model_is_filtered(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({"model": adapter._model_name}) is None
+
+    def test_real_model_passes_through(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({"model": "google/gemini-3.7-flash"}) == "google/gemini-3.7-flash"
+
+    def test_missing_or_bad_shapes(self):
+        adapter = _make_routing_adapter({})
+        assert adapter._stored_session_model({}) is None
+        assert adapter._stored_session_model(None) is None
+
+
 # ---------------------------------------------------------------------------
 # Event-loop offloading for synchronous SessionDB calls (P1)
 # ---------------------------------------------------------------------------
@@ -2803,6 +2845,93 @@ class TestSessionDbOffEventLoop:
         # The blocking DB call must NOT execute on the event-loop thread.
         assert captured["thread"] is not None
         assert captured["thread"] != threading.current_thread()
+
+    @pytest.mark.asyncio
+    async def test_create_session_without_model_does_not_persist_virtual_alias(self, auth_adapter):
+        """A session created with no ``model`` field must not persist the
+        virtual model alias (self._model_name, e.g. "hermes-agent") as if it
+        were a real provider model id.
+
+        Regression: _handle_create_session previously did
+        ``model = body.get("model") or self._model_name``, so an omitted
+        model fell back to the virtual alias and that string got stored on
+        the session row. _handle_session_chat later reads it back as a raw
+        session_model override (since it's not a model_routes alias) and
+        sends it to the provider literally — Bedrock/OpenAI then reject
+        "hermes-agent" as an invalid model identifier on every turn.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] != auth_adapter._model_name
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_explicit_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """Sending ``model: "hermes-agent"`` explicitly (the virtual alias
+        itself, e.g. a client that just echoes /v1/models' advertised id)
+        must be treated the same as omitting model entirely."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": auth_adapter._model_name},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_real_model_persists_it(self, auth_adapter):
+        """Regression guard: a genuine model id must still be stored as before."""
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": "openai/gpt-5"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] == "openai/gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_create_session_with_provider_prefixed_virtual_alias_does_not_persist_it(self, auth_adapter):
+        """A provider-prefixed echo of the virtual alias (e.g. a client that
+        threads /v1/models' advertised id through a provider:: prefix) must
+        also be treated as "no model", not stored as a raw override.
+
+        Regression: _handle_create_session used to re-derive its own `model`
+        straight from the raw request body, bypassing the provider-prefix
+        split that _session_runtime_request_from_body performs — so
+        "openrouter::hermes-agent" never matched self._model_name and leaked
+        through as a literal session override.
+        """
+        app = _create_app(auth_adapter)
+        app.router.add_post("/api/sessions", auth_adapter._handle_create_session)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/sessions",
+                json={"model": f"openrouter::{auth_adapter._model_name}"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["session"]["model"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -3046,3 +3175,323 @@ class TestCreateAgentModelRecovery:
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
 
+    # ── Recovery-net alias guards (PR for #79101) ──────────────────────
+
+    def test_create_agent_does_not_cache_virtual_alias(self, monkeypatch):
+        """Write-side guard: the advertised virtual model (``hermes-agent``)
+        must never enter ``_last_resolved_model``, even when a prior turn
+        (or the session-row bug) dispatched it."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        virtual = adapter._model_name
+        # Make _resolve_gateway_model return the virtual alias — the
+        # condition the session-row bug can produce after a prior turn.
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model", lambda: virtual,
+        )
+
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        assert captured[0]["model"] == virtual
+        # Cache must reject the alias.
+        assert adapter._last_resolved_model.get("ch") != virtual
+        assert adapter._last_resolved_model.get("*") != virtual
+
+    def test_create_agent_rejects_virtual_alias_from_cache(self, monkeypatch):
+        """Read-side gate: an empty-model dispatch with the alias in
+        ``_last_resolved_model`` must NOT recover it — the recovery net
+        must never serve the advertised virtual model."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Seed the cache with the alias (simulate a prior poisoned turn).
+        adapter._last_resolved_model["ch"] = adapter._model_name
+        adapter._last_resolved_model["*"] = adapter._model_name
+
+        # Trigger an empty resolution.
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+
+        # The alias must not be dispatched.
+        assert captured[0]["model"] != adapter._model_name
+
+    def test_create_agent_recovery_still_works_for_legitimate_model(
+        self, monkeypatch,
+    ):
+        """Non-regression: a real dispatched model still enters the cache
+        and recovers on a subsequent empty-resolution turn — the alias
+        guard must not break legitimate recovery."""
+        captured = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(dict(kwargs))
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # Turn 1: legitimate model — must enter the cache.
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model",
+            lambda: "anthropic/claude-opus-4.6",
+        )
+        adapter._create_agent(session_id="s1", gateway_session_key="ch")
+        assert captured[0]["model"] == "anthropic/claude-opus-4.6"
+        assert adapter._last_resolved_model["ch"] == "anthropic/claude-opus-4.6"
+
+        # Turn 2: empty resolution — must recover the legitimate model.
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": None, "base_url": None, "api_mode": None},
+        )
+        adapter._create_agent(session_id="s2", gateway_session_key="ch")
+        assert captured[1]["model"] == "anthropic/claude-opus-4.6"
+
+
+class TestHusshOneResources:
+    """GET /api/hussh-one/resources — the owner's view of their own machine."""
+
+    @pytest.mark.asyncio
+    async def test_it_returns_the_snapshot_with_the_live_runtime_counters(
+        self, adapter, monkeypatch
+    ):
+        from hermes_cli import hussh_one_resources
+
+        seen = {}
+
+        def fake_collect(**kwargs):
+            seen.update(kwargs)
+            return {"agent": {"model": "google/gemma-4-26b-a4b-qat"}, "machine": {}}
+
+        monkeypatch.setattr(hussh_one_resources, "collect_resources", fake_collect)
+
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value={
+            "gateway_state": "running",
+            "active_agents": 3,
+        }):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/hussh-one/resources")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["agent"]["model"] == "google/gemma-4-26b-a4b-qat"
+        # Served BY the gateway, so busy/active come from the same shared
+        # contract /health/detailed uses; the two surfaces cannot disagree.
+        assert seen["active_agents"] == 3
+        assert seen["busy"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_probe_failure_is_a_500_not_a_hung_request(self, adapter, monkeypatch):
+        from hermes_cli import hussh_one_resources
+
+        def _boom(**_kwargs):
+            raise RuntimeError("probe exploded")
+
+        monkeypatch.setattr(hussh_one_resources, "collect_resources", _boom)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/hussh-one/resources")
+            assert resp.status == 500
+
+    @pytest.mark.asyncio
+    async def test_it_requires_the_api_key(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/hussh-one/resources")
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_the_route(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            data = await (await cli.get("/v1/capabilities")).json()
+        assert data["features"]["hussh_one_resources"] is True
+        assert data["endpoints"]["hussh_one_resources"] == {
+            "method": "GET",
+            "path": "/api/hussh-one/resources",
+        }
+
+
+class TestRoutesAreActuallyRegistered:
+    """The harness hand-registers routes, so it cannot see a missing one.
+
+    `_create_app` above wires each handler explicitly. That is convenient, and
+    it means deleting a row from `_http_route_table()` leaves every handler test
+    green while real clients get 404 — which is exactly the bug
+    `POST /api/model/set` shipped as (the handler lived only in the dashboard).
+    These assert the table itself.
+    """
+
+    def test_the_routes_this_server_advertises_are_in_its_table(self, adapter):
+        table = {(method, path) for method, path, _handler in adapter._http_route_table()}
+
+        assert ("POST", "/api/model/set") in table
+        assert ("GET", "/api/hussh-one/resources") in table
+        assert ("GET", "/api/model/options") in table
+
+    def test_every_advertised_endpoint_has_a_route(self, adapter):
+        """Capabilities must not promise an endpoint the router does not serve."""
+        table = {(method, path) for method, path, _handler in adapter._http_route_table()}
+        advertised = {
+            ("POST", "/api/model/set"),
+            ("GET", "/api/hussh-one/resources"),
+        }
+
+        assert advertised <= table
+
+
+class TestModelSet:
+    """POST /api/model/set on the loopback API server.
+
+    The route lived only in the dashboard until 2026-09-02, so a client that
+    could list the inventory could never pin a model. It reuses the dashboard's
+    synchronous body so both doors write identical config.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pins_the_main_model_through_the_dashboard_body(self, adapter, monkeypatch):
+        from hermes_cli import web_server as dashboard
+
+        seen: dict = {}
+
+        def fake_apply(scope, provider, model, task, base_url, api_key):
+            seen.update(scope=scope, provider=provider, model=model, task=task)
+            return {"ok": True, "scope": scope, "provider": provider, "model": model}
+
+        class _Scope:
+            def __init__(self, profile):
+                seen["profile"] = profile
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(dashboard, "_apply_model_assignment_sync", fake_apply)
+        monkeypatch.setattr(dashboard, "_profile_scope", _Scope)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/model/set",
+                json={
+                    "scope": "main",
+                    "provider": "lmstudio",
+                    "model": "google/gemma-4-26b-a4b-qat",
+                    "confirm_expensive_model": True,
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["ok"] is True
+        assert seen == {
+            "scope": "main",
+            "provider": "lmstudio",
+            "model": "google/gemma-4-26b-a4b-qat",
+            "task": "",
+            "profile": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_expensive_model_comes_back_as_a_question(self, adapter, monkeypatch):
+        from hermes_cli import model_selection_guards, web_server as dashboard
+
+        class _Warning:
+            message = "gpt-5 bills per token."
+
+        monkeypatch.setattr(
+            model_selection_guards,
+            "combined_selection_warning",
+            lambda model, provider="", base_url="": _Warning(),
+        )
+        applied = []
+        monkeypatch.setattr(
+            dashboard,
+            "_apply_model_assignment_sync",
+            lambda *args: applied.append(args) or {"ok": True},
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/model/set", json={"provider": "openai", "model": "gpt-5"}
+            )
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["confirm_required"] is True
+        assert data["confirm_message"] == "gpt-5 bills per token."
+        assert applied == []  # nothing written until the caller confirms
+
+    @pytest.mark.asyncio
+    async def test_it_refuses_to_take_an_endpoint_or_credential_from_the_body(self, adapter):
+        """The loopback key changes which model answers, not where it lives.
+
+        Accepting base_url/api_key would let this route persist an arbitrary
+        endpoint and credential (and register a custom provider) — a much larger
+        authority than "pick a model". `profile` is refused for the same reason
+        every other route on this server scopes its key per profile.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            for field, value in (
+                ("base_url", "https://attacker.example/v1"),
+                ("api_key", "sk-attacker"),
+                ("profile", "someone-else"),
+            ):
+                resp = await cli.post(
+                    "/api/model/set",
+                    json={"provider": "lmstudio", "model": "m", field: value},
+                )
+                assert resp.status == 400, field
+                body = await resp.json()
+                assert field in body["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_main_scope_requires_provider_and_model(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/model/set", json={"provider": "lmstudio"})
+            assert resp.status == 400
+            resp = await cli.post("/api/model/set", json={"scope": "sideways", "provider": "a", "model": "b"})
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_requires_the_api_key(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/model/set", json={"provider": "a", "model": "b"})
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertise_the_route(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            data = await resp.json()
+        assert data["features"]["model_set"] is True
+        assert data["endpoints"]["model_set"] == {"method": "POST", "path": "/api/model/set"}

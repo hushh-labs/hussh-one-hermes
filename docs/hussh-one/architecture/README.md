@@ -60,6 +60,21 @@ survived.
   **in-process** (per-session overrides), not as second profiles. See
   [features/whatsapp-capsules.md](../features/whatsapp-capsules.md).
 
+## Source Library authority overlay
+
+Mounted provider files remain authoritative blobs. The encrypted Source Library PKM
+domain is private semantic/control memory, while profile `source-library.db` is only a
+rebuildable opaque mapping and operations index. The bounded Steward proposes; parent
+services alone bind roots and execute one freshly approved, revision-pinned operation.
+New local source-plane ciphertext requires both the unlocked vault key and a
+device-only, local-user-presence Data Protection Keychain secret. It is sealed
+field-by-field rather than treated as a second PKM share scope or a full SQLCipher
+database. The Desktop/dashboard parent exposes only the Steward launch and parent
+execution tools; its private child harness attaches the exact source leaf toolset without
+parent MCP inheritance. A future Research app adapter must call this service boundary with
+opaque references, never the SQLite database or mounted paths. See
+[Source Library Steward](../features/source-library.md).
+
 ---
 
 ### Related

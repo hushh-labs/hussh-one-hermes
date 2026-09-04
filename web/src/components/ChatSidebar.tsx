@@ -17,7 +17,9 @@
  *      the dashboard fanned out.  The sidebar uses it for `session.info`
  *      (live chat title) and `dashboard.new_session_requested`.  The
  *      `channel` id ties this listener to the same chat tab's PTY child —
- *      see `ChatPage.tsx` for where the id is generated.
+ *      see `ChatPage.tsx` for where the id is generated.  Transient drops
+ *      (gateway restart, network blip) auto-reconnect with exponential
+ *      backoff; auth rejections are terminal.  See `lib/events-reconnect`.
  *
  * Best-effort throughout: WS failures show in the badge / banner, the
  * terminal pane keeps working unimpaired.
@@ -32,6 +34,20 @@ import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
+import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
+import {
+  EVENTS_CONNECT_TIMEOUT_MS,
+  EVENTS_DISCONNECTED_MESSAGE,
+  EVENTS_MAX_RECONNECT_ATTEMPTS,
+  eventsGaveUpMessage,
+  eventsReconnectDelayMs,
+  eventsReconnectingMessage,
+  eventsRejectedMessage,
+  isEventsAuthRejection,
+  isEventsFeedMessage,
+  shouldRetryEventsAuthRejection,
+  shouldRetryEventsClose,
+} from "@/lib/events-reconnect";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -44,6 +60,33 @@ interface SessionInfo {
   provider?: string;
   credential_warning?: string;
   title?: string;
+}
+
+/**
+ * Extract the fields this sidebar owns from an untrusted dispatcher payload.
+ *
+ * ``/api/events`` is tied to the PTY-backed TUI session, whereas the JSON-RPC
+ * sidecar has its own throwaway session. Keeping this conversion narrow makes
+ * it safe to merge the PTY's live route without allowing an unrelated event
+ * shape to replace sidebar state.
+ */
+function sessionInfoFromEventPayload(payload: unknown): SessionInfo | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const source = payload as Record<string, unknown>;
+  const info: SessionInfo = {};
+
+  if (typeof source.cwd === "string") info.cwd = source.cwd;
+  if (typeof source.model === "string") info.model = source.model;
+  if (typeof source.provider === "string") info.provider = source.provider;
+  if (typeof source.credential_warning === "string") {
+    info.credential_warning = source.credential_warning;
+  }
+  if (typeof source.title === "string") info.title = source.title;
+
+  return Object.keys(info).length > 0 ? info : null;
 }
 
 interface RpcEnvelope {
@@ -72,6 +115,12 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
+  /**
+   * Durable id of the chat the PTY is resuming, when this is a resumed chat.
+   * The REST detail read seeds the badge before the PTY publisher's first
+   * `session.info` frame reaches the events socket.
+   */
+  resumeSessionId?: string | null;
   /** Chat profile from the dashboard switcher / URL scope. */
   profile?: string;
   className?: string;
@@ -96,6 +145,7 @@ export function sidecarSessionCreateParams(profile?: string): Record<string, unk
 
 export function ChatSidebar({
   channel,
+  resumeSessionId,
   profile,
   className,
   onDashboardNewSessionRequest,
@@ -110,17 +160,21 @@ export function ChatSidebar({
   const gw = useMemo(() => new GatewayClient(), [version]);
 
   const [state, setState] = useState<ConnectionState>("idle");
-  const [info, setInfo] = useState<SessionInfo>({});
+  // The sidecar session exists only to surface connection state and generic
+  // credential warnings. Its route is not the route of the PTY chat.
+  const [sidecarInfo, setSidecarInfo] = useState<SessionInfo>({});
+  // The publisher behind `/api/events` is the actual PTY-backed TUI session.
+  // This is the authoritative active-chat route after a session-scoped
+  // `/model` switch, including a switch queued while the model is busy.
+  const [liveSessionInfo, setLiveSessionInfo] = useState<SessionInfo>({});
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The badge shows config.yaml's main model (`model.default`) via
-  // `/api/model/info` — the same value the Models page writes and a new chat
-  // session boots from. We deliberately don't use the sidecar's `session.info`
-  // model: that's a one-time snapshot of the throwaway sidecar agent taken when
-  // its session is created, and it never updates when the model is changed
-  // elsewhere, so the badge would go stale. Pass the chat profile explicitly so
-  // this card stays scoped to the PTY even if the global dashboard switcher
-  // changes while the chat is open.
+  // The configured default supplies the initial fallback before the PTY emits
+  // its first session.info. Once it does, `liveSessionInfo` takes precedence:
+  // a TUI `/model` is deliberately session-scoped and must appear here without
+  // waiting for a new chat or a dashboard reload. Pass the chat profile
+  // explicitly so this fallback remains scoped to the PTY even if the global
+  // dashboard switcher changes while chat is open.
   const [effectiveModel, setEffectiveModel] = useState("");
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
@@ -174,14 +228,15 @@ export function ChatSidebar({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setInfo({});
+      setSidecarInfo({});
+      setLiveSessionInfo({});
       setError(null);
     });
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
       if (ev.payload) {
-        setInfo((prev) => ({ ...prev, ...ev.payload }));
+        setSidecarInfo((prev) => ({ ...prev, ...ev.payload }));
       }
     });
 
@@ -236,36 +291,167 @@ export function ChatSidebar({
       return;
     }
     // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
+    // mode we have to mint a single-use ticket from the cookie. `connect`
+    // keeps the outer effect synchronous so its ``return cleanup`` stays at
+    // the top level; `ws` is a closed-over binding the cleanup reads.
     let unmounting = false;
     let ws: WebSocket | null = null;
-    void (async () => {
-      const url = await buildWsUrl("/api/events", { channel });
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectGeneration = 0;
+    let attempt = 0;
+    // Consecutive credential rejections, reset by a successful open.
+    // See shouldRetryEventsAuthRejection: a gated ticket can be late
+    // rather than dead, so the first 4401 earns one fresh attempt.
+    let authRejections = 0;
+
+    const clearConnectTimer = () => {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
+    };
+
+    // The banner is shared with `info.credential_warning` and the JSON-RPC
+    // sidecar, and `error` is those messages' only home — the sidecar does
+    // not re-emit. So the events feed may only write over an empty banner
+    // or one of its own messages, and may only clear its own.
+    const surface = (msg: string) =>
+      !unmounting &&
+      setError((current) =>
+        isEventsFeedMessage(current) ? msg : (current ?? msg),
+      );
+
+    const clearEventsBanner = () =>
+      !unmounting &&
+      setError((current) => (isEventsFeedMessage(current) ? null : current));
+
+    // Single scheduling path. `close` always follows `error` for a failed
+    // socket, so scheduling from `error` too would queue two timers and
+    // leak the first — only the latest is tracked for cleanup.
+    const scheduleReconnect = () => {
+      if (unmounting || reconnectTimer) {
+        return;
+      }
+      if (attempt >= EVENTS_MAX_RECONNECT_ATTEMPTS) {
+        surface(eventsGaveUpMessage());
+        return;
+      }
+
+      const delay = eventsReconnectDelayMs(attempt);
+      attempt += 1;
+      surface(eventsReconnectingMessage(delay));
+
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delay);
+    };
+
+    const connect = async () => {
       if (unmounting) {
         return;
       }
-      ws = new WebSocket(url);
+
+      const generation = ++connectGeneration;
+      let socket: WebSocket | null = null;
+
+      // Cover the whole connection attempt, including gated-mode ticket
+      // minting. A failed or hanging pre-socket request otherwise emits no
+      // WebSocket close event and permanently strands the retry loop at its
+      // last "reconnecting in ..." banner.
+      clearConnectTimer();
+      connectTimer = setTimeout(() => {
+        connectTimer = null;
+        if (unmounting || generation !== connectGeneration) {
+          return;
+        }
+
+        // Invalidate any late ticket result or socket event from this attempt
+        // before scheduling its replacement.
+        connectGeneration += 1;
+        if (socket && ws === socket) {
+          ws = null;
+          socket.close();
+        }
+        scheduleReconnect();
+      }, EVENTS_CONNECT_TIMEOUT_MS);
+
+      try {
+        // Re-minted every attempt: tickets are single-use with a short TTL,
+        // so a reconnect cannot replay the URL from the first connection.
+        const url = await buildWsUrl("/api/events", { channel });
+        if (unmounting || generation !== connectGeneration) {
+          return;
+        }
+        socket = new WebSocket(url);
+        ws = socket;
+      } catch {
+        if (unmounting || generation !== connectGeneration) {
+          return;
+        }
+        clearConnectTimer();
+        connectGeneration += 1;
+        scheduleReconnect();
+        return;
+      }
+
+      // A superseded socket's late close must not schedule a retry on top
+      // of the one that replaced it.
+      const isCurrent = () => ws === socket;
+
+      socket.addEventListener("open", () => {
+        if (!isCurrent()) {
+          return;
+        }
+        clearConnectTimer();
+        // Counters are NOT cleared here. The gateway now rejects a bad
+        // credential as accept-then-close(4401), so `open` fires on every
+        // doomed attempt too; zeroing here would keep `authRejections` at 1
+        // forever and turn a previously-terminal rejection into an endless
+        // reconnect that re-mints a single-use ticket every time round.
+        // Cleared on the first frame instead, below.
+        clearEventsBanner();
+      });
 
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
       // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-      const surface = (msg: string) => !unmounting && setError(msg);
-
-      ws.addEventListener("error", () => surface(DISCONNECTED));
-
-      ws.addEventListener("close", (ev) => {
-        if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
+      socket.addEventListener("error", () => {
+        if (isCurrent()) {
+          surface(EVENTS_DISCONNECTED_MESSAGE);
         }
       });
 
-      ws.addEventListener("message", (ev) => {
+      socket.addEventListener("close", (ev) => {
+        if (!isCurrent()) {
+          return;
+        }
+        clearConnectTimer();
+        if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
+          return;
+        }
+        if (isEventsAuthRejection(ev.code)) {
+          authRejections += 1;
+          if (shouldRetryEventsAuthRejection(ev.code, authRejections)) {
+            scheduleReconnect();
+            return;
+          }
+          surface(eventsRejectedMessage(ev.code));
+          return;
+        }
+        if (shouldRetryEventsClose(ev.code)) {
+          scheduleReconnect();
+        }
+      });
+
+      socket.addEventListener("message", (ev) => {
+        // A frame arrived, so this socket is genuinely serving rather than
+        // an accepted-then-refused handshake. This is the reset `open` used
+        // to do, moved to where it is actually earned.
+        attempt = 0;
+        authRejections = 0;
+
         let frame: RpcEnvelope;
 
         try {
@@ -281,6 +467,10 @@ export function ChatSidebar({
         const { type, payload } = frame.params;
 
         if (type === "session.info") {
+          const liveInfo = sessionInfoFromEventPayload(payload);
+          if (liveInfo) {
+            setLiveSessionInfo((prev) => ({ ...prev, ...liveInfo }));
+          }
           const title = titleFromSessionInfoPayload(payload);
           if (title !== undefined) {
             onSessionTitleChange?.(title);
@@ -289,13 +479,54 @@ export function ChatSidebar({
           onDashboardNewSessionRequest?.();
         }
       });
-    })();
+    };
+
+    void connect();
 
     return () => {
       unmounting = true;
+      connectGeneration += 1;
+      clearConnectTimer();
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       ws?.close();
     };
   }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+
+  // A resumed conversation has a durable, session-scoped model selection.
+  // The event feed remains authoritative after the PTY is running (including
+  // a live `/model` switch), but its initial frame can be delayed or lost when
+  // the dashboard restarts. Seed the badge from the same stored row ChatPage
+  // already reads for its title so it never falls back to the global default
+  // and mislabels a pinned resumed chat in that window.
+  useEffect(() => {
+    if (!resumeSessionId) {
+      return;
+    }
+    let cancelled = false;
+    void api
+      .getSessionDetail(resumeSessionId, profile)
+      .then((session) => {
+        const model = session?.model;
+        if (cancelled || typeof model !== "string" || !model) {
+          return;
+        }
+        setLiveSessionInfo((current) =>
+          // Do not let a slower REST response overwrite an already-live
+          // session.info frame after a `/model` change.
+          current.model ? current : { ...current, model },
+        );
+      })
+      .catch(() => {
+        // Best-effort: the events feed will still update the badge once the
+        // PTY emits its authoritative session.info frame.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeSessionId, profile]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).
@@ -312,9 +543,14 @@ export function ChatSidebar({
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
+  const modelName =
+    liveSessionInfo.model || effectiveModel || sidecarInfo.model || "—";
   const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  const banner =
+    error ??
+    liveSessionInfo.credential_warning ??
+    sidecarInfo.credential_warning ??
+    null;
 
   return (
     <aside
@@ -393,7 +629,7 @@ export function ChatSidebar({
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect tools feed
+                reconnect events feed
               </Button>
             )}
           </div>

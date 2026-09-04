@@ -28,6 +28,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 model_list:
+  # ── Gemini 3.7 Flash: global (max reasoning: HIGH) ──
+  - model_name: gemini-3.7-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.7-flash
+      vertex_project: __VERTEX_PROJECT__
+      vertex_location: global
+      rpm: 2000
+      extra_body:
+        generation_config:
+          thinking_config:
+            thinking_level: HIGH
+
   # ── Gemini 3.6 Flash: global (max reasoning: HIGH) ──
   - model_name: gemini-3.6-flash
     litellm_params:
@@ -181,6 +193,7 @@ router_settings:
   # 429 recovers onto a healthy region instead of dying. (Flash's tool-calling
   # is schema-compatible — verified against Copilot's real 86-tool manifest.)
   fallbacks:
+    - gemini-3.7-flash: ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
     - gemini-3.6-flash: ["gemini-3.6-flash", "gemini-3.5-flash"]
     - gemini-3.5-flash: ["gemini-3.5-flash"]
     - gemini-3.1-pro-preview: ["gemini-3.1-pro-preview", "gemini-3.5-flash"]

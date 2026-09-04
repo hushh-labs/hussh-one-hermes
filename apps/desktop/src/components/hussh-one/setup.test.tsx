@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hushh Labs
+// SPDX-License-Identifier: Apache-2.0
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -33,6 +36,7 @@ const disconnected = {
 
 function renderSetup() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
   return render(
     <QueryClientProvider client={client}>
       <HusshOneSetup />

@@ -15,6 +15,8 @@ a contract entry**. If any of the five is missing, it's not done.
 - [ ] Quiet hours / do-not-disturb windows per surface.
 
 ## Mid-term
+- [ ] Source Library application tile over the shipped local contracts.
+- [ ] Authenticated provider adapter for verified Drive recipient/ACL management; keep mounted-folder sharing as the local V1.
 - [ ] Cross-platform local WhatsApp store support (beyond macOS Catalyst).
 - [ ] Capsule usage analytics (per-member, inside the capsule vault).
 - [ ] Light/dark dashboard theme variants.

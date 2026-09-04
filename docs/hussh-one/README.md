@@ -41,6 +41,7 @@ Hermes Agent to create **hussh 🤫 One**. It is designed to be:
 | Core brand | `brand.py`, skin, dashboard theme, header, mcp-scan | ✅ intact |
 | WhatsApp layer | adapter, capsule, bridge.js, memory/send tools | ✅ intact |
 | Reliability | session-model resume, Vertex-Claude pinning, dashboard OOM guard | ✅ shipped |
+| Private information | Trusted-device PKM + Source Library Steward | 🧪 local UAT |
 | Ops scripts | bootstrap, supervisor, doctor, guard, restart | ✅ intact |
 | Docs | Feature catalog, contracts, **changelog** — all self-checking | ✅ intact |
 | Tests | branding, header, scripts, capsule, gating, prefix, resume-model | ✅ passing |

@@ -83,7 +83,7 @@ function uniqueStrings(values) {
   return out;
 }
 
-export function pollUpdateForAggregation({
+export async function pollUpdateForAggregation({
   pollUpdateMessage,
   pollUpdateMessageKey,
   pollCreation,
@@ -94,6 +94,7 @@ export function pollUpdateForAggregation({
   voterJids = [],
 }) {
   if (!pollUpdateMessage) return null;
+  if (typeof connectionState !== 'undefined' && connectionState !== 'connected') return null;
   const updateKey = pollUpdateMessage.pollUpdateMessageKey
     || pollUpdateMessageKey
     || pollUpdateMessage.key;
@@ -156,7 +157,6 @@ export function pollUpdateForAggregation({
   if (lastError) throw lastError;
   return null;
 }
-
 export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
   const content = { text };
   const options = {};
