@@ -931,3 +931,40 @@ def test_the_mock_path_runs_with_every_credential_stripped_from_the_environment(
     assert receipt.leaked_instance is False
     assert receipt.credential is None, "the mock must not resolve a credential at all"
     assert provider.live_instances == []
+
+
+def test_plan_stays_credential_free_unless_a_project_is_named():
+    """A quote must not need a cloud account to produce.
+
+    The whole point of deciding locally is that nothing has to leave the device
+    to get an answer. `plan` gains a pre-flight only when someone names a real
+    project — the default `mock` provider has no `preflight` at all, so the code
+    path is absent rather than merely skipped.
+    """
+    import asyncio
+
+    result = asyncio.run(_run_tool().call_tool("hussh_burst_plan", {"preset_id": "finetune-70b"}))
+    payload = result[1] if isinstance(result, tuple) else result
+    assert payload["recommended"]["count"] >= 1
+    assert "provisionable" not in payload
+
+
+def test_plan_says_up_front_when_the_named_project_cannot_get_the_part():
+    """Otherwise a person reads a $110/hour quote that `run` will then refuse."""
+    import asyncio
+    from unittest.mock import patch
+
+    import hermes_cli.hussh_one_burst.providers as prov_mod
+    from hermes_cli.hussh_one_burst.providers import Preflight
+
+    blocked = Preflight(blockers=("nvidia-b200 is not offered in us-central1-a.",))
+    with patch.object(prov_mod.GcpBurstProvider, "preflight", return_value=blocked):
+        result = asyncio.run(
+            _run_tool().call_tool(
+                "hussh_burst_plan",
+                {"preset_id": "finetune-70b", "provider": "gcp", "project": "p"},
+            )
+        )
+    payload = result[1] if isinstance(result, tuple) else result
+    assert payload["provisionable"]["ok"] is False
+    assert payload["provisionable"]["blockers"]

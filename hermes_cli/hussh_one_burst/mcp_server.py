@@ -222,7 +222,9 @@ def _build_server():
         description=(
             "Produce the full plan a person sees before anything runs: the "
             "placement decision, the matched accelerator, the hourly and total "
-            "cost, and a comparison against undersized and oversized hardware."
+            "cost, and a comparison against undersized and oversized hardware. "
+            "Pass provider='gcp' with a project to also check whether that "
+            "project can actually provision the recommendation."
         ),
     )
     def plan(
@@ -231,6 +233,8 @@ def _build_server():
         memory_gb: Optional[float] = None,
         disk_gb: Optional[float] = None,
         minutes: Optional[float] = None,
+        project: Optional[str] = None,
+        provider: str = "mock",
     ) -> dict[str, Any]:
         estimate, kind, chips, runtime_min, label = _estimate_from(
             preset_id, vram_gb, memory_gb, disk_gb, minutes
@@ -240,7 +244,7 @@ def _build_server():
         rec = recommend_hardware(estimate.vram_gb, kind, chips)
         rows = benchmark_hardware(estimate.vram_gb, kind, chips, runtime_min)
         total = round(rec.usd_per_hour * (runtime_min / 60.0), 2) if runtime_min else None
-        return {
+        payload: dict[str, Any] = {
             "workload": label,
             "target": decision.target,
             "reason": decision.reason,
@@ -259,6 +263,22 @@ def _build_server():
                 "Modeled on-demand us-central1 rates. Treat as an estimate, not a quote."
             ),
         }
+        # A quote the run tool will refuse is worse than no quote. When a person
+        # names a real project, say up front whether it can get this part —
+        # `us-central1-a` carries neither H200 nor B200, and the recommender
+        # quotes both. Credential-free by default: `mock` has no pre-flight, so
+        # a plan without a project makes no network call and reads no credential.
+        from .providers import resolve_provider
+
+        checker = getattr(resolve_provider(provider, project=project), "preflight", None)
+        if callable(checker):
+            flight = checker(rec.accel.id, rec.count)
+            payload["provisionable"] = {
+                "ok": flight.ok,
+                "blockers": list(flight.blockers),
+                "unknowns": list(flight.warnings),
+            }
+        return payload
 
     @mcp.tool(
         name="hussh_burst_run",

@@ -101,7 +101,7 @@ things are still true and matter more than the green cells below:
 | 4.3 Cost-aware selection | ⚠️ structure fixed; prices still *modeled* | validated pricing | never checked vs invoice | Compare against one real burst |
 | 4.4 Consent gate before offload | ⚠️ elicitation written | approval before spend | not exercised through a real MCP client | Exercise end-to-end |
 | 4.5 Deadline handling | ✅ **enforced by GCP**, detected locally | drives teardown | a hung `execute` is not interrupted — `run_burst` reads the clock after it returns | Revisit when the payload seam (2.5) can be interrupted |
-| 4.6 **Quote is purchasable** | ✅ sellable counts **and a live zone/quota pre-flight** | quote = what is billed | pre-flight runs in `run`, not in `plan` — a quote can still name a part this project cannot get | Surface it in `plan` if a person asks for one before running |
+| 4.6 **Quote is purchasable** | ✅ sellable counts **and a live zone/quota pre-flight in both `plan` and `run`** | quote = what is billed | none | Validate a quote against a real invoice |
 
 The two-pool memory model closed a real defect: a 96GB workstation with an 8GB card used
 to read as "fits locally". Accelerator need is now gated on VRAM and host need on RAM
