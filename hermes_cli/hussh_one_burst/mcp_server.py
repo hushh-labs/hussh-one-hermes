@@ -269,8 +269,40 @@ def _build_server():
             preset_id, vram_gb, None, None, minutes
         )
         rec = recommend_hardware(estimate.vram_gb, kind, chips)
-        total = round(rec.usd_per_hour * (runtime_min / 60.0), 2) if runtime_min else None
+
+        # Pre-flight BEFORE asking for approval. Two things must be true, and
+        # neither was checked: the hardware has to be able to hold the job, and
+        # the backend has to be able to provision it. Without this a 2,000GB
+        # workload would ask a person to approve $110/hour of GB200 that cannot
+        # fit it, and a TPU request would be approved and then fail — in the
+        # first case after the money started.
+        if not rec.fits:
+            return {
+                "success": False,
+                "status": "does_not_fit",
+                "workload": label,
+                "reason": rec.rationale,
+                "advice": (
+                    "This needs more than one node. Split it, shrink it, or run it "
+                    "somewhere built for multi-node training — nothing was provisioned."
+                ),
+            }
+
         backend = resolve_provider(provider, project=project)
+        checker = getattr(type(backend), "resolve_shape", None)
+        if checker is not None:
+            try:
+                checker(rec.accel.id, rec.count)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "status": "unsupported_hardware",
+                    "workload": label,
+                    "reason": str(exc),
+                    "advice": "Nothing was provisioned and nothing was billed.",
+                }
+
+        total = round(rec.usd_per_hour * (runtime_min / 60.0), 2) if runtime_min else None
 
         message = (
             f"Run “{label}” in your own cloud?\n"

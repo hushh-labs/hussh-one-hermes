@@ -368,3 +368,49 @@ def test_provision_carries_no_workload_information_to_the_cloud():
     with patch.object(provider, "_authed_session", return_value=(session, ref)):
         provider.provision(InstanceSpec("a100-40", 1, "my secret research project", 30.0))
     assert "secret" not in repr(session.post.call_args.kwargs["json"]).lower()
+
+
+# --------------------------------------------------------------------------
+# The run tool refuses before it asks for money
+# --------------------------------------------------------------------------
+
+
+def _run_tool():
+    from hermes_cli.hussh_one_burst.mcp_server import _build_server
+
+    return _build_server()
+
+
+def test_a_job_too_large_for_one_node_is_refused_before_approval():
+    """It used to ask a person to approve $110/hour of hardware that could not
+    hold the job, and only then fail."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    srv = _run_tool()
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock()
+    result = asyncio.run(
+        srv.call_tool("hussh_burst_run", {"vram_gb": 5000.0, "minutes": 60.0})
+    )
+    payload = result[1] if isinstance(result, tuple) else result
+    assert payload["success"] is False
+    assert payload["status"] == "does_not_fit"
+    ctx.elicit.assert_not_called()
+
+
+def test_a_gcp_unsupported_accelerator_is_refused_before_approval():
+    import asyncio
+
+    srv = _run_tool()
+    result = asyncio.run(
+        srv.call_tool(
+            "hussh_burst_run",
+            {"preset_id": "fold-protein", "provider": "gcp", "project": "p"},
+        )
+    )
+    payload = result[1] if isinstance(result, tuple) else result
+    assert payload["success"] is False
+    assert payload["status"] == "unsupported_hardware"
+    assert "TPU" in payload["reason"]
+    assert "nothing was billed" in payload["advice"].lower()
