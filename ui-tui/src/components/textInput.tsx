@@ -513,11 +513,7 @@ export function killToLineEnd(value: string, cursor: number): { value: string; c
  * Only Ctrl is treated this way. Option/Meta chords do produce characters on
  * some layouts, and a paste is text by definition.
  */
-export function isUnclaimedControlChord(
-  key: { ctrl: boolean },
-  input: string,
-  isPasted = false
-): boolean {
+export function isUnclaimedControlChord(key: { ctrl: boolean }, input: string, isPasted = false): boolean {
   return key.ctrl && !isPasted && input.length === 1
 }
 
