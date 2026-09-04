@@ -127,7 +127,7 @@ swallowed.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 6.1 ADK runtime exists | ✅ `google-adk[a2a]==2.4.0` | working runtime | none | — |
-| 6.2 **Offload subagent registered** | ✅ `agent_compute` in the roster | specialist exists | none | — |
+| 6.2 **Offload subagent registered** | ✅ in the roster **and attributable**; roster read off source by three guards | specialist exists | none | — |
 | 6.3 Cross-repo bridge | ⚠️ **half-built** | pod can reach the device | Hermes exposes MCP; no pod↔device transport | Build the transport |
 | 6.4 Availability gating | ✅ reports `specialist_unwired` | honest gating | none | — |
 | 6.5 ADK 2.4.0 tool-list constraint | ✅ followed the roster pattern | no new instability | none | — |
@@ -137,6 +137,16 @@ machine is **elsewhere**. A specialist that measured the container it runs in wo
 the pod's hardware as the person's — confidently, and wrong. So `agent_compute` does not
 measure and does not decide. Hermes does both, on the device. The specialist explains the
 decision and says plainly when it has not been given one.
+
+> **Registered was one step short of reachable, again.** `agent_compute` was in the roster
+> `build_one_root_agent` hands One, and in `_SPECIALIST_LABELS`, and missing from
+> `text_runtime`'s `_SPECIALIST_TOOL_SOURCES` — the table Agent Chat reads to say *which*
+> specialist answered. One could consult Compute and the person would read the answer with
+> nothing on it. The test that passed asserted `ask_compute_agent` was importable and
+> callable, which says nothing about whether One can reach it. Three guards now derive the
+> specialist set from `agent_tree`'s source and require every one of them to be in the
+> roster, in the source table, and in the labels — so the next specialist is covered on the
+> day it is added. Fixed in `hushh-research@45f885028`.
 
 Registration is honest by construction: no A2A handler is registered, so
 `is_wired_specialist` is False and One is told the specialist is unavailable rather than
