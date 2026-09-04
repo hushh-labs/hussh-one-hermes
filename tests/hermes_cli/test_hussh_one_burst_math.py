@@ -111,18 +111,52 @@ def test_small_gpu_job_lands_on_a_right_sized_chip_not_a_frontier_box() -> None:
     assert rec.accel.id == "a100-40"
 
 
-def test_70b_class_job_uses_newest_large_memory_gpus() -> None:
+def test_70b_class_job_covers_its_memory_and_honors_the_parallelism_floor() -> None:
+    """Asserts the invariant, not the SKU.
+
+    These tests used to pin ``accel.id`` to a specific part. Prices and perf in
+    the catalog are explicitly modeled and editable, so pinning a winner meant a
+    price edit broke a test that was not about pricing. Worse, the pinned answers
+    were only winners because whole-node parts were mispriced as single chips.
+    """
     rec = recommend_hardware(220, "gpu", 8)
     assert rec.fits is True
-    assert rec.accel.id == "h200-141"
     assert rec.count == 8  # parallelism floor honored
-    assert rec.usd_per_hour > 20
+    assert rec.count * rec.accel.mem_gb_per_chip >= 220
+    assert rec.usd_per_hour > 0
 
 
-def test_frontier_job_fits_blackwell_class_single_node() -> None:
+def test_frontier_job_fits_a_single_node_of_something() -> None:
     rec = recommend_hardware(1_000, "gpu", 1)
     assert rec.fits is True
-    assert rec.accel.id in {"b200-180", "gb200-186"}
+    assert rec.count * rec.accel.mem_gb_per_chip >= 1_000
+    assert rec.count <= MAX_CHIPS
+
+
+def test_every_recommendation_is_a_count_a_cloud_will_actually_sell() -> None:
+    """The bug this exists for: the recommender quoted 1x B200 and 3x H200.
+
+    Those parts ship only as whole nodes, so the quote was both unprovisionable
+    and priced at a fraction of the real bill — a 90GB job was costed at one
+    H200 chip when GCP would have charged for eight.
+    """
+    for vram in (8, 20, 30, 50, 64, 90, 120, 160, 200, 300, 400, 640, 900, 1_200, 5_000):
+        for parallel in (1, 2, 8):
+            for kind in ("gpu", "tpu"):
+                rec = recommend_hardware(float(vram), kind, parallel)
+                assert rec.count in rec.accel.sellable_chips, (
+                    f"{vram}GB {kind} x{parallel} -> {rec.accel.id} x{rec.count}, "
+                    f"but that class sells {rec.accel.sellable_chips}"
+                )
+
+
+def test_whole_node_parts_are_never_quoted_as_single_chips() -> None:
+    for accel in ACCEL_CATALOG:
+        if accel.sellable_chips == (8,):
+            rec = recommend_hardware(accel.mem_gb_per_chip * 0.5, "gpu", 1)
+            # It may not win, but if it does it must be quoted as a full node.
+            if rec.accel.id == accel.id:
+                assert rec.count == 8
 
 
 def test_small_tpu_job_stays_on_v5e() -> None:

@@ -240,3 +240,131 @@ def test_credential_ref_exposes_project_and_source_only():
         "region": "r",
         "credential_source": "environment",
     }
+
+
+# --------------------------------------------------------------------------
+# GCP shape resolution — what can actually be provisioned
+# --------------------------------------------------------------------------
+
+
+def test_tpu_is_refused_rather_than_provisioned_as_a_gpu_vm():
+    """TPUs live behind a different API entirely.
+
+    Before this check the provider would happily build a Compute Engine request
+    for ``tpu-v5e`` — booting an accelerator-less VM that bills by the hour while
+    doing nothing the person asked for.
+    """
+    from hermes_cli.hussh_one_burst.providers import UnsupportedAccelerator
+
+    for tpu in ("tpu-v5e", "tpu-v6e", "tpu-v5p"):
+        with pytest.raises(UnsupportedAccelerator, match="Cloud TPU"):
+            GcpBurstProvider.resolve_shape(tpu, 1)
+
+
+def test_unknown_accelerator_is_refused():
+    from hermes_cli.hussh_one_burst.providers import UnsupportedAccelerator
+
+    with pytest.raises(UnsupportedAccelerator):
+        GcpBurstProvider.resolve_shape("nvidia-imaginary", 1)
+
+
+def test_unsellable_chip_count_is_refused_with_the_valid_counts_named():
+    from hermes_cli.hussh_one_burst.providers import UnsupportedAccelerator
+
+    with pytest.raises(UnsupportedAccelerator, match=r"\(8,\)"):
+        GcpBurstProvider.resolve_shape("b200-180", 1)
+
+
+def test_whole_node_parts_resolve_to_their_real_machine_types():
+    assert GcpBurstProvider.resolve_shape("h100-80", 8)[0] == "a3-highgpu-8g"
+    assert GcpBurstProvider.resolve_shape("h200-141", 8)[0] == "a3-ultragpu-8g"
+    assert GcpBurstProvider.resolve_shape("b200-180", 8)[0] == "a4-highgpu-8g"
+    assert GcpBurstProvider.resolve_shape("gb200-186", 4)[0] == "a4x-highgpu-4g"
+
+
+def test_a100_machine_type_scales_with_chip_count():
+    assert GcpBurstProvider.resolve_shape("a100-40", 2)[0] == "a2-highgpu-2g"
+    assert GcpBurstProvider.resolve_shape("a100-80", 4)[0] == "a2-ultragpu-4g"
+
+
+def test_t4_attaches_a_guest_accelerator_while_a100_does_not():
+    """T4 bolts onto an N1; the A2 family has the GPUs baked into the machine."""
+    _machine, accel, _n = GcpBurstProvider.resolve_shape("nvidia-t4", 2)
+    assert accel == "nvidia-tesla-t4"
+    assert GcpBurstProvider.resolve_shape("a100-40", 2)[1] is None
+
+
+def test_every_catalog_recommendation_resolves_to_a_real_shape():
+    """The recommender and the provisioner must not disagree.
+
+    They previously did: 9 of 14 realistic workloads produced a recommendation
+    Compute Engine could not fulfil.
+    """
+    from hermes_cli.hussh_one_burst import recommend_hardware
+    from hermes_cli.hussh_one_burst.providers import UnsupportedAccelerator
+
+    for vram in (8, 20, 30, 50, 64, 90, 120, 160, 200, 300, 400, 640, 900, 1_200):
+        rec = recommend_hardware(float(vram), "gpu", 1)
+        GcpBurstProvider.resolve_shape(rec.accel.id, rec.count)  # must not raise
+        with pytest.raises(UnsupportedAccelerator):
+            GcpBurstProvider.resolve_shape("tpu-v5e", rec.count)
+
+
+def test_instance_names_do_not_collide_across_bursts():
+    """Two bursts of the same shape used to produce the same name, and the
+    second would fail with 409 ALREADY_EXISTS."""
+    import re
+    from unittest.mock import MagicMock, patch
+
+    names = set()
+    for _ in range(25):
+        provider = GcpBurstProvider(project="p", region="us-central1")
+        session = MagicMock()
+        session.post.return_value = MagicMock(status_code=200)
+        ref = MagicMock(project="p", region="us-central1")
+        with patch.object(provider, "_authed_session", return_value=(session, ref)):
+            handle = provider.provision(
+                InstanceSpec("a100-40", 2, "job", 30.0)
+            )
+        names.add(handle.id)
+        # GCP resource naming: lowercase, starts with a letter, <= 63 chars.
+        assert re.fullmatch(r"[a-z]([-a-z0-9]*[a-z0-9])?", handle.id)
+        assert len(handle.id) <= 63
+    assert len(names) == 25
+
+
+def test_provision_body_carries_what_compute_engine_actually_requires():
+    """The body used to contain only name, labels and scheduling — a request
+    that would 400 on arrival."""
+    from unittest.mock import MagicMock, patch
+
+    provider = GcpBurstProvider(project="p", region="us-central1")
+    session = MagicMock()
+    session.post.return_value = MagicMock(status_code=200)
+    ref = MagicMock(project="p", region="us-central1")
+    with patch.object(provider, "_authed_session", return_value=(session, ref)):
+        provider.provision(InstanceSpec("nvidia-t4", 2, "job", 30.0))
+
+    body = session.post.call_args.kwargs["json"]
+    assert body["machineType"].endswith("/n1-standard-8")
+    assert body["disks"][0]["boot"] is True
+    assert body["disks"][0]["autoDelete"] is True
+    assert body["disks"][0]["initializeParams"]["sourceImage"]
+    assert body["networkInterfaces"]
+    # Accelerator instances cannot live-migrate, and SPOT forbids auto-restart.
+    assert body["scheduling"]["onHostMaintenance"] == "TERMINATE"
+    assert body["scheduling"]["automaticRestart"] is False
+    assert body["scheduling"]["instanceTerminationAction"] == "DELETE"
+    assert body["guestAccelerators"][0]["acceleratorCount"] == 2
+
+
+def test_provision_carries_no_workload_information_to_the_cloud():
+    from unittest.mock import MagicMock, patch
+
+    provider = GcpBurstProvider(project="p", region="us-central1")
+    session = MagicMock()
+    session.post.return_value = MagicMock(status_code=200)
+    ref = MagicMock(project="p", region="us-central1")
+    with patch.object(provider, "_authed_session", return_value=(session, ref)):
+        provider.provision(InstanceSpec("a100-40", 1, "my secret research project", 30.0))
+    assert "secret" not in repr(session.post.call_args.kwargs["json"]).lower()

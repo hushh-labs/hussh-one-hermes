@@ -116,6 +116,16 @@ class AcceleratorClass:
     usd_per_hour_per_chip: float
     best_for: str
 
+    sellable_chips: tuple[int, ...] = (1, 2, 4, 8)
+    """Chip counts a cloud will actually sell for this class.
+
+    Not a detail: the largest accelerators ship only as whole nodes (H100, H200
+    and B200 are 8-GPU machines; GB200 NVL is 4). Quoting "1x B200" is not a
+    smaller order, it is an impossible one, and pricing it as one chip understates
+    the real bill by 8x. The recommender rounds up to a value in this tuple so the
+    number a person approves is the number they are charged for.
+    """
+
 
 @dataclass(frozen=True)
 class HardwareRecommendation:

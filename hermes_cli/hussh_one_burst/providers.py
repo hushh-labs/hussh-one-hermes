@@ -22,6 +22,7 @@ than a failed burst is an accelerator nobody remembers to switch off.
 from __future__ import annotations
 
 import itertools
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol, runtime_checkable
 
@@ -109,12 +110,48 @@ class MockBurstProvider:
         return [h for h in self.provisioned if not h.torn_down]
 
 
+#: How each catalog accelerator maps onto a real Compute Engine shape.
+#:
+#: ``machine`` is a format string over the chip count where the accelerator is
+#: baked into the machine type (the A2/A3/A4 families), otherwise a fixed type
+#: with ``accelerator`` attached separately via ``guestAccelerators``.
+#: The valid chip counts are NOT repeated here — they live on
+#: ``AcceleratorClass.sellable_chips`` in the catalog, so the price a person
+#: approves and the shape that gets provisioned come from one source. Two lists
+#: would drift, and the drift would be a wrong bill.
+_GCP_SHAPES: dict[str, dict[str, Any]] = {
+    "nvidia-t4": {"machine": "n1-standard-8", "accelerator": "nvidia-tesla-t4"},
+    "nvidia-l4": {"machine": "g2-standard-{lanes}", "lanes": {1: 8, 2: 24, 4: 48, 8: 96}},
+    "a100-40": {"machine": "a2-highgpu-{n}g"},
+    "a100-80": {"machine": "a2-ultragpu-{n}g"},
+    "h100-80": {"machine": "a3-highgpu-8g"},
+    "h200-141": {"machine": "a3-ultragpu-8g"},
+    "b200-180": {"machine": "a4-highgpu-8g"},
+    "gb200-186": {"machine": "a4x-highgpu-4g"},
+}
+
+#: A GPU image, not a bare OS — a plain Debian instance has no CUDA driver and a
+#: burst that boots without one has burned money to do nothing.
+_DEFAULT_IMAGE = (
+    "projects/deeplearning-platform-release/global/images/family/common-cu123-debian-11"
+)
+
+
+class UnsupportedAccelerator(ValueError):
+    """The requested accelerator cannot be provisioned by this backend."""
+
+
 class GcpBurstProvider:
     """Provisions a Compute Engine instance in the person's own project.
 
     The credential is resolved per call and never stored on this object; only
     :class:`~.credentials.CredentialRef` is retained, which is safe to put in a
     receipt.
+
+    **Never executed against real GCP.** The request body below is built from
+    the documented ``instances.insert`` contract and is typed and unit-tested,
+    but no burst has been provisioned with it. Treat the first real run as the
+    test, and expect to fix something.
     """
 
     _API_ROOT = "https://compute.googleapis.com/compute/v1"
@@ -125,10 +162,14 @@ class GcpBurstProvider:
         project: Optional[str] = None,
         region: Optional[str] = None,
         sa_key: Optional[str] = None,
+        image: str = _DEFAULT_IMAGE,
+        boot_disk_gb: int = 200,
     ) -> None:
         self._sa_key = sa_key
         self._project = project
         self._region = resolve_region(region)
+        self._image = image
+        self._boot_disk_gb = boot_disk_gb
         self._ref: Optional[CredentialRef] = None
 
     @property
@@ -153,28 +194,99 @@ class GcpBurstProvider:
         project = self._project or "your connected project"
         return f"{project} ({self._region}) — your own cloud, billed to you"
 
+    @staticmethod
+    def resolve_shape(accelerator_id: str, chip_count: int) -> tuple[str, Optional[str], int]:
+        """Map a catalog accelerator onto ``(machine_type, accelerator_type, chips)``.
+
+        Raises :class:`UnsupportedAccelerator` rather than guessing. A TPU is not
+        a Compute Engine instance at all — it lives behind ``tpu.googleapis.com``
+        with its own node/queued-resource model — so asking this backend for one
+        must fail loudly instead of quietly booting a GPU-less VM that bills by
+        the hour while doing nothing.
+        """
+        if accelerator_id.startswith("tpu-"):
+            raise UnsupportedAccelerator(
+                f"{accelerator_id} is a Cloud TPU. TPUs are provisioned through the Cloud "
+                "TPU API, not Compute Engine, and this backend does not implement it yet."
+            )
+        shape = _GCP_SHAPES.get(accelerator_id)
+        if shape is None:
+            raise UnsupportedAccelerator(
+                f"No Compute Engine shape is mapped for '{accelerator_id}'."
+            )
+        from .hardware import ACCEL_CATALOG
+
+        accel = next((c for c in ACCEL_CATALOG if c.id == accelerator_id), None)
+        if accel is None:
+            raise UnsupportedAccelerator(f"'{accelerator_id}' is not in the catalog.")
+        allowed = accel.sellable_chips
+        if chip_count not in allowed:
+            raise UnsupportedAccelerator(
+                f"{accelerator_id} is sold in {allowed} chip counts; {chip_count} is not one. "
+                "Round up to the next valid count rather than under-provisioning."
+            )
+        template = shape["machine"]
+        if "{lanes}" in template:
+            machine = template.format(lanes=shape["lanes"][chip_count])
+        else:
+            machine = template.format(n=chip_count)
+        return machine, shape.get("accelerator"), chip_count
+
     def provision(self, spec: InstanceSpec) -> InstanceHandle:
+        machine, accelerator_type, chips = self.resolve_shape(
+            spec.accelerator_id, spec.chip_count
+        )
         session, ref = self._authed_session()
         zone = f"{ref.region}-a"
-        name = f"hussh-burst-{spec.accelerator_id}-{spec.chip_count}".lower()[:62]
+        # A short random suffix: two bursts of the same shape would otherwise
+        # collide on name and the second would fail with 409 ALREADY_EXISTS.
+        name = f"hussh-burst-{spec.accelerator_id}-{uuid.uuid4().hex[:8]}".lower()[:62]
         url = f"{self._API_ROOT}/projects/{ref.project}/zones/{zone}/instances"
-        body = {
+        body: dict[str, Any] = {
             "name": name,
+            "machineType": f"zones/{zone}/machineTypes/{machine}",
             "labels": {"app": "hussh-one-burst", "managed-by": "hermes"},
+            "disks": [
+                {
+                    "boot": True,
+                    "autoDelete": True,
+                    "initializeParams": {
+                        "sourceImage": self._image,
+                        "diskSizeGb": str(self._boot_disk_gb),
+                    },
+                }
+            ],
+            "networkInterfaces": [{"network": "global/networks/default"}],
             "scheduling": {
                 # Cheaper, and it self-terminates — a second brake behind teardown.
                 "provisioningModel": "SPOT",
                 "instanceTerminationAction": "DELETE",
-                "maxRunDuration": {"seconds": int(spec.deadline_minutes * 60)},
+                "maxRunDuration": {"seconds": str(int(spec.deadline_minutes * 60))},
+                # Both are required for accelerator instances, and SPOT forbids
+                # automatic restart.
+                "onHostMaintenance": "TERMINATE",
+                "automaticRestart": False,
             },
         }
+        if accelerator_type is not None:
+            body["guestAccelerators"] = [
+                {
+                    "acceleratorType": f"zones/{zone}/acceleratorTypes/{accelerator_type}",
+                    "acceleratorCount": chips,
+                }
+            ]
         response = session.post(url, json=body, timeout=60)
         if response.status_code >= 400:
             raise RuntimeError(f"Could not provision the burst instance: {response.text[:200]}")
         return InstanceHandle(
             id=name,
             destination=f"{ref.project}/{zone}",
-            detail={"accelerator": spec.accelerator_id, "chips": spec.chip_count, "zone": zone},
+            detail={
+                "accelerator": spec.accelerator_id,
+                "chips": chips,
+                "machine_type": machine,
+                "zone": zone,
+            },
         )
 
     def teardown(self, handle: InstanceHandle) -> bool:

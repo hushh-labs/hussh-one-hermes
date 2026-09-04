@@ -16,7 +16,7 @@ from .types import AcceleratorClass, AcceleratorKind, BenchmarkRow, HardwareReco
 #: Google Cloud Compute Engine accelerator SKUs, newest generations included.
 ACCEL_CATALOG: list[AcceleratorClass] = [
     AcceleratorClass("nvidia-t4", "gpu", "NVIDIA T4", 16, 1.0, 0.35,
-                     "light inference, small fine-tunes, IO-bound jobs"),
+                     "light inference, small fine-tunes, IO-bound jobs", (1, 2, 4)),
     AcceleratorClass("nvidia-l4", "gpu", "NVIDIA L4", 24, 2.0, 0.70,
                      "diffusion, batch inference, media"),
     AcceleratorClass("a100-40", "gpu", "NVIDIA A100 40GB", 40, 8.0, 2.90,
@@ -24,19 +24,19 @@ ACCEL_CATALOG: list[AcceleratorClass] = [
     AcceleratorClass("a100-80", "gpu", "NVIDIA A100 80GB", 80, 9.0, 3.67,
                      "large-model training, big batches"),
     AcceleratorClass("h100-80", "gpu", "NVIDIA H100 80GB (A3)", 80, 22.0, 9.80,
-                     "frontier training, lowest time-to-result"),
+                     "frontier training, lowest time-to-result", (8,)),
     AcceleratorClass("h200-141", "gpu", "NVIDIA H200 141GB (A3 Ultra)", 141, 26.0, 10.90,
-                     "memory-bound frontier training, long-context inference"),
+                     "memory-bound frontier training, long-context inference", (8,)),
     AcceleratorClass("b200-180", "gpu", "NVIDIA B200 180GB (A4)", 180, 45.0, 21.00,
-                     "largest single-node training runs, Blackwell-class throughput"),
+                     "largest single-node training runs, Blackwell-class throughput", (8,)),
     AcceleratorClass("gb200-186", "gpu", "NVIDIA GB200 NVL (A4X)", 186, 55.0, 27.50,
-                     "rack-scale frontier workloads, the biggest jobs GCP offers"),
+                     "rack-scale frontier workloads, the biggest jobs GCP offers", (4,)),
     AcceleratorClass("tpu-v5e", "tpu", "Cloud TPU v5e", 16, 7.0, 1.20,
-                     "JAX/XLA, protein folding, large matmul"),
+                     "JAX/XLA, protein folding, large matmul", (1, 4, 8)),
     AcceleratorClass("tpu-v6e", "tpu", "Cloud TPU v6e (Trillium)", 32, 14.0, 2.70,
-                     "high-throughput JAX/XLA training and serving"),
+                     "high-throughput JAX/XLA training and serving", (1, 4, 8)),
     AcceleratorClass("tpu-v5p", "tpu", "Cloud TPU v5p", 95, 18.0, 4.20,
-                     "largest TPU training pods, memory-heavy XLA models"),
+                     "largest TPU training pods, memory-heavy XLA models", (4, 8)),
 ]
 
 MAX_CHIPS = 8
@@ -55,6 +55,14 @@ def _ceil_div(numerator: float, denominator: float) -> int:
     return int(-(-numerator // denominator))
 
 
+def _round_up_to_sellable(chips: int, options: tuple[int, ...]) -> int | None:
+    """Smallest purchasable count that covers ``chips``, or None if none does."""
+    for option in sorted(options):
+        if option >= chips:
+            return option
+    return None
+
+
 def recommend_hardware(
     vram_gb: float,
     kind: AcceleratorKind,
@@ -65,10 +73,13 @@ def recommend_hardware(
 
     best: tuple[AcceleratorClass, int, float] | None = None
     for c in candidates:
-        mem_chips = max(1, _ceil_div(vram_gb, c.mem_gb_per_chip))
-        if mem_chips > MAX_CHIPS:
+        needed = max(1, _ceil_div(vram_gb, c.mem_gb_per_chip))
+        mem_chips = _round_up_to_sellable(needed, c.sellable_chips)
+        if mem_chips is None or mem_chips > MAX_CHIPS:
             continue  # this job can't fit one node of this class
-        # Lower is better: dollars needed to cover the memory, per unit of throughput.
+        # Rank on what the person would actually be billed. Ranking on the chips
+        # a job *needs* rather than the chips a cloud *sells* made whole-node
+        # parts look eight times cheaper than they are, and they won every time.
         proxy = (c.usd_per_hour_per_chip * mem_chips) / c.perf
         if best is None or proxy < best[2]:
             best = (c, mem_chips, proxy)
@@ -77,6 +88,7 @@ def recommend_hardware(
         # Nothing in this family fits on a single node — fall back to the biggest.
         big = sorted(candidates, key=lambda c: c.mem_gb_per_chip, reverse=True)[0]
         count = _clamp(parallel_chips, 1, MAX_CHIPS)
+        count = _round_up_to_sellable(count, big.sellable_chips) or max(big.sellable_chips)
         return HardwareRecommendation(
             accel=big,
             count=count,
@@ -90,6 +102,12 @@ def recommend_hardware(
 
     accel, mem_chips, _ = best
     count = _clamp(max(mem_chips, parallel_chips), 1, MAX_CHIPS)
+    # parallel_chips can push the count back off a sellable boundary, and can
+    # exceed what this class ships at all (8 T4s is not a machine you can buy).
+    # Clamp down to the largest purchasable node rather than quoting a shape
+    # that does not exist; memory stays covered because mem_chips is itself a
+    # sellable count and never exceeds the maximum.
+    count = _round_up_to_sellable(count, accel.sellable_chips) or max(accel.sellable_chips)
     total_mem = count * accel.mem_gb_per_chip
     parallel_note = f" · {parallel_chips}× parallel" if parallel_chips > 1 else ""
     return HardwareRecommendation(
