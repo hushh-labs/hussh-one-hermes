@@ -250,7 +250,7 @@ confirmed to restore it.
 | 8.2 Cost-model accuracy | ⚠️ *modeled* | within 10% of invoice | never validated | Compare against one real burst |
 | 8.3 Teardown SLO | ✅ **33.9s** full lifecycle, confirmed absent | 100% within 60s | single sample | Re-measure across shapes |
 | 8.4 Concurrent jobs | ❌ no job store | ≥1 tracked | full | Next phase |
-| 8.5 Monitoring overhead | ✅ **0.5ms median** measurement | <1% CPU | GPU path shells out, untimed | Re-measure on GPU hardware |
+| 8.5 Monitoring overhead | ✅ warm **0.40ms**; **first call in a process 13.5ms** | <1% CPU | GPU path costs ≥1.1ms once a binary exists to spawn — never measured on real hardware | Re-measure on GPU hardware |
 
 > **8.1 measures what a person waits for, not what the function costs.** The 2.7µs
 > figure was `decide_placement` called in a loop — real, and answering a question the
@@ -261,6 +261,23 @@ confirmed to restore it.
 > suite ran four ways in parallel*, so they are a loaded machine's numbers, not an idle
 > one's. The transport and the measurement dominate the decision by roughly 850×, which is
 > the honest shape of it: the arithmetic was never going to be the cost.
+
+> **8.5 had the same warm/cold flaw, found by looking for it rather than tripping over it.**
+> The quoted 0.5ms is a warm loop. Measured across seven fresh interpreters: importing
+> `telemetry` costs **36ms** once, the **first** `measure_device()` costs **13.5ms median**
+> (psutil's own first-call setup), and only from the second does it settle to **0.40ms**. A
+> person's first `hussh_burst_device_status` therefore costs roughly 50ms, not half a
+> millisecond. The verdict holds — that is nowhere near 1% of a CPU — but the number was
+> again measuring something the target was not asking about.
+>
+> The "GPU path shells out, untimed" gap is now **bounded rather than unknown**. It reads as
+> free here (**0.031ms**) *because* `_run` calls `shutil.which` first and finds nothing, so
+> no process is created. Once a binary exists the floor is a real spawn: **1.1ms** measured
+> for `/bin/true` on this container, and `nvidia-smi` does considerably more than exit. Two
+> tests now pin that a GPU-less machine spawns **nothing at all** — the existing test checked
+> only the return value, so a rewrite that tried the spawn and caught `OSError` would return
+> the same `None`, pass that test, and add a process launch to every measurement on every
+> machine without an accelerator.
 
 ## 9. Production readiness
 
