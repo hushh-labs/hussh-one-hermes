@@ -32,6 +32,8 @@ cross-checking two components against each other.
 | `parallel_chips` silently negotiable | Asking for 8× parallel could return a 4× machine |
 | Benchmark table carried the same pricing bug | The artifact a person audits priced machines no cloud sells |
 | `run` never checked `fits` | Would take payment for hardware too small for the job |
+| **Teardown trusted an accepted `DELETE`** | Reported `torn_down: true` while a T4 was still STAGING and billing — *found only by the real burst* |
+| Default boot image family did not exist | 404 against the live API; the first provision would have failed |
 
 All are fixed and regression-tested. The lesson is recorded because it generalises: the
 first four survived a full green test suite, so **the tests were confirming the code's own
@@ -44,8 +46,9 @@ than against the implementation.
 The engine can see, a person can reach it, and anything provisioned gets released. Two
 things are still true and matter more than the green cells below:
 
-1. **No burst has ever run against a real cloud.** Everything is verified against a mock
-   provider that needs no credentials. The GCP path is written and typed but unexercised.
+1. **One real burst has now run.** A T4 was provisioned in `hushh-pda-dev`, released, and
+   independently confirmed gone — 33.9s, $0.0033. It immediately found the most serious
+   defect in the whole feature (see below). One sample is not a track record.
 2. **Payload transfer is deliberately not implemented.** Shipping a workload to a remote
    machine is the one step that genuinely moves a person's information off their device.
    It needs its own consent design, not a side effect of provisioning.
@@ -72,7 +75,7 @@ things are still true and matter more than the green cells below:
 | 2.2 Execution layer | ✅ credentials, providers, teardown | provisioning lifecycle | none | — |
 | 2.3 Orchestration + persistence | ❌ none | job store, streams, agent card | full phase | Next phase |
 | 2.4 Repo consolidation | ⚠️ husshone owns v1 | one home | read-only access | Re-attach with push access |
-| 2.5 **Payload transfer** | ❌ not implemented | workload reaches the instance | **deliberate — needs consent design** | Design before building |
+| 2.5 **Payload transfer** | ⚠️ [design written](./xtreme-burst-payload-transfer.md), not built | workload reaches the instance | consent artifact + 3 open questions need a human | Answer the open questions |
 
 ## 3. Resource monitoring readiness
 
@@ -111,7 +114,7 @@ independently.
 | 5.1 Wire contract | ⚠️ divergence *guarded*, not bridged | one contract | adapter unwritten; stale names now rejected | Write the adapter at the boundary |
 | 5.2 Provider abstraction | ✅ Protocol + mock + GCP | pluggable | none | — |
 | 5.3 Credential broker | ✅ precedence mirrors hushh-research | key never persisted | none | — |
-| 5.4 **Teardown guarantee** | ✅ 7 tests incl. `KeyboardInterrupt` | always released | none | — |
+| 5.4 **Teardown guarantee** | ✅ 11 tests; **confirms absence**, not an accepted delete | always released | none | Extend to bucket+secret at 2.5 |
 | 5.5 Native client retarget | ❌ points at husshone | points at Hermes | full | Later phase |
 
 Teardown runs in a `finally` and survives workload exceptions, deadline overruns and
@@ -144,10 +147,10 @@ change needed.
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 7.1 End-to-end run | ⚠️ decide/plan real; run mock-only | full path on real cloud | **never run against GCP** | Requires a project and real spend |
+| 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
 | 7.2 Mock provider | ✅ credential-free | testable path | none | — |
-| 7.3 CI coverage | ⚠️ green locally only | green in CI | `ci.yml` never ran on this branch | Open a PR |
-| 7.4 Integration test vs real GCP | ❌ | one provision + teardown | full | After 7.1 |
+| 7.3 CI coverage | ⚠️ draft PR #18 opened | green in CI | awaiting first CI run | Drive it to green |
+| 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
 Verified live on this machine: `device_status` measured 4 cores / 15.09GB available;
 `decide` routed both presets to cloud with coherent reasons; `plan` returned 4× B200 at
@@ -159,7 +162,7 @@ $84/hr, ~$126 total.
 |---|---|---|---|---|
 | 8.1 Decision latency | ✅ **median 2.7µs, p99 11µs** | <10ms | none — ~900× under | — |
 | 8.2 Cost-model accuracy | ⚠️ *modeled* | within 10% of invoice | never validated | Compare against one real burst |
-| 8.3 Teardown SLO | ⚠️ guaranteed in code, untimed | 100% within 60s | no real-cloud timing | Measure at 7.4 |
+| 8.3 Teardown SLO | ✅ **33.9s** full lifecycle, confirmed absent | 100% within 60s | single sample | Re-measure across shapes |
 | 8.4 Concurrent jobs | ❌ no job store | ≥1 tracked | full | Next phase |
 | 8.5 Monitoring overhead | ✅ **0.5ms median** measurement | <1% CPU | GPU path shells out, untimed | Re-measure on GPU hardware |
 
@@ -168,7 +171,7 @@ $84/hr, ~$126 total.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 9.1 Reachable by a person | ✅ 5 MCP tools | 1 entry point | none | — |
-| 9.2 Consent + audit receipts | ⚠️ `BurstReceipt` + elicitation exist | every offload leaves a receipt | not exercised live | Exercise end-to-end |
+| 9.2 Consent + audit receipts | ⚠️ receipt produced by a real burst | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
 | 9.4 Ops runbook | ⚠️ architecture + scorecard | runbook + teardown drill | no runbook | Next phase |
 | 9.5 Privacy invariant | ✅ stronger than before | holds every phase | none | Regression-test each phase |
@@ -178,7 +181,7 @@ reachability is inferred from local link state rather than by contacting a host,
 `InstanceSpec` carries no workload fields by construction — a test asserts its exact
 field set.
 
-**Overall: 75% of 46 KPIs met (28 met, 13 partial, 5 open).** Reachable, measured, safe to
+**Overall: 80% of 46 KPIs met (31 met, 12 partial, 3 open).** Reachable, measured, safe to
 stop, and now quoting hardware that can actually be bought. Not yet proven against a real
 cloud.
 

@@ -77,7 +77,7 @@ The mapping is total and exact — `puppy ↔ device`, `gcp ↔ cloud`. Any adap
 translation. **Write it deliberately at the boundary**; do not assume the two vocabularies
 interoperate, because a `target` field will silently deserialize into neither.
 
-## Phase 2 — execution and the credential broker (not started)
+## Phase 2 — execution and the credential broker (landed)
 
 Two hard constraints, both inherited rather than invented here.
 
@@ -116,18 +116,23 @@ plane in husshone continues to serve v1 until these land.
 
 | Claim | State |
 |---|---|
-| Decision layer exists in Hermes | ✅ committed, 31 tests, ruff clean |
-| Decision layer reachable by a person | ❌ nothing imports it — no tool, command or config knob |
-| Execution / credentials in Hermes | ❌ not started |
+| Decision layer exists in Hermes | ✅ 98 burst tests, ruff clean |
+| Decision layer sees the real machine | ✅ `telemetry.py`; measured 4 cores / 15.09GB here |
+| Decision layer reachable by a person | ✅ five MCP tools, registered in `mcp_config.py` |
+| Execution / credentials in Hermes | ✅ BYOC broker, provider seam, confirmed teardown |
+| Burst proven against a real cloud | ✅ T4 in `hushh-pda-dev`, released, 404 confirmed |
+| Payload transfer | ⚠️ [designed](./xtreme-burst-payload-transfer.md), not built |
+| Orchestration + persistence | ❌ not started |
 | husshone burst code removed | ❌ untouched; read-only from here |
 
-The tool registration, config knob, feature page and contract row land with the capability
-that first needs them — not before.
+Detailed status, with targets and gaps per KPI, lives in the
+[production-readiness scorecard](./xtreme-burst-roadmap.md).
 
 ---
 
 ### Related
 - [Production-readiness scorecard](./xtreme-burst-roadmap.md) — live KPI status, updated each phase
+- [Payload transfer design](./xtreme-burst-payload-transfer.md) — how a workload reaches the instance, consent first
 - [Architecture — the overlay model](./README.md)
 - [Design record, migrated from husshone](../reference/xtreme-burst/README.md)
 - [Changelog](../CHANGELOG.md)
