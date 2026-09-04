@@ -63,7 +63,10 @@ WORKSTREAM_RULES = [
 
 
 def run(args: list[str]) -> str:
-    p = subprocess.run(["gh", *args], text=True, capture_output=True, timeout=60)
+    p = subprocess.run(
+        ["gh", *args], text=True, capture_output=True, timeout=60,
+        encoding="utf-8", errors="replace",
+    )
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip() or p.stdout.strip())
     return p.stdout

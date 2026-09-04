@@ -37,7 +37,10 @@ def gh(args: list[str]) -> str:
     delay = 1
     for attempt in range(retries):
         try:
-            p = subprocess.run(["gh", *args], text=True, capture_output=True, timeout=90)
+            p = subprocess.run(
+                ["gh", *args], text=True, capture_output=True, timeout=90,
+                encoding="utf-8", errors="replace",
+            )
             if p.returncode == 0:
                 return p.stdout
             err_msg = p.stderr.strip() or p.stdout.strip()

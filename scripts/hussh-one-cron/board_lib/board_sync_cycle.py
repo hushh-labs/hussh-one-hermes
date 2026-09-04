@@ -255,7 +255,10 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
                     "--assignee", OPERATOR_LOGIN,
                     "--label", "enhancement"
                 ]
-                proc_issue = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+                proc_issue = subprocess.run(
+                    cmd, capture_output=True, text=True, check=True, timeout=30,
+                    encoding="utf-8", errors="replace",
+                )
                 url = proc_issue.stdout.strip()
                 new_num = int(url.rstrip("/").split("/")[-1])
 
