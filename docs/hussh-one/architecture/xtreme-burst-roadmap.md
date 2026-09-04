@@ -7,12 +7,15 @@ supercomputing — and that decision is made by an ADK subagent.**
 Update this page as each phase completes. Every KPI carries Status / Target / Gap / Next
 Action, and every number is either counted, measured, or explicitly marked *modeled*.
 
-- **Last updated:** 2026-09-04 · Hermes `b332f54`+ · hushh-research `3e8fcc2f6` ·
+- **Last updated:** 2026-09-04 · Hermes `f697a837e` · hushh-research `45f885028` ·
   husshone surveyed at `80cb297`
 - **Workstreams:** 5 of 6 complete — decision layer, measurement, reachability, ADK
   subagent, execution. Orchestration and persistence remain.
-- **140 tests** (128 Hermes burst, 12 hushh-research), ruff clean. A further **63** were
+- **201 tests** (186 Hermes burst, 15 hushh-research), ruff clean. A further **63** were
   restored to the suite by fixing a collection error that had silently disabled them.
+- **Blocking CI on the branch:** `ruff enforcement` and `Windows footguns` both green;
+  `Mixed-license provenance` still red on 21 files this branch inherited and did not
+  author. See *Blocking checks* below.
 
 ## What self-review found
 
@@ -205,6 +208,14 @@ Registration is honest by construction: no A2A handler is registered, so
 dispatching into nothing. When the transport lands, handler registration is the only
 change needed.
 
+**What "15 green" does and does not cover.** The 15 are `test_compute_specialist.py`,
+which is the whole of what this workstream authored in `hushh-research`. The neighbouring
+ADK suites it edits into — `test_one_adk_agent_tree.py` and `test_one_adk_text_runtime.py`
+— carry **8 failures**. Those are inherited: the same 8, by name, when the base commit
+`b6e1e98b8` is run against its own test files in a separate checkout, so this branch adds
+none. Quoting the 15 without that sentence would have been the same partial truth this
+page keeps having to correct elsewhere.
+
 ## 7. End-to-end execution and validation
 
 | KPI | Status | Target | Gap | Next action |
@@ -291,6 +302,34 @@ fabricated number in the same breath. Third, and the only one that worked: stati
 falsifiable prediction, changing nothing, and watching. A duration needs two clock
 readings. A mechanism needs an experiment.
 
+### Blocking checks — what was ours and what was not
+
+Three checks block this branch. Two are now green, and the distinction between them is
+the point: one was ours, one was a real bug we inherited, one is neither.
+
+| Check | State | Whose |
+|---|---|---|
+| `ruff enforcement` | ✅ green | ours — two `PLW1514` sites in code this workstream added (`db07460d9`) |
+| `Windows footguns` | ✅ green | inherited, but a genuine bug — eight sites (`6b680f0c2`, `f697a837e`) |
+| `Mixed-license provenance` | ❌ red | inherited, 21 files, none touched by this workstream |
+
+The eighth footgun was the only one that needed thought rather than mechanics. The
+monthly-timesheet contract globbed `~/Desktop/Timesheets_and_Reimbursements`, and on a
+Windows machine with OneDrive Backup enabled that path is an empty husk — the shell has
+moved the real Desktop under OneDrive. The check would have reported a missing artifact
+for a workbook sitting in plain sight, so suppressing it would have been recording a lie.
+
+It was held back one round because fixing it looked like it would change another
+workstream's runtime behaviour. It does not: the contract now names the folder as
+`{desktop}` and `_artifact_exists` asks the shell where that is, which off Windows returns
+exactly `~/Desktop`. The resolved path is byte-identical on the platforms this harness
+runs on today; the fix is visible only where the old path was already wrong. That
+dissolved the reason to wait, so it landed.
+
+`Mixed-license provenance` remains open and is not this workstream's to close: 21 files
+carrying mixed license headers, all pre-dating this branch and unmodified by it. It is
+commented on the PR rather than worked around here.
+
 ### What CI could not tell us, run locally instead
 
 The full suite — 34,424 tests, four ways in parallel — finished at **39,100 passed, 94
@@ -303,7 +342,7 @@ branch and again on a clean `origin/main` worktree, and the two sorted failure l
 one flaky test, not a difference. Counting the totals would have said "one regression";
 diffing the names said what was true.)
 
-The burst suite itself is 173 green, and every burst change in this round is
+The burst suite itself is 186 green, and every burst change in this round is
 mutation-checked — the defect re-introduced, the new test confirmed to fail, the fix
 confirmed to restore it.
 
