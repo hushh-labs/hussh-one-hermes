@@ -30,6 +30,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -176,7 +177,7 @@ CONTRACTS: tuple = (
     ),
     JobContract(
         name_contains="timesheet",
-        artifact_glob="~/Desktop/Timesheets_and_Reimbursements/*{prev_month_name}{prev_year}*.xlsx",
+        artifact_glob="{desktop}/Timesheets_and_Reimbursements/*{prev_month_name}{prev_year}*.xlsx",
         min_tool_calls=1,
         judge_hint=(
             "The previous month's reimbursement workbook must exist at the "
@@ -496,9 +497,52 @@ def _previous_month(now: Optional[datetime] = None) -> datetime:
     return today - timedelta(days=1)
 
 
+def _desktop_dir() -> Path:
+    """Where the user's Desktop actually is.
+
+    ``~/Desktop`` is a lie on Windows the moment OneDrive Backup is on: the
+    shell moves the real folder to ``%USERPROFILE%\\OneDrive\\Desktop`` and
+    leaves an empty husk at the old path, so a contract that globs
+    ``~/Desktop`` reports a missing artifact for a workbook that is sitting
+    right there. Ask the shell where the folder is; fall back to
+    ``~/Desktop``, which is correct on every other platform and remains the
+    best guess if the call fails.
+    """
+    home_desktop = Path.home() / "Desktop"
+    if os.name != "nt":
+        return home_desktop
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("Data1", wintypes.DWORD),
+                        ("Data2", wintypes.WORD),
+                        ("Data3", wintypes.WORD),
+                        ("Data4", ctypes.c_ubyte * 8)]
+
+        # FOLDERID_Desktop {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}
+        folder_id = _GUID(0xB4BFCC3A, 0xDB2C, 0x424C,
+                          (ctypes.c_ubyte * 8)(0xB0, 0x29, 0x7F, 0xE9,
+                                               0x9A, 0x87, 0xC6, 0x41))
+        out = ctypes.c_wchar_p()
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        if shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None,
+                                        ctypes.byref(out)) != 0:
+            return home_desktop
+        try:
+            return Path(out.value) if out.value else home_desktop
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(out)  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - Windows-only path
+        logger.debug("SHGetKnownFolderPath unavailable; using ~/Desktop")
+        return home_desktop
+
+
 def _artifact_exists(pattern: str, now: Optional[datetime] = None) -> tuple:
     previous = _previous_month(now)
     expanded = pattern.format(
+        desktop=_desktop_dir(),
         prev_month_name=previous.strftime("%B"),
         prev_month=previous.strftime("%m"),
         prev_year=previous.strftime("%Y"),
