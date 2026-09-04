@@ -173,7 +173,7 @@ $84/hr, ~$126 total.
 | 9.1 Reachable by a person | ✅ 5 MCP tools | 1 entry point | none | — |
 | 9.2 Consent + audit receipts | ⚠️ receipt produced by a real burst | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
-| 9.4 Ops runbook | ⚠️ architecture + scorecard | runbook + teardown drill | no runbook | Next phase |
+| 9.4 Ops runbook | ✅ [runbook](../operations/xtreme-burst-runbook.md) written from the live burst | runbook + teardown drill | none | Re-check pre-flight list after each real run |
 | 9.5 Privacy invariant | ✅ stronger than before | holds every phase | none | Regression-test each phase |
 
 The privacy invariant got three new guards: measurement is isolated in one module,
@@ -181,7 +181,7 @@ reachability is inferred from local link state rather than by contacting a host,
 `InstanceSpec` carries no workload fields by construction — a test asserts its exact
 field set.
 
-**Overall: 80% of 46 KPIs met (31 met, 12 partial, 3 open).** Reachable, measured, safe to
+**Overall: 81% of 46 KPIs met (32 met, 11 partial, 3 open).** Reachable, measured, safe to
 stop, and now quoting hardware that can actually be bought. Not yet proven against a real
 cloud.
 
@@ -206,6 +206,7 @@ still holds. "Implemented" is never promoted to "verified" without a reading.
 ---
 
 ### Related
+- [Operations runbook](../operations/xtreme-burst-runbook.md) — pre-flight, teardown proof, leak response
 - [Architecture & migration record](./xtreme-burst.md)
 - [husshone design record](../reference/xtreme-burst/README.md)
 - [Changelog](../CHANGELOG.md)
