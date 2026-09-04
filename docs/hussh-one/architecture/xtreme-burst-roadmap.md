@@ -100,7 +100,7 @@ things are still true and matter more than the green cells below:
 | 4.2 **Inputs are live** | ✅ decides from the real machine | measured state | none | — |
 | 4.3 Cost-aware selection | ⚠️ structure fixed; prices still *modeled* | validated pricing | never checked vs invoice | Compare against one real burst |
 | 4.4 Consent gate before offload | ⚠️ elicitation written | approval before spend | not exercised through a real MCP client | Exercise end-to-end |
-| 4.5 Deadline handling | ✅ enforced + tested | drives teardown | none | — |
+| 4.5 Deadline handling | ✅ **enforced by GCP**, detected locally | drives teardown | a hung `execute` is not interrupted — `run_burst` reads the clock after it returns | Revisit when the payload seam (2.5) can be interrupted |
 | 4.6 **Quote is purchasable** | ✅ sellable counts are catalog data | quote = what is billed | none | — |
 
 The two-pool memory model closed a real defect: a 96GB workstation with an 8GB card used

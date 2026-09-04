@@ -376,6 +376,35 @@ def test_provision_body_carries_what_compute_engine_actually_requires():
     assert body["guestAccelerators"][0]["acceleratorCount"] == 2
 
 
+def test_the_deadline_reaches_compute_engine_as_the_real_time_bound():
+    """`maxRunDuration` is the only brake that works when Hermes is not there.
+
+    `run_burst` *detects* an overrun — it checks the clock after `execute`
+    returns, so a workload that never returns never trips it, and teardown never
+    runs. What actually stops the billing in that case is Compute Engine
+    deleting the instance on its own. That makes this field, and its unit, the
+    load-bearing one: seconds, not minutes, and derived from the same deadline
+    the person approved. Nothing tested it.
+    """
+    from unittest.mock import MagicMock, patch
+
+    provider = GcpBurstProvider(project="p", region="us-central1")
+    session = MagicMock()
+    session.post.return_value = MagicMock(status_code=200)
+    ref = MagicMock(project="p", region="us-central1")
+    with patch.object(provider, "_authed_session", return_value=(session, ref)):
+        provider.provision(InstanceSpec("nvidia-t4", 1, "job", 45.0))
+
+    scheduling = session.post.call_args.kwargs["json"]["scheduling"]
+    assert scheduling["maxRunDuration"] == {"seconds": "2700"}, (
+        "45 minutes must reach GCP as 2700 seconds — a minutes/seconds mixup "
+        "here buys a 60x longer instance than the person approved"
+    )
+    # SPOT is the other half: it self-terminates, so a stuck burst has two
+    # independent ways to stop costing money.
+    assert scheduling["provisioningModel"] == "SPOT"
+
+
 #: A label of the kind a person actually writes.  Every token is distinctive
 #: enough that finding one in an outbound request means the label leaked, and
 #: none of them collides with anything Compute Engine legitimately needs.

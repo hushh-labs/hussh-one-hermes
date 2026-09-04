@@ -118,6 +118,16 @@ def run_burst(
     Teardown runs in a ``finally``, so it survives an exception in ``execute``,
     a deadline overrun, and a ``KeyboardInterrupt``.
 
+    **The deadline is detected here, not enforced here.** The clock is read
+    after ``execute`` returns, so a workload that never returns never trips it
+    and this ``finally`` never runs. What actually stops the billing in that
+    case is on the cloud side: the provider sets Compute Engine's
+    ``maxRunDuration`` from this same deadline with
+    ``instanceTerminationAction: DELETE``, and provisions SPOT, which
+    self-terminates. Both are brakes that work when this process does not.
+    Interrupting a running payload is a question for the payload seam, which
+    does not exist yet.
+
     ``record`` defaults to True on purpose. A receipt handed to one caller and
     then dropped is not an audit trail, and the receipts that matter most are the
     ones reporting a leaked instance — the thing somebody needs to find tomorrow,
