@@ -156,9 +156,24 @@ class UnsupportedAccelerator(ValueError):
 class GcpBurstProvider:
     """Provisions a Compute Engine instance in the person's own project.
 
-    The credential is resolved per call and never stored on this object; only
-    :class:`~.credentials.CredentialRef` is retained, which is safe to put in a
-    receipt.
+    **Credential handling, stated accurately.** An earlier version of this
+    docstring claimed the credential was "never stored on this object". That was
+    false: when a caller passes ``sa_key``, it is held in ``self._sa_key`` for
+    the life of the provider, and is visible through ``vars()``. It has to be —
+    ``teardown`` authenticates a second time, often minutes after ``provision``,
+    and a provider that forgot the key could not release the instance it created.
+
+    What is actually guaranteed, and what the tests pin:
+
+    * it is **never persisted** — not to a receipt, not to the ledger, not to any
+      file this package writes;
+    * only :class:`~.credentials.CredentialRef` (project, region, and *how* the
+      credential was found) survives into anything durable;
+    * ``repr()`` does not expose it, so a provider caught in a traceback or a log
+      line does not leak the key.
+
+    The exposure is therefore one process's memory for one burst's lifetime,
+    which is the cost of being able to guarantee teardown.
 
     **Verified against real GCP on 2026-08-08.** A T4 spot instance was
     provisioned in ``hushh-pda-dev``/``us-central1`` through this code path,
