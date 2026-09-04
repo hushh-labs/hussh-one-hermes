@@ -11,6 +11,8 @@ running instance, not a missing function call.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from hermes_cli.hussh_one_burst.credentials import (
@@ -374,6 +376,25 @@ def test_provision_body_carries_what_compute_engine_actually_requires():
     assert body["guestAccelerators"][0]["acceleratorCount"] == 2
 
 
+#: A label of the kind a person actually writes.  Every token is distinctive
+#: enough that finding one in an outbound request means the label leaked, and
+#: none of them collides with anything Compute Engine legitimately needs.
+_REVEALING_LABEL = "finetune payroll reconciliation acmecorp"
+
+
+def _assert_label_absent(*blobs: str) -> None:
+    """Fail if *any* token of :data:`_REVEALING_LABEL` appears in ``blobs``.
+
+    Token-by-token on purpose.  Checking for one hand-picked word passes for a
+    request carrying every *other* word of the label, which is not the
+    invariant.  A label is free text the person wrote — "finetune-on-patient-
+    notes" says plenty about a workload before a byte of the workload moves.
+    """
+    haystack = " ".join(blobs).lower()
+    leaked = [tok for tok in _REVEALING_LABEL.split() if tok in haystack]
+    assert not leaked, f"label token(s) {leaked} reached the cloud: {haystack[:400]}"
+
+
 def test_provision_carries_no_workload_information_to_the_cloud():
     from unittest.mock import MagicMock, patch
 
@@ -382,8 +403,9 @@ def test_provision_carries_no_workload_information_to_the_cloud():
     session.post.return_value = MagicMock(status_code=200)
     ref = MagicMock(project="p", region="us-central1")
     with patch.object(provider, "_authed_session", return_value=(session, ref)):
-        provider.provision(InstanceSpec("a100-40", 1, "my secret research project", 30.0))
-    assert "secret" not in repr(session.post.call_args.kwargs["json"]).lower()
+        provider.provision(InstanceSpec("a100-40", 1, _REVEALING_LABEL, 30.0))
+    call = session.post.call_args
+    _assert_label_absent(json.dumps(call.kwargs["json"]), *(str(a) for a in call.args))
 
 
 # --------------------------------------------------------------------------
@@ -445,6 +467,9 @@ def _gcp_with_fake_session(responses, **kw):
         project="p", region="us-central1", sleep=lambda _s: None, **kw
     )
     session = MagicMock()
+    # An unconfigured MagicMock compares truthy against 400, so provisioning
+    # would "fail" for any test that used this helper end to end.
+    session.post.return_value = MagicMock(status_code=200)
     session.delete.return_value = MagicMock(status_code=200)
     session.get.side_effect = [MagicMock(status_code=code) for code in responses]
     ref = MagicMock(project="p", region="us-central1")
@@ -518,3 +543,61 @@ def test_a_delete_that_returns_404_is_already_gone_and_needs_no_polling():
     with patch.object(provider, "_authed_session", return_value=(session, ref)):
         assert provider.teardown(handle) is True
     session.get.assert_not_called()
+
+
+def test_no_label_token_reaches_the_cloud_anywhere_in_a_whole_burst():
+    """Provision *and* teardown, url and body alike — not just the first call.
+
+    The placement decision runs on the person's own machine so that nothing
+    about a workload has to leave it.  That guarantee is worth exactly as much
+    as the requests the burst actually makes, so this walks the full lifecycle
+    and inspects every one of them: a label smuggled into a query parameter or
+    a teardown URL would be just as much of a leak as one in the body.
+    """
+    provider, session, ctx = _gcp_with_fake_session([404])
+    with ctx:
+        receipt = run_burst(
+            BurstRequest(
+                label=_REVEALING_LABEL,
+                accelerator_id="nvidia-t4",
+                chip_count=1,
+                usd_per_hour=0.35,
+                deadline_minutes=5.0,
+            ),
+            provider,
+            clock=iter([0.0, 1.0, 2.0, 3.0]).__next__,
+            record=False,
+        )
+
+    assert receipt.status == "completed"
+    assert not receipt.leaked_instance
+    seen: list[str] = []
+    for method in (session.post, session.delete, session.get):
+        for call in method.call_args_list:
+            seen.extend(str(a) for a in call.args)
+            for key, value in call.kwargs.items():
+                seen.append(f"{key}={value!r}")
+    assert seen, "the burst made no requests — this test would pass vacuously"
+    _assert_label_absent(*seen)
+
+
+def test_the_label_does_survive_locally_so_the_person_can_read_their_receipt():
+    """The counterpart: withholding it from the cloud is not losing it.
+
+    Without this, :func:`_assert_label_absent` would still pass if the label
+    were dropped on the floor everywhere, and a receipt nobody can identify is
+    not a receipt.
+    """
+    provider = MockBurstProvider()
+    receipt = run_burst(
+        BurstRequest(
+            label=_REVEALING_LABEL,
+            accelerator_id="nvidia-t4",
+            chip_count=1,
+            usd_per_hour=0.35,
+        ),
+        provider,
+        record=False,
+    )
+    assert receipt.label == _REVEALING_LABEL
+    assert receipt.as_dict()["workload"] == _REVEALING_LABEL
