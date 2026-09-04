@@ -197,44 +197,58 @@ Verified live on this machine: `device_status` measured 4 cores / 15.09GB availa
 `decide` routed both presets to cloud with coherent reasons; `plan` returned 4× B200 at
 $84/hr, ~$126 total.
 
-### Why CI cannot tell us — and two corrections to my own reporting
+### Why CI cannot tell us — three corrections, the last one settled by experiment
 
-**Correction 2 supersedes correction 1.** Both are recorded because the second one is the
-more instructive failure.
+**Correction 3 supersedes both earlier ones.** All three are kept, because the sequence is
+the lesson.
 
-I first reported the two required test jobs as "cancelled at exactly 31 minutes." Then I
-corrected that to "still queued at 18 minutes," and built a conclusion on it. **The 18
-minutes never happened.** I inferred elapsed time from a wall clock I assumed rather than
-read; the actual gap was under three. What the API says, read properly:
+1. I reported the two required test jobs as "cancelled at exactly 31 minutes."
+2. I corrected that to "still queued at 18 minutes," and built a conclusion on it. **That
+   run never happened** — I inferred elapsed time from a wall clock I assumed rather than
+   read. The real figure was 3m24s.
+3. Then the durations themselves turned out to be the wrong measurement.
 
-| Run | Both test jobs | Runner |
-|---|---|---|
-| `33833329598` | queued **~31 min**, then cancelled | never assigned |
-| `fb837c6` | cancelled at **10s** — I pushed 30s later and the concurrency group killed the whole run | never assigned |
-| `cce8b00` | cancelled at **82s**, when the aggregator concluded | never assigned |
-| `f24d28e0` | cancelled at **3m24s**, `runner_id: 0`, `runner_name: ""` | never assigned |
+**Every run lifetime in the first two corrections measured my own push cadence.** Four runs
+ended within seconds of a push of mine:
 
-The `f24d28e0` run was *not* superseded by me — my push landed 36 seconds after the
-cancellation. It died the same way `cce8b00` did: both blocking lints fail within ~20s, the
-aggregator runs, and the still-queued jobs are cancelled with it.
+| Run | Aggregator concluded | My push | Δ |
+|---|---|---|---|
+| `ccedd0d5` | 05:25:38Z | 05:25:24Z | 14s |
+| `77b16b3cf` | 05:56:04Z | 05:55:46Z | 18s |
+| `1e0c89b9c` | 07:00:28Z | 07:00:10Z | 18s |
+| `db07460d9` | 07:16:40Z | 07:16:25Z | 15s |
 
-**What is established:** these jobs are never assigned a runner in the window they get,
+Four for four is a mechanism, not a coincidence: the push cancels the queued jobs through
+the concurrency group, which releases the aggregator, which then reports failure because
+the lints genuinely had failed. The spread I could not explain — 57s, 1m27s, 1m40s, 1m49s,
+2m34s, 2m57s, then 15m55s and 55m7s — is just how long I happened to stay quiet. There is
+no queue timeout, and nothing ever supported the jobs getting runners.
+
+**Tested rather than assumed.** Prediction: with nobody pushing, a run stays open
+indefinitely. `6b680f0c2` was pushed at 07:16:25Z, settled to those two jobs pending at
+07:18:33Z, and at **07:53Z was still open — 35 minutes untouched**, against 14–18 seconds
+whenever a push arrived. Confirmed. (The window is only a lower bound: recording this
+finding required a push, which ends it. The next quiet interval extends the number.)
+
+**What is established:** these two jobs are never assigned a runner in any window they get,
 while inside the same run every `ubuntu-latest` and `macos-latest` job is assigned one in
-**2–9 seconds** and finishes. The one long observation, `33833329598`, gave them ~31 minutes
-and they still got nothing.
+**2–9 seconds** and finishes. They do not time out; they simply never start.
 
-**What I claimed and cannot support:** that fixing the inherited lint failures would *not*
-free the test jobs. I asserted that from the imaginary 18-minute run. On the real evidence
-every unsuperseded run is cancelled shortly after the lints fail, so the opposite is
-entirely plausible — a run that stayed alive might see those runners assigned. Unresolved,
-and only testable on a run where the lints pass, which needs the `PLW1514` decision that is
-still with the founder.
+**What remains unknown:** *why* no runner arrives. That needs `runner_id` from
+`GET /actions/jobs/{id}`, and the GitHub API has been returning `invalid session` since
+roughly 05:35Z. Capacity for `ubuntu-latest-96-core` / `windows-latest-32-core` remains the
+best reading, and it is a reading, not a measurement.
 
-**Method, twice over.** The first error was reading superseded runs as data about CI when
-they were data about my own push cadence — a commit every one to three minutes killed runs
-mid-flight. The second was worse: correcting a fabricated number with another fabricated
-number, in the same breath. A duration is a measurement. It needs two clock readings, not
-one reading and an assumption.
+**What I withdrew:** that fixing the inherited lint failures would not free the test jobs.
+That came from the imaginary 18-minute run. It is now moot in the other direction — the
+`PLW1514` fix landed (`db07460d9`) and seven footgun fixes with it (`6b680f0c2`), and the
+jobs still never start, because the aggregator was never what was blocking them.
+
+**Method, three times over.** First: reading superseded runs as facts about CI when they
+were facts about my own cadence. Second: correcting a fabricated number with another
+fabricated number in the same breath. Third, and the only one that worked: stating a
+falsifiable prediction, changing nothing, and watching. A duration needs two clock
+readings. A mechanism needs an experiment.
 
 ### What CI could not tell us, run locally instead
 
