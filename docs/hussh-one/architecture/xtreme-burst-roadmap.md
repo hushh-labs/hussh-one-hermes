@@ -7,11 +7,37 @@ supercomputing — and that decision is made by an ADK subagent.**
 Update this page as each phase completes. Every KPI carries Status / Target / Gap / Next
 Action, and every number is either counted, measured, or explicitly marked *modeled*.
 
-- **Last updated:** 2026-08-08 · Hermes `8913a3b` · hushh-research `3e8fcc2f6` ·
+- **Last updated:** 2026-08-08 · Hermes `6c890c9`+ · hushh-research `3e8fcc2f6` ·
   husshone surveyed at `80cb297`
 - **Workstreams:** 5 of 6 complete — decision layer, measurement, reachability, ADK
   subagent, execution. Orchestration and persistence remain.
-- **89 tests** (77 Hermes, 12 hushh-research), ruff clean.
+- **106 tests** (94 Hermes burst, 12 hushh-research), ruff clean. A further **63** were
+  restored to the suite by fixing a collection error that had silently disabled them.
+
+## What self-review found
+
+A pass over the code after it was written turned up a family of defects that shared one
+shape: **a number shown to a person that did not describe the machine they would get.**
+None were caught by the tests written alongside the code, and all were found by
+cross-checking two components against each other.
+
+| Defect | Consequence |
+|---|---|
+| Whole-node parts priced per chip | H100/H200/B200 sell only as 8-GPU nodes; a 90GB job was quoted one H200 chip when GCP bills eight — **12× understated** |
+| Recommender and provisioner disagreed | 9 of 14 realistic workloads produced a recommendation Compute Engine cannot fulfil |
+| GCP request body incomplete | No `machineType`, `disks` or `networkInterfaces` — it would have 400'd on arrival |
+| TPUs built as Compute Engine VMs | Would boot an accelerator-less VM that bills hourly doing nothing |
+| Instance names derived from shape alone | Two concurrent bursts of one shape collide with a 409 |
+| Ranking scored a config it did not deliver | Scored 4 chips, billed 8; lost to a node finishing 6× sooner for less |
+| `parallel_chips` silently negotiable | Asking for 8× parallel could return a 4× machine |
+| Benchmark table carried the same pricing bug | The artifact a person audits priced machines no cloud sells |
+| `run` never checked `fits` | Would take payment for hardware too small for the job |
+
+All are fixed and regression-tested. The lesson is recorded because it generalises: the
+first four survived a full green test suite, so **the tests were confirming the code's own
+assumptions rather than checking it against the world.** Every fix above came with a test
+that asserts against an external fact — what a cloud sells, what an API requires — rather
+than against the implementation.
 
 ## Where this actually stands
 
@@ -30,13 +56,13 @@ things are still true and matter more than the green cells below:
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 1.1 Decision-layer correctness | ✅ 89 tests green | 100% | none | Re-run on every change |
+| 1.1 Decision-layer correctness | ✅ 106 tests green | 100% | none | Re-run on every change |
 | 1.2 Placement rules ported | ✅ 6 rules + two-pool model | parity + discrete GPUs | none | Hold |
 | 1.3 Provenance accuracy | ✅ corrected 2026-08-07 | claims survive checking | none | Keep ported/originating split |
 | 1.4 Design record migrated | ✅ 4 docs + OpenAPI | durable in Hermes | none | — |
 | 1.5 Module is pure (no I/O) | ✅ I/O isolated in `telemetry` | invariant holds | none | **Guard this** |
 
-**Counted:** 1,800 lines across 10 modules in `hermes_cli/hussh_one_burst/`.
+**Counted:** 2,022 lines across 10 modules in `hermes_cli/hussh_one_burst/`.
 
 ## 2. Remaining implementation gaps
 
@@ -69,9 +95,10 @@ things are still true and matter more than the green cells below:
 |---|---|---|---|---|
 | 4.1 Placement rules correct | ✅ tested | invariants hold | none | Hold |
 | 4.2 **Inputs are live** | ✅ decides from the real machine | measured state | none | — |
-| 4.3 Cost-aware selection | ⚠️ prices *modeled* | validated pricing | never checked vs invoice | Compare against one real burst |
+| 4.3 Cost-aware selection | ⚠️ structure fixed; prices still *modeled* | validated pricing | never checked vs invoice | Compare against one real burst |
 | 4.4 Consent gate before offload | ⚠️ elicitation written | approval before spend | not exercised through a real MCP client | Exercise end-to-end |
 | 4.5 Deadline handling | ✅ enforced + tested | drives teardown | none | — |
+| 4.6 **Quote is purchasable** | ✅ sellable counts are catalog data | quote = what is billed | none | — |
 
 The two-pool memory model closed a real defect: a 96GB workstation with an 8GB card used
 to read as "fits locally". Accelerator need is now gated on VRAM and host need on RAM
@@ -151,8 +178,9 @@ reachability is inferred from local link state rather than by contacting a host,
 `InstanceSpec` carries no workload fields by construction — a test asserts its exact
 field set.
 
-**Overall: 74% of 45 KPIs met (27 met, 13 partial, 5 open).** Reachable, measured, and
-safe to stop. Not yet proven against a real cloud.
+**Overall: 75% of 46 KPIs met (28 met, 13 partial, 5 open).** Reachable, measured, safe to
+stop, and now quoting hardware that can actually be bought. Not yet proven against a real
+cloud.
 
 ---
 
