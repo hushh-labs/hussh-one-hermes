@@ -7,11 +7,11 @@ supercomputing — and that decision is made by an ADK subagent.**
 Update this page as each phase completes. Every KPI carries Status / Target / Gap / Next
 Action, and every number is either counted, measured, or explicitly marked *modeled*.
 
-- **Last updated:** 2026-08-08 · Hermes `6c890c9`+ · hushh-research `3e8fcc2f6` ·
+- **Last updated:** 2026-09-04 · Hermes `b332f54`+ · hushh-research `3e8fcc2f6` ·
   husshone surveyed at `80cb297`
 - **Workstreams:** 5 of 6 complete — decision layer, measurement, reachability, ADK
   subagent, execution. Orchestration and persistence remain.
-- **106 tests** (94 Hermes burst, 12 hushh-research), ruff clean. A further **63** were
+- **126 tests** (114 Hermes burst, 12 hushh-research), ruff clean. A further **63** were
   restored to the suite by fixing a collection error that had silently disabled them.
 
 ## What self-review found
@@ -59,7 +59,7 @@ things are still true and matter more than the green cells below:
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 1.1 Decision-layer correctness | ✅ 106 tests green | 100% | none | Re-run on every change |
+| 1.1 Decision-layer correctness | ✅ 126 tests green | 100% | none | Re-run on every change |
 | 1.2 Placement rules ported | ✅ 6 rules + two-pool model | parity + discrete GPUs | none | Hold |
 | 1.3 Provenance accuracy | ✅ corrected 2026-08-07 | claims survive checking | none | Keep ported/originating split |
 | 1.4 Design record migrated | ✅ 4 docs + OpenAPI | durable in Hermes | none | — |
@@ -111,7 +111,7 @@ independently.
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 5.1 Wire contract | ⚠️ divergence *guarded*, not bridged | one contract | adapter unwritten; stale names now rejected | Write the adapter at the boundary |
+| 5.1 Wire contract | ✅ `wire.py` translates and refuses both ways | one contract | none | Use it at any husshone boundary |
 | 5.2 Provider abstraction | ✅ Protocol + mock + GCP | pluggable | none | — |
 | 5.3 Credential broker | ✅ precedence mirrors hushh-research | key never persisted | none | — |
 | 5.4 **Teardown guarantee** | ✅ 11 tests; **confirms absence**, not an accepted delete | always released | none | Extend to bucket+secret at 2.5 |
@@ -181,7 +181,7 @@ reachability is inferred from local link state rather than by contacting a host,
 `InstanceSpec` carries no workload fields by construction — a test asserts its exact
 field set.
 
-**Overall: 81% of 46 KPIs met (32 met, 11 partial, 3 open).** Reachable, measured, safe to
+**Overall: 83% of 46 KPIs met (33 met, 10 partial, 3 open).** Reachable, measured, safe to
 stop, and now quoting hardware that can actually be bought. Not yet proven against a real
 cloud.
 

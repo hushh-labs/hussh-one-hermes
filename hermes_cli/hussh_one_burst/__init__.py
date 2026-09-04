@@ -58,6 +58,7 @@ from .types import (
     WorkloadEstimate,
     WorkloadPreset,
 )
+from .wire import WireVocabularyError, from_wire, to_wire
 
 __all__ = [
     "ACCEL_CATALOG",
@@ -84,15 +85,18 @@ __all__ = [
     "MockBurstProvider",
     "PlacementDecision",
     "PlacementTarget",
+    "WireVocabularyError",
     "WorkloadEstimate",
     "WorkloadPreset",
     "benchmark_hardware",
     "decide_placement",
     "find_device_profile",
     "find_workload_preset",
+    "from_wire",
     "measure_device",
     "recommend_hardware",
     "resolve_credentials",
     "resolve_provider",
     "run_burst",
+    "to_wire",
 ]
