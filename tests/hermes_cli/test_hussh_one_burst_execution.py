@@ -708,3 +708,115 @@ def test_the_machine_shown_is_the_machine_decided_from():
     payload, probe = _decide(_stressed_device())
     assert probe.call_count == 1, "one decision, one measurement"
     assert payload["measured_device"]["label"] == "Laptop On A Sofa"
+
+
+# --------------------------------------------------------------------------
+# Pre-flight: refuse before the money, on evidence
+# --------------------------------------------------------------------------
+
+
+def _preflight_provider(*, zone_status=200, quotas=None):
+    """A GcpBurstProvider whose project answers a scripted zone + quota check."""
+    from unittest.mock import MagicMock, patch
+
+    provider = GcpBurstProvider(project="p", region="us-central1")
+    session = MagicMock()
+    session.get.side_effect = [
+        MagicMock(status_code=zone_status),
+        MagicMock(ok=True, json=lambda: {"quotas": quotas or []}),
+    ]
+    ref = MagicMock(project="p", region="us-central1")
+    return provider, patch.object(provider, "_authed_session", return_value=(session, ref))
+
+
+def test_a_part_the_zone_does_not_carry_is_a_blocker():
+    """Verified live: `us-central1-a` carried GB200 and H100 and neither H200
+    nor B200, while the recommender quotes both at $88 and $110 an hour."""
+    provider, ctx = _preflight_provider(zone_status=404)
+    with ctx:
+        result = provider.preflight("b200-180", 8)
+    assert result.ok is False
+    assert "nvidia-b200" in " ".join(result.blockers)
+    assert "us-central1-a" in " ".join(result.blockers)
+
+
+def test_a_quota_below_the_order_is_a_blocker():
+    """`hushh-pda-dev` publishes a spot A100-80GB limit of 0 and quotes it anyway."""
+    provider, ctx = _preflight_provider(
+        quotas=[{"metric": "PREEMPTIBLE_NVIDIA_A100_80GB_GPUS", "limit": 0}]
+    )
+    with ctx:
+        result = provider.preflight("a100-80", 2)
+    assert result.ok is False
+    assert "quota" in " ".join(result.blockers).lower()
+
+
+def test_a_quota_that_covers_the_order_passes():
+    provider, ctx = _preflight_provider(
+        quotas=[{"metric": "PREEMPTIBLE_NVIDIA_T4_GPUS", "limit": 4}]
+    )
+    with ctx:
+        result = provider.preflight("nvidia-t4", 1)
+    assert result.ok is True
+    assert not result.warnings
+
+
+def test_an_unpublished_quota_warns_rather_than_refusing():
+    """Compute v1 publishes no metric for H100 and newer — verified across five
+    regions. Refusing on an absent reading is a confident guess pointed the
+    other way, so it warns and lets the person decide."""
+    provider, ctx = _preflight_provider()
+    with ctx:
+        result = provider.preflight("h100-80", 8)
+    assert result.ok is True
+    assert any("no spot-quota figure" in w for w in result.warnings)
+
+
+def test_an_unreachable_project_warns_rather_than_blocking_a_valid_burst():
+    """A pre-flight that failed closed on a network hiccup would block a burst
+    the person could have run."""
+    from unittest.mock import patch
+
+    provider = GcpBurstProvider(project="p", region="us-central1")
+    with patch.object(provider, "_authed_session", side_effect=RuntimeError("no route")):
+        result = provider.preflight("nvidia-t4", 1)
+    assert result.ok is True
+    assert any("no route" in w for w in result.warnings)
+
+
+def test_every_catalog_part_has_a_zone_name_and_a_known_quota_stance():
+    """The two lookup tables must cover the catalog, or the pre-flight is blind."""
+    from hermes_cli.hussh_one_burst.hardware import ACCEL_CATALOG
+    from hermes_cli.hussh_one_burst.providers import _GCP_SHAPES
+
+    for accel in ACCEL_CATALOG:
+        shape = _GCP_SHAPES.get(accel.id)
+        if shape is None:
+            continue  # TPUs are refused by resolve_shape, not pre-flighted
+        assert shape.get("zone_accelerator"), f"{accel.id} has no zone name"
+        # `quota_metric` may be absent — that is the documented "cannot tell"
+        # case — but it must never be an empty string pretending to be one.
+        assert shape.get("quota_metric", "x") != ""
+
+
+def test_the_run_tool_refuses_an_unprovisionable_burst_before_asking_for_money():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import hermes_cli.hussh_one_burst.providers as prov_mod
+    from hermes_cli.hussh_one_burst.providers import Preflight
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock()
+    blocked = Preflight(blockers=("nvidia-b200 is not offered in us-central1-a.",))
+    with patch.object(prov_mod.GcpBurstProvider, "preflight", return_value=blocked):
+        result = asyncio.run(
+            _run_tool().call_tool(
+                "hussh_burst_run",
+                {"preset_id": "finetune-70b", "provider": "gcp", "project": "p"},
+            )
+        )
+    payload = result[1] if isinstance(result, tuple) else result
+    assert payload["success"] is False
+    assert payload["status"] == "not_provisionable"
+    ctx.elicit.assert_not_called()

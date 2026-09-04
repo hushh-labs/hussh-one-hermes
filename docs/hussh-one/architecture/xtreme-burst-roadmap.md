@@ -101,11 +101,23 @@ things are still true and matter more than the green cells below:
 | 4.3 Cost-aware selection | ⚠️ structure fixed; prices still *modeled* | validated pricing | never checked vs invoice | Compare against one real burst |
 | 4.4 Consent gate before offload | ⚠️ elicitation written | approval before spend | not exercised through a real MCP client | Exercise end-to-end |
 | 4.5 Deadline handling | ✅ **enforced by GCP**, detected locally | drives teardown | a hung `execute` is not interrupted — `run_burst` reads the clock after it returns | Revisit when the payload seam (2.5) can be interrupted |
-| 4.6 **Quote is purchasable** | ✅ sellable counts are catalog data | quote = what is billed | none | — |
+| 4.6 **Quote is purchasable** | ✅ sellable counts **and a live zone/quota pre-flight** | quote = what is billed | pre-flight runs in `run`, not in `plan` — a quote can still name a part this project cannot get | Surface it in `plan` if a person asks for one before running |
 
 The two-pool memory model closed a real defect: a 96GB workstation with an 8GB card used
 to read as "fits locally". Accelerator need is now gated on VRAM and host need on RAM
 independently.
+
+**Sellable is not the same as obtainable.** 4.6 was met on the vendor's terms — whole-node
+counts, so the quote matches the bill. It said nothing about whether *this* project in
+*this* zone can get the part. Checked against `hushh-pda-dev` on 2026-09-04:
+`us-central1-a` carries GB200 and H100 and carries **neither H200 nor B200**, which the
+recommender quotes at $88 and $110 an hour; spot quota for A100-80GB is **0** while the
+catalog offers it. Both would have been discovered by the person, after approving, at
+provision time. `GcpBurstProvider.preflight` now asks the project before the elicitation
+and refuses with the number it read. It refuses only on positive evidence: Compute v1
+publishes no spot-quota metric at all for H100 and newer — verified across five regions —
+so those become a caveat shown to the person, not a refusal, because refusing on an absent
+reading is a confident guess pointed the other way.
 
 ## 5. Xtreme Burst relay readiness
 

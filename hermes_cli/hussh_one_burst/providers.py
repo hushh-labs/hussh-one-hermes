@@ -120,16 +120,68 @@ class MockBurstProvider:
 #: ``AcceleratorClass.sellable_chips`` in the catalog, so the price a person
 #: approves and the shape that gets provisioned come from one source. Two lists
 #: would drift, and the drift would be a wrong bill.
+#:
+#: ``zone_accelerator`` is the name the part goes by in a zone's
+#: ``acceleratorTypes`` listing — needed even for the A2/A3/A4 families, where
+#: the accelerator is baked into the machine type and is therefore *not* sent in
+#: ``guestAccelerators``. It is what makes "does this zone even carry the part?"
+#: answerable. Every one of the eight was read off the live aggregated listing
+#: rather than recalled.
+#:
+#: ``quota_metric`` is the Compute v1 regional quota that governs a spot burst of
+#: this part, where one exists. For H100 and newer, **Compute v1 publishes no
+#: metric at all** — those quotas moved to the Cloud Quotas API — so the value is
+#: ``None`` and the pre-flight says "cannot tell" rather than inventing a zero.
+#: Verified across five regions on 2026-09-04: not one lists an H100, H200, B200
+#: or GB200 metric.
 _GCP_SHAPES: dict[str, dict[str, Any]] = {
-    "nvidia-t4": {"machine": "n1-standard-8", "accelerator": "nvidia-tesla-t4"},
-    "nvidia-l4": {"machine": "g2-standard-{lanes}", "lanes": {1: 8, 2: 24, 4: 48, 8: 96}},
-    "a100-40": {"machine": "a2-highgpu-{n}g"},
-    "a100-80": {"machine": "a2-ultragpu-{n}g"},
-    "h100-80": {"machine": "a3-highgpu-8g"},
-    "h200-141": {"machine": "a3-ultragpu-8g"},
-    "b200-180": {"machine": "a4-highgpu-8g"},
-    "gb200-186": {"machine": "a4x-highgpu-4g"},
+    "nvidia-t4": {
+        "machine": "n1-standard-8",
+        "accelerator": "nvidia-tesla-t4",
+        "zone_accelerator": "nvidia-tesla-t4",
+        "quota_metric": "PREEMPTIBLE_NVIDIA_T4_GPUS",
+    },
+    "nvidia-l4": {
+        "machine": "g2-standard-{lanes}",
+        "lanes": {1: 8, 2: 24, 4: 48, 8: 96},
+        "zone_accelerator": "nvidia-l4",
+        "quota_metric": "PREEMPTIBLE_NVIDIA_L4_GPUS",
+    },
+    "a100-40": {
+        "machine": "a2-highgpu-{n}g",
+        "zone_accelerator": "nvidia-tesla-a100",
+        "quota_metric": "PREEMPTIBLE_NVIDIA_A100_GPUS",
+    },
+    "a100-80": {
+        "machine": "a2-ultragpu-{n}g",
+        "zone_accelerator": "nvidia-a100-80gb",
+        "quota_metric": "PREEMPTIBLE_NVIDIA_A100_80GB_GPUS",
+    },
+    "h100-80": {"machine": "a3-highgpu-8g", "zone_accelerator": "nvidia-h100-80gb"},
+    "h200-141": {"machine": "a3-ultragpu-8g", "zone_accelerator": "nvidia-h200-141gb"},
+    "b200-180": {"machine": "a4-highgpu-8g", "zone_accelerator": "nvidia-b200"},
+    "gb200-186": {"machine": "a4x-highgpu-4g", "zone_accelerator": "nvidia-gb200"},
 }
+
+
+@dataclass(frozen=True)
+class Preflight:
+    """Whether a burst can actually be provisioned, asked *before* the money.
+
+    Split deliberately into two lists. ``blockers`` are refusals backed by
+    positive evidence — the zone's own catalogue does not carry the part, or a
+    published quota is smaller than the order. ``warnings`` are the things that
+    could not be established either way; they belong in front of the person
+    making the decision, not in a refusal, because refusing on an absent reading
+    is just a confident guess pointed the other way.
+    """
+
+    blockers: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.blockers
 
 #: A GPU image, not a bare OS — a plain Debian instance has no CUDA driver and a
 #: burst that boots without one has burned money to do nothing.
@@ -272,6 +324,80 @@ class GcpBurstProvider:
         else:
             machine = template.format(n=chip_count)
         return machine, shape.get("accelerator"), chip_count
+
+    def preflight(self, accelerator_id: str, chip_count: int) -> Preflight:
+        """Ask the person's own project whether this burst could actually run.
+
+        Two questions the catalog cannot answer, because they are about *this*
+        project and *this* zone rather than about what NVIDIA makes:
+
+        1. **Does the zone carry the part at all?** The provider pins zone ``-a``
+           of the configured region, and the answer is genuinely no for some of
+           the catalog: on 2026-09-04 ``us-central1-a`` carried GB200 and H100
+           but neither H200 nor B200, while the recommender will quote both at
+           $88 and $110 an hour. Without this the burst is approved, billed, and
+           *then* rejected for an invalid accelerator type.
+        2. **Is there spot quota for the order?** A published limit below the
+           chip count is a certain ``QUOTA_EXCEEDED``. ``hushh-pda-dev`` has a
+           limit of 0 for A100-80GB while happily quoting it.
+
+        Never raises: a pre-flight that fails closed on a network hiccup would
+        block a burst the person could have run. Anything unreadable becomes a
+        warning.
+        """
+        shape = _GCP_SHAPES.get(accelerator_id)
+        if shape is None:
+            return Preflight(blockers=(f"'{accelerator_id}' has no Compute Engine shape.",))
+
+        blockers: list[str] = []
+        warnings: list[str] = []
+        try:
+            session, ref = self._authed_session()
+        except Exception as exc:
+            return Preflight(warnings=(f"Could not check your project: {exc}",))
+
+        zone = f"{ref.region}-a"
+        part = str(shape["zone_accelerator"])
+        try:
+            url = f"{self._API_ROOT}/projects/{ref.project}/zones/{zone}/acceleratorTypes/{part}"
+            r = session.get(url, timeout=60)
+            if r.status_code == 404:
+                blockers.append(
+                    f"{part} is not offered in {zone}. The burst would be rejected "
+                    "after you approved it. Pick a different accelerator, or a "
+                    "region whose first zone carries this part."
+                )
+            elif r.status_code >= 400:
+                warnings.append(f"Could not confirm {part} is offered in {zone}.")
+        except Exception as exc:
+            warnings.append(f"Could not confirm {part} is offered in {zone}: {exc}")
+
+        metric = shape.get("quota_metric")
+        if metric is None:
+            warnings.append(
+                f"Compute Engine publishes no spot-quota figure for {part}, so the "
+                "quota could not be checked. If your project has none, the burst "
+                "will fail with QUOTA_EXCEEDED and nothing will be billed."
+            )
+        else:
+            try:
+                r = session.get(
+                    f"{self._API_ROOT}/projects/{ref.project}/regions/{ref.region}", timeout=60
+                )
+                quotas = {q["metric"]: q for q in r.json().get("quotas", [])} if r.ok else {}
+                found = quotas.get(str(metric))
+                if found is None:
+                    warnings.append(f"{metric} is not published for {ref.region}.")
+                elif float(found.get("limit", 0)) < chip_count:
+                    blockers.append(
+                        f"Your spot quota for {part} in {ref.region} is "
+                        f"{found.get('limit', 0):g}; this burst needs {chip_count}. "
+                        "Request more quota, or choose a smaller part."
+                    )
+            except Exception as exc:
+                warnings.append(f"Could not read your {metric} quota: {exc}")
+
+        return Preflight(blockers=tuple(blockers), warnings=tuple(warnings))
 
     def provision(self, spec: InstanceSpec) -> InstanceHandle:
         machine, accelerator_type, chips = self.resolve_shape(

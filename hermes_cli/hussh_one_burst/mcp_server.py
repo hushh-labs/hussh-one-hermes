@@ -316,6 +316,25 @@ def _build_server():
                     "advice": "Nothing was provisioned and nothing was billed.",
                 }
 
+        # Third pre-flight, and the only one that asks the person's own project
+        # rather than the catalog: is this part offered in the zone we pin, and
+        # is there spot quota for the order? Both are refusals a person would
+        # otherwise receive *after* approving the spend.
+        caveats: tuple[str, ...] = ()
+        checker = getattr(backend, "preflight", None)
+        if callable(checker):
+            flight = checker(rec.accel.id, rec.count)
+            if not flight.ok:
+                return {
+                    "success": False,
+                    "status": "not_provisionable",
+                    "workload": label,
+                    "reason": " ".join(flight.blockers),
+                    "notes": list(flight.warnings),
+                    "advice": "Nothing was provisioned and nothing was billed.",
+                }
+            caveats = tuple(flight.warnings)
+
         total = round(rec.usd_per_hour * (runtime_min / 60.0), 2) if runtime_min else None
 
         message = (
@@ -328,6 +347,10 @@ def _build_server():
             f"Destination: {backend.describe_destination()}\n"
             "The instance is torn down when the job finishes, fails, or hits its "
             "deadline. You are billed by your own cloud provider."
+            # What the pre-flight could not establish goes in front of the person,
+            # not into a log. Refusing on an unreadable check would be a guess;
+            # approving silently would be one too.
+            + ("\n\nCould not confirm: " + " ".join(caveats) if caveats else "")
         )
         decision = await ctx.elicit(message=message, schema=BurstApproval)
         if decision.action != "accept":
