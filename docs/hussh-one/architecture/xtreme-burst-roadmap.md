@@ -256,18 +256,19 @@ while inside the same run every `ubuntu-latest` and `macos-latest` job is assign
 **2–9 seconds** and finishes. They do not time out; they simply never start.
 
 **Now measured, not inferred.** The API came back at 16:24Z after roughly eleven hours of
-`invalid session`, and both jobs from the 1h43m run (`33850894288`, head `68e73068e`) read
-identically:
+`invalid session`. Two runs read identically, and the second is the strongest evidence in
+this whole workstream:
 
 ```
-Python tests / Run tests          ubuntu-latest-96-core
-OS-specific tests / Windows-only  windows-latest-32-core
-  created_at   2026-09-04T07:55:26Z
-  completed_at 2026-09-04T09:38:06Z      conclusion: cancelled
+run 33850894288 (68e73068e)   both jobs   07:55:26Z -> 09:38:06Z   1h42m40s
+run 33859313405 (ac4498cdf)   both jobs   09:38:44Z -> 16:26:53Z   6h48m09s
+  labels: ubuntu-latest-96-core / windows-latest-32-core
   runner_id 0   runner_name ""   runner_group_id 0   runner_group_name ""
+  conclusion: cancelled
 ```
 
-**1h42m40s, no runner ever assigned.** That settles it at the level the evidence allows.
+**Six hours and forty-eight minutes without a runner**, ending nine seconds after a push —
+the seventh instance of that signature. That settles it at the level the evidence allows.
 The alternative worth ruling out — that they were eventually assigned runners and simply
 ran long — is refuted outright: a job that ran would carry a runner id and steps, and these
 carry neither.
