@@ -191,7 +191,15 @@ def test_matched_never_costs_more_than_the_biggest_box() -> None:
     matched = next(r for r in rows if r.role == "matched")
     oversized = next(r for r in rows if r.role == "oversized")
     assert matched.feasible is True
-    assert matched.cost_usd <= oversized.cost_usd
+    # A naive pick can now be INFEASIBLE rather than merely expensive: the
+    # biggest box (GB200 NVL) is sold in fours, so it cannot satisfy an 8x
+    # parallel floor at all. An infeasible row has no cost to compare against,
+    # and treating None as "cheaper" is how a comparison silently inverts.
+    if oversized.feasible:
+        assert matched.cost_usd <= oversized.cost_usd
+    else:
+        assert oversized.cost_usd is None
+        assert "cannot meet" in oversized.note
 
 
 def test_cheap_pick_is_shown_as_infeasible_when_it_cannot_fit() -> None:
@@ -273,3 +281,51 @@ def test_every_preset_produces_a_decision_on_a_phone(preset) -> None:
             preset.estimate.vram_gb, preset.accelerator_kind, preset.parallel_chips
         )
         assert rec.usd_per_hour > 0
+
+
+def test_every_benchmark_row_prices_a_machine_that_can_be_bought() -> None:
+    """The benchmark table is the artifact a person reads before approving spend.
+
+    It carried the same per-chip pricing bug as the recommender, so the
+    comparison a person was asked to audit priced configurations no cloud sells.
+    """
+    for vram in (8, 40, 90, 160, 220, 400, 900):
+        for parallel in (1, 2, 8):
+            for kind in ("gpu", "tpu"):
+                for row in benchmark_hardware(float(vram), kind, parallel, 60):
+                    if not row.feasible:
+                        continue
+                    accel = next(c for c in ACCEL_CATALOG if c.label in row.label)
+                    assert row.count in accel.sellable_chips, (
+                        f"{vram}GB {kind} x{parallel}: {row.label} "
+                        f"but {accel.id} sells {accel.sellable_chips}"
+                    )
+
+
+def test_matched_is_never_beaten_on_total_cost_by_either_naive_pick() -> None:
+    """The recommendation must be the cheapest way to finish the job.
+
+    It was not: ranking scored a candidate on the chips it needed while billing
+    for the chips the parallelism floor forced, so an 8x A100-80 quote beat a
+    GB200 node that finished six times sooner for less money in total.
+    """
+    for vram in (40, 90, 160, 220, 400):
+        for parallel in (1, 2, 8):
+            rows = benchmark_hardware(float(vram), "gpu", parallel, 240)
+            matched = next(r for r in rows if r.role == "matched")
+            assert matched.feasible
+            for other in rows:
+                if other.role == "matched" or not other.feasible:
+                    continue
+                assert matched.cost_usd <= other.cost_usd + 1e-6, (
+                    f"{vram}GB x{parallel}: matched {matched.label} at "
+                    f"{matched.cost_usd} loses to {other.label} at {other.cost_usd}"
+                )
+
+
+def test_a_coinciding_naive_pick_is_labelled_rather_than_duplicated() -> None:
+    rows = benchmark_hardware(220, "gpu", 8, 240)
+    matched = next(r for r in rows if r.role == "matched")
+    for other in rows:
+        if other.role != "matched" and other.feasible and other.label == matched.label:
+            assert "same as One's choice" in other.note

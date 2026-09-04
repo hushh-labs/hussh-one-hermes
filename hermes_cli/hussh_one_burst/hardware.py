@@ -69,7 +69,22 @@ def recommend_hardware(
     parallel_chips: int = 1,
 ) -> HardwareRecommendation:
     """Pick the accelerator class with the best performance-per-dollar that fits."""
-    candidates = [c for c in ACCEL_CATALOG if c.kind == kind]
+    # ``parallel_chips`` is a FLOOR the caller asked for, so a class that cannot
+    # be bought in that quantity is not a cheaper answer — it is a different,
+    # smaller one. Filtering here keeps the recommendation and the comparison
+    # table arguing about the same set of machines.
+    #
+    # Known modelling limit: ``perf`` is per-chip and runtime does not scale with
+    # count, so extra chips buy memory and parallel capacity, never wall-clock.
+    # Making them buy time would mean inventing a scaling curve the catalog has
+    # no ground truth for.
+    candidates = [
+        c
+        for c in ACCEL_CATALOG
+        if c.kind == kind and max(c.sellable_chips) >= max(1, parallel_chips)
+    ]
+    if not candidates:
+        candidates = [c for c in ACCEL_CATALOG if c.kind == kind]
 
     best: tuple[AcceleratorClass, int, float] | None = None
     for c in candidates:
@@ -77,10 +92,18 @@ def recommend_hardware(
         mem_chips = _round_up_to_sellable(needed, c.sellable_chips)
         if mem_chips is None or mem_chips > MAX_CHIPS:
             continue  # this job can't fit one node of this class
-        # Rank on what the person would actually be billed. Ranking on the chips
-        # a job *needs* rather than the chips a cloud *sells* made whole-node
-        # parts look eight times cheaper than they are, and they won every time.
-        proxy = (c.usd_per_hour_per_chip * mem_chips) / c.perf
+        # Score the configuration this candidate would actually be SOLD as,
+        # parallelism floor included. Scoring `mem_chips` while returning
+        # `max(mem_chips, parallel)` ranked one machine and delivered another:
+        # at parallel=8 an A100-80 was scored on 4 chips and billed for 8, and
+        # since `perf` is per-chip those extra chips bought memory, not speed.
+        # The result beat a GB200 node that finished six times sooner for less
+        # money in total.
+        billed = _clamp(max(mem_chips, parallel_chips), 1, MAX_CHIPS)
+        billed = _round_up_to_sellable(billed, c.sellable_chips) or max(c.sellable_chips)
+        # Total job cost is rate over throughput: time scales as 1/perf, so
+        # minimising this minimises what the person actually pays.
+        proxy = (c.usd_per_hour_per_chip * billed) / c.perf
         if best is None or proxy < best[2]:
             best = (c, mem_chips, proxy)
 
@@ -131,16 +154,30 @@ def _row_for(
     role: str,
     note: str,
 ) -> BenchmarkRow:
-    mem_chips = max(1, _ceil_div(vram_gb, c.mem_gb_per_chip))
-    if mem_chips > MAX_CHIPS:
+    if max(c.sellable_chips) < max(1, parallel):
         return BenchmarkRow(
             role=role,  # type: ignore[arg-type]
             label=c.label,
-            count=mem_chips,
+            count=max(c.sellable_chips),
             feasible=False,
-            note=f"won't fit on one node (needs {mem_chips}× {c.label})",
+            note=f"sold in at most {max(c.sellable_chips)}× — cannot meet {parallel}× parallel",
+        )
+    needed = max(1, _ceil_div(vram_gb, c.mem_gb_per_chip))
+    # Same rule as recommend_hardware: this table is the artifact a person reads
+    # before approving spend, so every row has to price a machine that can
+    # actually be bought. Rounding here and not there would put two different
+    # numbers in front of the same decision.
+    mem_chips = _round_up_to_sellable(needed, c.sellable_chips)
+    if mem_chips is None or mem_chips > MAX_CHIPS:
+        return BenchmarkRow(
+            role=role,  # type: ignore[arg-type]
+            label=c.label,
+            count=needed,
+            feasible=False,
+            note=f"won't fit on one node (needs {needed}× {c.label})",
         )
     count = _clamp(max(mem_chips, parallel), 1, MAX_CHIPS)
+    count = _round_up_to_sellable(count, c.sellable_chips) or max(c.sellable_chips)
     runtime_min = runtime_min_on_matched * (matched_perf / c.perf)
     wall_minutes = _round2(runtime_min + _OVERHEAD_SEC / 60)
     return BenchmarkRow(
@@ -169,11 +206,24 @@ def benchmark_hardware(
     matched = recommend_hardware(vram_gb, kind, parallel)
     cheapest = sorted(fam, key=lambda c: c.usd_per_hour_per_chip)[0]
     fastest = sorted(fam, key=lambda c: c.perf, reverse=True)[0]
+    # Once ranking accounts for whole-node pricing, the best value genuinely IS
+    # the biggest box for some jobs. Say so, rather than printing the same
+    # machine twice and leaving the reader to notice.
+    cheap_note = (
+        "same as One's choice — the cheapest chip is also the best value here"
+        if cheapest.id == matched.accel.id
+        else "naive cheap pick"
+    )
+    big_note = (
+        "same as One's choice — the biggest box is also the best value here"
+        if fastest.id == matched.accel.id
+        else "naive 'biggest box' pick"
+    )
     return [
         _row_for(cheapest, vram_gb, parallel, runtime_min_on_matched, matched.accel.perf,
-                 "undersized", "naive cheap pick"),
+                 "undersized", cheap_note),
         _row_for(matched.accel, vram_gb, parallel, runtime_min_on_matched, matched.accel.perf,
                  "matched", "One's choice — perf/$ that fits"),
         _row_for(fastest, vram_gb, parallel, runtime_min_on_matched, matched.accel.perf,
-                 "oversized", "naive 'biggest box' pick"),
+                 "oversized", big_note),
     ]
