@@ -414,3 +414,91 @@ def test_a_gcp_unsupported_accelerator_is_refused_before_approval():
     assert payload["status"] == "unsupported_hardware"
     assert "TPU" in payload["reason"]
     assert "nothing was billed" in payload["advice"].lower()
+
+
+# --------------------------------------------------------------------------
+# Teardown confirms absence, rather than trusting an accepted delete
+# --------------------------------------------------------------------------
+
+
+def _gcp_with_fake_session(responses, **kw):
+    """A GcpBurstProvider whose session returns scripted GET status codes."""
+    from unittest.mock import MagicMock, patch
+
+    provider = GcpBurstProvider(
+        project="p", region="us-central1", sleep=lambda _s: None, **kw
+    )
+    session = MagicMock()
+    session.delete.return_value = MagicMock(status_code=200)
+    session.get.side_effect = [MagicMock(status_code=code) for code in responses]
+    ref = MagicMock(project="p", region="us-central1")
+    return provider, session, patch.object(
+        provider, "_authed_session", return_value=(session, ref)
+    )
+
+
+def test_teardown_waits_until_the_instance_is_actually_gone():
+    """Verified against real GCP: delete is asynchronous.
+
+    The first live burst reported torn_down=true while the instance was still
+    STAGING with a T4 attached and billing.
+    """
+    from hermes_cli.hussh_one_burst.providers import InstanceHandle
+
+    provider, session, ctx = _gcp_with_fake_session([200, 200, 404])
+    handle = InstanceHandle(id="i-1", destination="p/us-central1-a", detail={"zone": "us-central1-a"})
+    with ctx:
+        assert provider.teardown(handle) is True
+    assert handle.torn_down
+    assert session.get.call_count == 3
+
+
+def test_teardown_that_cannot_confirm_reports_a_leak_rather_than_success():
+    from hermes_cli.hussh_one_burst.providers import InstanceHandle
+
+    ticks = iter([0.0, 1.0, 2.0, 999.0])
+    provider, _session, ctx = _gcp_with_fake_session(
+        [200] * 10, teardown_confirm_seconds=10.0, clock=lambda: next(ticks)
+    )
+    handle = InstanceHandle(id="i-2", destination="p/us-central1-a", detail={"zone": "us-central1-a"})
+    with ctx, pytest.raises(RuntimeError, match="still present"):
+        provider.teardown(handle)
+    assert handle.torn_down is False
+
+
+def test_an_unconfirmed_teardown_surfaces_on_the_receipt_as_a_leak():
+    """The receipt must say "I do not know this is off", not claim release."""
+    from unittest.mock import MagicMock, patch
+
+    ticks = iter([0.0, 999.0])
+    provider = GcpBurstProvider(
+        project="p", region="us-central1", teardown_confirm_seconds=1.0,
+        clock=lambda: next(ticks), sleep=lambda _s: None,
+    )
+    session = MagicMock()
+    session.post.return_value = MagicMock(status_code=200)
+    session.delete.return_value = MagicMock(status_code=200)
+    session.get.return_value = MagicMock(status_code=200)  # never disappears
+    ref = MagicMock(project="p", region="us-central1")
+    with patch.object(provider, "_authed_session", return_value=(session, ref)):
+        receipt = run_burst(
+            BurstRequest("job", "nvidia-t4", 1, 0.35, 5.0), provider
+        )
+    assert receipt.leaked_instance
+    assert "still present" in (receipt.teardown_error or "")
+    assert "billing" in receipt.as_dict()["warning"]
+
+
+def test_a_delete_that_returns_404_is_already_gone_and_needs_no_polling():
+    from unittest.mock import MagicMock, patch
+
+    from hermes_cli.hussh_one_burst.providers import InstanceHandle
+
+    provider = GcpBurstProvider(project="p", region="us-central1")
+    session = MagicMock()
+    session.delete.return_value = MagicMock(status_code=404)
+    ref = MagicMock(project="p", region="us-central1")
+    handle = InstanceHandle(id="i-3", destination="p/us-central1-a", detail={"zone": "us-central1-a"})
+    with patch.object(provider, "_authed_session", return_value=(session, ref)):
+        assert provider.teardown(handle) is True
+    session.get.assert_not_called()

@@ -22,9 +22,10 @@ than a failed burst is an accelerator nobody remembers to switch off.
 from __future__ import annotations
 
 import itertools
+import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
 from .credentials import CredentialRef, resolve_credentials, resolve_region
 
@@ -132,8 +133,19 @@ _GCP_SHAPES: dict[str, dict[str, Any]] = {
 
 #: A GPU image, not a bare OS — a plain Debian instance has no CUDA driver and a
 #: burst that boots without one has burned money to do nothing.
+#:
+#: **This family rots.** Google retires Deep Learning VM families as CUDA versions
+#: age, and a retired family is a 404 at provision time — the first value written
+#: here (``common-cu123-debian-11``) was already gone when it was first checked
+#: against the live API. Verify before relying on it:
+#:
+#:     GET compute/v1/projects/deeplearning-platform-release/global/images/family/<family>
+#:
+#: Verified present 2026-08-08. Override per call with ``image=`` rather than
+#: editing this when a specific CUDA version is needed.
 _DEFAULT_IMAGE = (
-    "projects/deeplearning-platform-release/global/images/family/common-cu123-debian-11"
+    "projects/deeplearning-platform-release/global/images/family/"
+    "common-cu129-ubuntu-2204-nvidia-580"
 )
 
 
@@ -164,12 +176,20 @@ class GcpBurstProvider:
         sa_key: Optional[str] = None,
         image: str = _DEFAULT_IMAGE,
         boot_disk_gb: int = 200,
+        teardown_confirm_seconds: float = 300.0,
+        teardown_poll_seconds: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._sa_key = sa_key
         self._project = project
         self._region = resolve_region(region)
         self._image = image
         self._boot_disk_gb = boot_disk_gb
+        self._confirm_seconds = teardown_confirm_seconds
+        self._poll_seconds = teardown_poll_seconds
+        self._clock = clock
+        self._sleep = sleep
         self._ref: Optional[CredentialRef] = None
 
     @property
@@ -290,16 +310,48 @@ class GcpBurstProvider:
         )
 
     def teardown(self, handle: InstanceHandle) -> bool:
+        """Delete the instance and CONFIRM it is gone before saying so.
+
+        ``instances.delete`` returns a long-running Operation: a 2xx means the
+        request was accepted, not that anything has been released. Verified
+        against real GCP on 2026-08-08 — the first live burst reported
+        ``torn_down: true`` while the instance was still STAGING with a T4
+        attached and billing. It did delete about ninety seconds later, but the
+        receipt had already claimed a release that had not happened, which is
+        exactly the state this whole design exists to make impossible.
+
+        So the contract here is "confirmed absent", not "delete accepted". If it
+        cannot be confirmed inside ``teardown_confirm_seconds`` this raises,
+        which surfaces as ``leaked_instance`` on the receipt with the instance
+        named — an honest "I do not know that this is off" rather than a
+        comfortable lie.
+        """
         session, ref = self._authed_session()
         zone = handle.detail.get("zone") or f"{ref.region}-a"
         url = f"{self._API_ROOT}/projects/{ref.project}/zones/{zone}/instances/{handle.id}"
+
         response = session.delete(url, timeout=60)
         # 404 means someone or something already released it. That is success:
         # the invariant is "not running", not "deleted by us".
-        if response.status_code == 404 or response.status_code < 400:
+        if response.status_code == 404:
             handle.torn_down = True
             return True
-        raise RuntimeError(f"Could not tear down {handle.id}: {response.text[:200]}")
+        if response.status_code >= 400:
+            raise RuntimeError(f"Could not tear down {handle.id}: {response.text[:200]}")
+
+        deadline = self._clock() + self._confirm_seconds
+        while self._clock() < deadline:
+            check = session.get(url, timeout=60)
+            if check.status_code == 404:
+                handle.torn_down = True
+                return True
+            self._sleep(self._poll_seconds)
+
+        raise RuntimeError(
+            f"Delete was accepted but {handle.id} is still present after "
+            f"{self._confirm_seconds:g}s. It may still be billing — check "
+            f"{ref.project}/{zone} in the Cloud console."
+        )
 
 
 def resolve_provider(
