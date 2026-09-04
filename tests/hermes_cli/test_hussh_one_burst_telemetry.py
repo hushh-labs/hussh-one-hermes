@@ -287,3 +287,67 @@ def test_measure_device_never_raises_and_is_self_consistent():
 @pytest.mark.parametrize("path", ["/", "/definitely/not/a/path/9c3f"])
 def test_measure_device_survives_a_bad_disk_path(path):
     assert measure_device(path).disk_free_gb >= 0.0
+
+
+# --------------------------------------------------------------------------
+# CPU load: unknown is not idle
+# --------------------------------------------------------------------------
+
+
+def test_the_first_cpu_sample_reports_unknown_rather_than_zero():
+    """`cpu_percent(interval=None)` has no baseline on its first call.
+
+    Verified against psutil 7.2.2: a process pegged at 100% reports `0.0` first
+    and `100.0` second. In a long-lived MCP server the first call is the one a
+    person is most likely to see, so a fabricated `0.0` would show a busy
+    machine as idle. `throttled` already draws this distinction — unknown is
+    not healthy — and this now draws it too.
+    """
+    import hermes_cli.hussh_one_burst.telemetry as tel
+
+    class _Psutil:
+        def __init__(self):
+            self.calls = 0
+
+        def cpu_percent(self, interval=None):
+            self.calls += 1
+            return 0.0 if self.calls == 1 else 87.5
+
+    fake = _Psutil()
+    tel._cpu_primed = False
+    try:
+        assert tel._sample_cpu_load(fake) is None, "the baseline call is not a reading"
+        assert tel._sample_cpu_load(fake) == 87.5
+        assert fake.calls == 2, "the baseline still has to be taken, not skipped"
+    finally:
+        tel._cpu_primed = False
+
+
+def test_an_unreadable_cpu_sample_is_none_and_does_not_prime():
+    """A probe that raised took no baseline, so the next call is still the first."""
+    import hermes_cli.hussh_one_burst.telemetry as tel
+
+    class _Broken:
+        def cpu_percent(self, interval=None):
+            raise OSError("no /proc")
+
+    tel._cpu_primed = False
+    try:
+        assert tel._sample_cpu_load(_Broken()) is None
+        assert tel._cpu_primed is False
+    finally:
+        tel._cpu_primed = False
+
+
+def test_a_real_measurement_never_reports_a_load_it_did_not_take():
+    """End to end on this machine: whatever comes back is None or plausible."""
+    import hermes_cli.hussh_one_burst.telemetry as tel
+
+    tel._cpu_primed = False
+    try:
+        first = measure_device().cpu_load_pct
+        assert first is None, "the first measurement in a process cannot know the load"
+        second = measure_device().cpu_load_pct
+        assert second is None or 0.0 <= second <= 100.0
+    finally:
+        tel._cpu_primed = False

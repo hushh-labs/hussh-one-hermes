@@ -84,7 +84,7 @@ things are still true and matter more than the green cells below:
 | 3.1 `psutil` available | ✅ pinned 7.2.2 | present | none | — |
 | 3.2 Power / battery sensing | ✅ feeds advisories, which now **accumulate** | usable signal | advises, never decides — placement ignores power | Decide whether power should bind placement |
 | 3.3 System RAM headroom | ✅ measured 15.09GB available here | queryable free RAM | none | — |
-| 3.4 CPU load sampling | ✅ non-blocking `cpu_percent` | rolling load | none | — |
+| 3.4 CPU load sampling | ✅ non-blocking; **first sample reports unknown, not `0.0`** | rolling load | displayed only — placement ignores it | Decide whether load should bind placement |
 | 3.5 GPU / VRAM detection | ⚠️ **written, never seen a real GPU** | measured VRAM | nvidia-smi and Apple paths unit-tested by injection only | Run on a machine with an accelerator |
 | 3.6 Thermal / throttle | ⚠️ **written, returned `None` here** | detect throttling | no real reading observed | Same |
 

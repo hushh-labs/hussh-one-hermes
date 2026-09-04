@@ -25,7 +25,7 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from .types import DeviceProfile
 
@@ -275,6 +275,37 @@ def _detect_online() -> bool:
     return False
 
 
+#: Whether ``psutil.cpu_percent`` has been primed in this process.
+#:
+#: ``cpu_percent(interval=None)`` reports load *since the previous call*, so the
+#: first call in a process has nothing to compare against and returns ``0.0`` —
+#: verified against psutil 7.2.2: a machine pegged at 100% reports ``0.0`` first
+#: and ``100.0`` second.  A long-lived MCP server makes that first call the one a
+#: person is most likely to see.
+_cpu_primed = False
+
+
+def _sample_cpu_load(psutil: Any) -> Optional[float]:
+    """Current CPU load, or ``None`` when it is not yet knowable.
+
+    Reports ``None`` rather than the ``0.0`` psutil hands back before it has a
+    baseline, for the same reason :attr:`MeasuredDevice.throttled` does: unknown
+    is not the same as idle, and a caller must be able to tell them apart.  A
+    blocking sample would buy a real first reading, but it would also put its
+    interval on the wall-clock of every placement decision.
+    """
+    global _cpu_primed
+    try:
+        value = psutil.cpu_percent(interval=None)
+    except Exception:
+        return None
+    if not _cpu_primed:
+        # That call was the baseline, not a reading.
+        _cpu_primed = True
+        return None
+    return value
+
+
 def measure_device(disk_path: str = "/") -> MeasuredDevice:
     """Measure this machine.  Never raises; degrades to conservative numbers.
 
@@ -291,12 +322,7 @@ def measure_device(disk_path: str = "/") -> MeasuredDevice:
         import psutil
 
         cpu_cores = psutil.cpu_count(logical=False) or psutil.cpu_count() or 0
-        try:
-            # Non-blocking: the value since the previous call.  A blocking
-            # sample would make placement cost a second of wall-clock.
-            cpu_load = psutil.cpu_percent(interval=None)
-        except Exception:
-            cpu_load = None
+        cpu_load = _sample_cpu_load(psutil)
         mem = psutil.virtual_memory()
         ram_total = mem.total / _GB
         ram_avail = mem.available / _GB
