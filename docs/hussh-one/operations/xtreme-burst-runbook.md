@@ -55,6 +55,36 @@ creds, ref = resolve_credentials(project=P, region="us-central1")
 print(ref.project, ref.region, ref.source)                              # never print creds
 ```
 
+`hussh_burst_run` now runs the first, third and fourth of these itself, before the
+approval prompt — `GcpBurstProvider.preflight` checks the zone and the spot quota and
+refuses with `not_provisionable` rather than taking an approval it cannot honour. Run
+these by hand when you want to know *why*, or when checking a project the tool has not
+touched:
+
+```python
+from hermes_cli.hussh_one_burst.providers import GcpBurstProvider
+f = GcpBurstProvider(project=P, region="us-central1").preflight("b200-180", 8)
+print(f.ok, f.blockers, f.warnings)
+```
+
+**What that returns in `hushh-pda-dev` today (checked 2026-09-04)** — this is a live
+project's answer, not a worked example:
+
+| Order | Result |
+|---|---|
+| `nvidia-t4` × 1 | ok |
+| `nvidia-t4` × 8 | **refused** — spot quota is 4 |
+| `a100-80` × 2 | **refused** — spot quota is 0 |
+| `h200-141` × 8 | **refused** — `nvidia-h200-141gb` is not offered in `us-central1-a` |
+| `b200-180` × 8 | **refused** — `nvidia-b200` is not offered in `us-central1-a` |
+| `h100-80` × 8 | ok, with a caveat |
+| `gb200-186` × 4 | ok, with a caveat |
+
+The caveat on the last two is not a quirk: **Compute v1 publishes no spot-quota metric for
+H100 or anything newer** — checked across five regions, not one lists them, because those
+quotas moved to the Cloud Quotas API. The pre-flight says so rather than reading the
+absence as a zero and refusing a burst that might have run.
+
 ## Running one
 
 Default provider is `mock` — real spend is opt-in, and that is deliberate.
@@ -112,6 +142,11 @@ confirmed gone. `as_dict()` carries a `warning` naming the instance and where to
    ```
 2. Poll until `404`. Do not assume the delete took.
 3. Sweep for anything labelled `app=hussh-one-burst` — the label exists for exactly this.
+   ```python
+   r = session.get(f"{B}/projects/{P}/aggregated/instances",
+                   params={"filter": 'labels.app="hussh-one-burst"'})
+   ```
+   Verified against `hushh-pda-dev` on 2026-09-04: `200`, zero strays.
 4. Only then work out why confirmation failed.
 
 A burst whose teardown could not be confirmed is an **incident**, not a warning. The cost

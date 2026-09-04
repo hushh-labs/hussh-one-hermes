@@ -205,7 +205,7 @@ $84/hr, ~$126 total.
 | 9.1 Reachable by a person | ✅ 5 MCP tools | 1 entry point | none | — |
 | 9.2 Consent + audit receipts | ⚠️ receipts now **durable**, append-only | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
-| 9.4 Ops runbook | ✅ [runbook](../operations/xtreme-burst-runbook.md) written from the live burst | runbook + teardown drill | none | Re-check pre-flight list after each real run |
+| 9.4 Ops runbook | ✅ **its snippets were run**, not just written | runbook + teardown drill | the `run` snippet costs money, so it is the one still unexercised as written | Re-run the checks after each real burst |
 | 9.5 Privacy invariant | ✅ pinned token-by-token across a whole burst | holds every phase | none | Re-check when payload transfer (2.5) lands |
 
 The privacy invariant got three new guards: measurement is isolated in one module,
