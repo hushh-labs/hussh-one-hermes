@@ -255,10 +255,29 @@ finding required a push, which ends it. The next quiet interval extends the numb
 while inside the same run every `ubuntu-latest` and `macos-latest` job is assigned one in
 **2–9 seconds** and finishes. They do not time out; they simply never start.
 
-**What remains unknown:** *why* no runner arrives. That needs `runner_id` from
-`GET /actions/jobs/{id}`, and the GitHub API has been returning `invalid session` since
-roughly 05:35Z. Capacity for `ubuntu-latest-96-core` / `windows-latest-32-core` remains the
-best reading, and it is a reading, not a measurement.
+**Now measured, not inferred.** The API came back at 16:24Z after roughly eleven hours of
+`invalid session`, and both jobs from the 1h43m run (`33850894288`, head `68e73068e`) read
+identically:
+
+```
+Python tests / Run tests          ubuntu-latest-96-core
+OS-specific tests / Windows-only  windows-latest-32-core
+  created_at   2026-09-04T07:55:26Z
+  completed_at 2026-09-04T09:38:06Z      conclusion: cancelled
+  runner_id 0   runner_name ""   runner_group_id 0   runner_group_name ""
+```
+
+**1h42m40s, no runner ever assigned.** That settles it at the level the evidence allows.
+The alternative worth ruling out — that they were eventually assigned runners and simply
+ran long — is refuted outright: a job that ran would carry a runner id and steps, and these
+carry neither.
+
+**What is still a reading rather than a measurement:** *why*. `runner_group_id: 0` on an
+unassigned job is an unset field, not the identity of a misconfigured group, so it names no
+culprit. Capacity or runner-group configuration on those two labels remains the best
+explanation — the label is the only variable, and every `ubuntu-latest` and `macos-latest`
+job in the same run was assigned within 2–9 seconds — but nothing in the API confirms the
+cause, only the effect.
 
 **What I withdrew:** that fixing the inherited lint failures would not free the test jobs.
 That came from the imaginary 18-minute run. It is now moot in the other direction — the
