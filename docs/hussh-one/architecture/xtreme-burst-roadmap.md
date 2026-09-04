@@ -180,12 +180,28 @@ change needed.
 |---|---|---|---|---|
 | 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
 | 7.2 Mock provider | ✅ credential-free — **proven with the environment stripped** | testable path | none | — |
-| 7.3 CI coverage | ❌ **PR cannot reach green** | green in CI | required test jobs are *cancelled* at 31min — runners never assigned | Needs org access: runner capacity |
+| 7.3 CI coverage | ❌ **PR cannot reach green**; the suite was run locally instead | green in CI | required test jobs are *cancelled* at 31min — runners never assigned | Needs org access: runner capacity |
 | 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
 Verified live on this machine: `device_status` measured 4 cores / 15.09GB available;
 `decide` routed both presets to cloud with coherent reasons; `plan` returned 4× B200 at
 $84/hr, ~$126 total.
+
+### What CI could not tell us, run locally instead
+
+The full suite — 34,424 tests, four ways in parallel — finished at **39,100 passed, 94
+failed across 48 files**. None of the 94 is in a file this workstream authored or touched.
+
+That claim was checked rather than asserted. The 48 failing files were re-run on this
+branch and again on a clean `origin/main` worktree, and the two sorted failure lists are
+**identical — 94 and 94, empty in both directions**. Every failure this branch has,
+`main` has. (An earlier aggregate showed 95 against 94; the sorted sets match, so that was
+one flaky test, not a difference. Counting the totals would have said "one regression";
+diffing the names said what was true.)
+
+The burst suite itself is 173 green, and every burst change in this round is
+mutation-checked — the defect re-introduced, the new test confirmed to fail, the fix
+confirmed to restore it.
 
 ## 8. Performance, cost, and scalability
 
