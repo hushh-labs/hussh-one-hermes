@@ -36,6 +36,7 @@ from .devices import (
 )
 from .execution import BurstReceipt, BurstRequest, run_burst
 from .hardware import ACCEL_CATALOG, MAX_CHIPS, benchmark_hardware, recommend_hardware
+from .ledger import leaked_instances, read_receipts, record_receipt
 from .placement import SAFETY, decide_placement
 from .providers import (
     BurstProvider,
@@ -93,8 +94,11 @@ __all__ = [
     "find_device_profile",
     "find_workload_preset",
     "from_wire",
+    "leaked_instances",
     "measure_device",
+    "read_receipts",
     "recommend_hardware",
+    "record_receipt",
     "resolve_credentials",
     "resolve_provider",
     "run_burst",

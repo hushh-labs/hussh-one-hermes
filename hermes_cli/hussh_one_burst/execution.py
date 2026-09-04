@@ -19,12 +19,15 @@ a complete and honest lifecycle, not a complete product.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .credentials import CredentialRef
 from .providers import BurstProvider, InstanceHandle, InstanceSpec
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -105,14 +108,21 @@ def run_burst(
     execute: Optional[Callable[[InstanceHandle], None]] = None,
     *,
     clock: Callable[[], float] = time.monotonic,
+    record: bool = True,
 ) -> BurstReceipt:
-    """Provision, run, and always release.
+    """Provision, run, always release, and write the receipt down.
 
     ``execute`` is the payload seam. When omitted the instance is provisioned and
     immediately released, which is exactly what the lifecycle tests exercise.
 
     Teardown runs in a ``finally``, so it survives an exception in ``execute``,
     a deadline overrun, and a ``KeyboardInterrupt``.
+
+    ``record`` defaults to True on purpose. A receipt handed to one caller and
+    then dropped is not an audit trail, and the receipts that matter most are the
+    ones reporting a leaked instance — the thing somebody needs to find tomorrow,
+    not the thing they saw once. Recording is best-effort and can never fail the
+    burst; see :mod:`~.ledger`.
     """
     started = clock()
     receipt = BurstReceipt(
@@ -170,6 +180,13 @@ def run_burst(
         if receipt.credential is None:
             receipt.credential = getattr(provider, "credential_ref", None)
         _release(provider, handle, receipt, started, request, clock)
+        if record:
+            from .ledger import record_receipt
+
+            try:
+                record_receipt(receipt)
+            except Exception:  # noqa: BLE001 - bookkeeping never fails a burst
+                _logger.warning("could not record burst receipt", exc_info=True)
 
     return receipt
 

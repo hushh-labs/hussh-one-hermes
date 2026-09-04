@@ -28,6 +28,22 @@ from hermes_cli.hussh_one_burst.providers import (
     resolve_provider,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolated_ledger(tmp_path, monkeypatch):
+    """Keep receipt recording out of the real profile.
+
+    ``run_burst`` records by default — that is the point of the ledger — so
+    without this every test in this file would append to the owner's
+    ``burst-receipts.jsonl``.
+    """
+    import hermes_cli.hussh_one_burst.ledger as ledger
+
+    target = tmp_path / "burst-receipts.jsonl"
+    monkeypatch.setattr(ledger, "default_ledger_path", lambda: target)
+    return target
+
+
 REQUEST = BurstRequest(
     label="test workload",
     accelerator_id="a100-40",

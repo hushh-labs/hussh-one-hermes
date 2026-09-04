@@ -11,7 +11,7 @@ Action, and every number is either counted, measured, or explicitly marked *mode
   husshone surveyed at `80cb297`
 - **Workstreams:** 5 of 6 complete — decision layer, measurement, reachability, ADK
   subagent, execution. Orchestration and persistence remain.
-- **126 tests** (114 Hermes burst, 12 hushh-research), ruff clean. A further **63** were
+- **140 tests** (128 Hermes burst, 12 hushh-research), ruff clean. A further **63** were
   restored to the suite by fixing a collection error that had silently disabled them.
 
 ## What self-review found
@@ -59,13 +59,13 @@ things are still true and matter more than the green cells below:
 
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
-| 1.1 Decision-layer correctness | ✅ 126 tests green | 100% | none | Re-run on every change |
+| 1.1 Decision-layer correctness | ✅ 140 tests green | 100% | none | Re-run on every change |
 | 1.2 Placement rules ported | ✅ 6 rules + two-pool model | parity + discrete GPUs | none | Hold |
 | 1.3 Provenance accuracy | ✅ corrected 2026-08-07 | claims survive checking | none | Keep ported/originating split |
 | 1.4 Design record migrated | ✅ 4 docs + OpenAPI | durable in Hermes | none | — |
 | 1.5 Module is pure (no I/O) | ✅ I/O isolated in `telemetry` | invariant holds | none | **Guard this** |
 
-**Counted:** 2,022 lines across 10 modules in `hermes_cli/hussh_one_burst/`.
+**Counted:** 2,344 lines across 12 modules in `hermes_cli/hussh_one_burst/`.
 
 ## 2. Remaining implementation gaps
 
@@ -73,7 +73,7 @@ things are still true and matter more than the green cells below:
 |---|---|---|---|---|
 | 2.1 Reachability | ✅ 5 MCP tools, registered | ≥1 entry point | none | — |
 | 2.2 Execution layer | ✅ credentials, providers, teardown | provisioning lifecycle | none | — |
-| 2.3 Orchestration + persistence | ❌ none | job store, streams, agent card | full phase | Next phase |
+| 2.3 Orchestration + persistence | ⚠️ receipts persist (`ledger.py`) | job store, streams, agent card | streams + agent card | Build when a caller needs them |
 | 2.4 Repo consolidation | ⚠️ husshone owns v1 | one home | read-only access | Re-attach with push access |
 | 2.5 **Payload transfer** | ⚠️ [design written](./xtreme-burst-payload-transfer.md), not built | workload reaches the instance | consent artifact + 3 open questions need a human | Answer the open questions |
 
@@ -171,7 +171,7 @@ $84/hr, ~$126 total.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 9.1 Reachable by a person | ✅ 5 MCP tools | 1 entry point | none | — |
-| 9.2 Consent + audit receipts | ⚠️ receipt produced by a real burst | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
+| 9.2 Consent + audit receipts | ⚠️ receipts now **durable**, append-only | every offload leaves a receipt | elicitation still unexercised via a real client | Exercise the approval path |
 | 9.3 Secrets posture | ✅ key held one call, never persisted | never persisted | none | Re-audit at first real burst |
 | 9.4 Ops runbook | ✅ [runbook](../operations/xtreme-burst-runbook.md) written from the live burst | runbook + teardown drill | none | Re-check pre-flight list after each real run |
 | 9.5 Privacy invariant | ✅ stronger than before | holds every phase | none | Regression-test each phase |
@@ -181,7 +181,7 @@ reachability is inferred from local link state rather than by contacting a host,
 `InstanceSpec` carries no workload fields by construction — a test asserts its exact
 field set.
 
-**Overall: 83% of 46 KPIs met (33 met, 10 partial, 3 open).** Reachable, measured, safe to
+**Overall: 84% of 46 KPIs met (33 met, 11 partial, 2 open).** Reachable, measured, safe to
 stop, and now quoting hardware that can actually be bought. Not yet proven against a real
 cloud.
 
