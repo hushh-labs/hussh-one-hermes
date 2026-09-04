@@ -44,6 +44,8 @@ from .providers import (
     InstanceHandle,
     InstanceSpec,
     MockBurstProvider,
+    Preflight,
+    SupportsPreflight,
     resolve_provider,
 )
 from .telemetry import GpuInfo, MeasuredDevice, measure_device
@@ -85,7 +87,9 @@ __all__ = [
     "MeasuredDevice",
     "MockBurstProvider",
     "PlacementDecision",
+    "Preflight",
     "PlacementTarget",
+    "SupportsPreflight",
     "WireVocabularyError",
     "WorkloadEstimate",
     "WorkloadPreset",

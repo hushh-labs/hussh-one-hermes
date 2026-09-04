@@ -268,11 +268,11 @@ def _build_server():
         # `us-central1-a` carries neither H200 nor B200, and the recommender
         # quotes both. Credential-free by default: `mock` has no pre-flight, so
         # a plan without a project makes no network call and reads no credential.
-        from .providers import resolve_provider
+        from .providers import SupportsPreflight, resolve_provider
 
-        checker = getattr(resolve_provider(provider, project=project), "preflight", None)
-        if callable(checker):
-            flight = checker(rec.accel.id, rec.count)
+        backend = resolve_provider(provider, project=project)
+        if isinstance(backend, SupportsPreflight):
+            flight = backend.preflight(rec.accel.id, rec.count)
             payload["provisionable"] = {
                 "ok": flight.ok,
                 "blockers": list(flight.blockers),
@@ -297,7 +297,7 @@ def _build_server():
         provider: str = "mock",
     ) -> dict[str, Any]:
         from .execution import BurstRequest, run_burst
-        from .providers import resolve_provider
+        from .providers import SupportsPreflight, resolve_provider
 
         estimate, kind, chips, runtime_min, label = _estimate_from(
             preset_id, vram_gb, None, None, minutes
@@ -341,9 +341,8 @@ def _build_server():
         # is there spot quota for the order? Both are refusals a person would
         # otherwise receive *after* approving the spend.
         caveats: tuple[str, ...] = ()
-        checker = getattr(backend, "preflight", None)
-        if callable(checker):
-            flight = checker(rec.accel.id, rec.count)
+        if isinstance(backend, SupportsPreflight):
+            flight = backend.preflight(rec.accel.id, rec.count)
             if not flight.ok:
                 return {
                     "success": False,

@@ -53,8 +53,30 @@ class InstanceHandle:
 
 
 @runtime_checkable
+class SupportsPreflight(Protocol):
+    """Optional: a backend that can ask the person's project before it spends.
+
+    Deliberately *not* part of :class:`BurstProvider`. A mock has no project to
+    ask, and requiring the method would make the credential-free path implement
+    a network call it cannot make. But it must be declared somewhere, because
+    the alternative — the ``getattr(backend, "preflight", None)`` this replaces —
+    is an interface nobody implementing a second cloud can discover. A provider
+    written faithfully against the base Protocol would silently skip the check
+    and let a person approve hardware their project cannot get, which is the
+    exact failure ``preflight`` exists to prevent.
+    """
+
+    def preflight(self, accelerator_id: str, chip_count: int) -> "Preflight": ...
+
+
+@runtime_checkable
 class BurstProvider(Protocol):
-    """The contract every cloud backend implements."""
+    """The contract every cloud backend implements.
+
+    A backend may additionally implement :class:`SupportsPreflight`, which the
+    burst tools use to refuse an order the person's own project cannot fill
+    before asking them to approve the spend.
+    """
 
     def describe_destination(self) -> str:
         """Human-readable destination, shown before the person approves."""

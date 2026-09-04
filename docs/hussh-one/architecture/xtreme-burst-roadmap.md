@@ -124,7 +124,7 @@ reading is a confident guess pointed the other way.
 | KPI | Status | Target | Gap | Next action |
 |---|---|---|---|---|
 | 5.1 Wire contract | ✅ `wire.py` translates and refuses both ways | one contract | **no caller** — correct but unapplied | Use it at the first husshone boundary, before anyone hand-rolls the mapping |
-| 5.2 Provider abstraction | ✅ Protocol + mock + GCP | pluggable | none | — |
+| 5.2 Provider abstraction | ✅ Protocol + mock + GCP; pre-flight is a **declared** optional capability | pluggable | none | — |
 | 5.3 Credential broker | ✅ precedence mirrors hushh-research | key never persisted | none | — |
 | 5.4 **Teardown guarantee** | ✅ confirms absence, **and sweeps after a create that never answered** | always released | none | Extend to bucket+secret at 2.5 |
 | 5.5 Native client retarget | ❌ points at husshone | points at Hermes | full | Later phase |
@@ -133,6 +133,16 @@ Teardown runs in a `finally` and survives workload exceptions, deadline overruns
 Ctrl-C. A 404 on delete counts as success — the invariant is "not running", not "deleted
 by us". A teardown that fails surfaces a warning naming the instance rather than being
 swallowed.
+
+**Pluggable meant discoverable, and for two hours it was not.** `GcpBurstProvider.preflight`
+was added without touching the Protocol, and both call sites reached it through
+`getattr(backend, "preflight", None)`. A second cloud implemented faithfully against
+`BurstProvider` would have satisfied the contract, skipped the zone/quota check, and let a
+person approve hardware their project cannot get — the exact failure the pre-flight exists
+to prevent, reintroduced through the seam meant to make backends interchangeable. It is now
+a `runtime_checkable` `SupportsPreflight` Protocol, deliberately separate because a mock has
+no project to ask, and a test builds a backend this package has never heard of to prove it
+gets pre-flighted purely by declaring the method.
 
 **`provision_failed` used to mean "nothing to release" unconditionally**, and a POST that
 times out or has its connection dropped says nothing about whether Compute Engine accepted

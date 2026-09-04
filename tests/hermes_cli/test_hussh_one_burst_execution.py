@@ -968,3 +968,60 @@ def test_plan_says_up_front_when_the_named_project_cannot_get_the_part():
     payload = result[1] if isinstance(result, tuple) else result
     assert payload["provisionable"]["ok"] is False
     assert payload["provisionable"]["blockers"]
+
+
+def test_preflight_is_a_declared_capability_not_a_hidden_one():
+    """A second cloud has to be able to *find* the pre-flight seam.
+
+    It used to be reached as `getattr(backend, "preflight", None)`, which is an
+    interface nobody implementing a new backend can discover. A provider written
+    faithfully against `BurstProvider` would have skipped the check and let a
+    person approve hardware their project cannot get — the exact failure
+    `preflight` exists to prevent.
+    """
+    from hermes_cli.hussh_one_burst import Preflight, SupportsPreflight
+
+    assert isinstance(GcpBurstProvider(project="p", region="us-central1"), SupportsPreflight)
+    # The mock has no project to ask, and must not be forced to pretend it does.
+    assert not isinstance(MockBurstProvider(), SupportsPreflight)
+    # Both still satisfy the base contract.
+    assert isinstance(MockBurstProvider(), BurstProvider)
+    assert isinstance(GcpBurstProvider(project="p", region="us-central1"), BurstProvider)
+    assert Preflight().ok is True
+
+
+def test_a_third_party_backend_gets_preflighted_purely_by_declaring_it():
+    """The seam has to work for a provider this package has never heard of."""
+    import asyncio
+    from unittest.mock import patch
+
+    import hermes_cli.hussh_one_burst.providers as prov_mod
+    from hermes_cli.hussh_one_burst import Preflight, SupportsPreflight
+
+    class OtherCloud:
+        def describe_destination(self) -> str:
+            return "somewhere else"
+
+        def provision(self, spec):  # pragma: no cover - never reached
+            raise AssertionError("must refuse before provisioning")
+
+        def teardown(self, handle) -> bool:  # pragma: no cover
+            return True
+
+        def preflight(self, accelerator_id: str, chip_count: int) -> Preflight:
+            return Preflight(blockers=(f"{accelerator_id} is not stocked here.",))
+
+    backend = OtherCloud()
+    assert isinstance(backend, BurstProvider)
+    assert isinstance(backend, SupportsPreflight)
+
+    #  imports resolve_provider inside the tool, so patch the source.
+    with patch.object(prov_mod, "resolve_provider", return_value=backend):
+        result = asyncio.run(
+            _run_tool().call_tool(
+                "hussh_burst_plan", {"preset_id": "finetune-70b", "provider": "other"}
+            )
+        )
+    payload = result[1] if isinstance(result, tuple) else result
+    assert payload["provisionable"]["ok"] is False
+    assert "not stocked here" in payload["provisionable"]["blockers"][0]
