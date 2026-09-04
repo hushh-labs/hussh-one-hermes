@@ -42,14 +42,18 @@ import { createPtyCompositionForwarder } from "@/lib/pty-composition";
 import { ptyAttachToken } from "@/lib/pty-attach-token";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
+  PTY_CLOSE_ABNORMAL,
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
+  PTY_STALE_TAB_MESSAGE,
   PTY_TICKET_TIMEOUT_MS,
+  isPtyAuthRejection,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
+  shouldRetryPtyClose,
 } from "@/lib/pty-reconnect";
 import {
   PTY_RESUME_LOADING_MAX_MS,
@@ -194,6 +198,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
+  // Consecutive connect attempts that never reached `onopen`. Distinct from
+  // `reconnectAttemptRef`, which is clamped at 5 because it only feeds the
+  // backoff curve; this one is the unclamped evidence that nothing is
+  // getting through, and is what bounds the retries (see shouldRetryPtyClose).
+  const unopenedAttemptsRef = useRef(0);
+  // Consecutive credential rejections (4401). A gated-mode ticket is
+  // single-use with a 30s TTL, so the first rejection can just mean "late";
+  // see PTY_MAX_AUTH_RETRIES.
+  const authRejectionsRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
@@ -212,6 +225,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // chat is broken; clears as soon as there is something to show.
   const [resumeHydrating, setResumeHydrating] = useState(false);
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
+  // Why the automatic reconnect stopped, or null while it is still trying.
+  //   "auth"        the gateway rejected this tab's credential (4401). Only a
+  //                 reload can mint a new one, so offer exactly that.
+  //   "unreachable" nothing opened in PTY_MAX_UNOPENED_ATTEMPTS tries and the
+  //                 closes carried no code we can trust (an old gateway, or a
+  //                 real outage). Honest about not knowing: offer both a
+  //                 retry and a reload, and let page-resume keep watching.
+  const [ptyStopReason, setPtyStopReason] =
+    useState<"auth" | "unreachable" | null>(null);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -232,24 +254,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectPty = useCallback(() => {
     forceFreshPtyRef.current = false;
     reconnectAttemptRef.current = 0;
+    unopenedAttemptsRef.current = 0;
+    authRejectionsRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
     ptyInputLineRef.current = "";
     mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setLastCloseCode(null);
+    setPtyStopReason(null);
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer]);
+  // The only recovery for a credential this tab can no longer refresh: the
+  // session token lives in the SPA HTML, so a reload is what fetches a live
+  // one. (The reload-once guard in dashboard-auth-reload self-clears on the
+  // next successful API call, so this does not strand future recoveries.)
+  const reloadDashboard = useCallback(() => {
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  }, []);
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
+    unopenedAttemptsRef.current = 0;
+    authRejectionsRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
     ptyInputLineRef.current = "";
     mobileReplacementInputUntilRef.current = 0;
     setBanner(null);
     setLastCloseCode(null);
+    setPtyStopReason(null);
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer]);
@@ -259,6 +296,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     next.delete("resume");
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
+    unopenedAttemptsRef.current = 0;
+    authRejectionsRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
     ptyInputLineRef.current = "";
@@ -266,6 +305,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setSearchParams(next, { replace: true });
     setBanner(null);
     setLastCloseCode(null);
+    setPtyStopReason(null);
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer, searchParams, setSearchParams]);
@@ -1125,12 +1165,46 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setReconnectNonce((n) => n + 1);
       }, delayMs);
     };
+    // Stop the automatic backoff and hand the tab back to the user. Not
+    // terminal for "unreachable": ptyState "closed" with no banner keeps the
+    // page-resume path (visibilitychange / focus / online) armed, so a real
+    // outage still recovers on its own when the network returns.
+    const stopReconnecting = (
+      reason: "auth" | "unreachable",
+      code: number | null,
+    ) => {
+      clearReconnectTimer();
+      setLastCloseCode(code);
+      setPtyStopReason(reason);
+      setPtyState("closed");
+    };
+    // One failed attempt that never reached `onopen`. Decides between the
+    // bounded backoff and giving up; see shouldRetryPtyClose.
+    const failAttempt = (code: number | null) => {
+      const unopenedAttempts = (unopenedAttemptsRef.current += 1);
+      const authRejections = isPtyAuthRejection(code)
+        ? (authRejectionsRef.current += 1)
+        : (authRejectionsRef.current = 0);
+      if (shouldRetryPtyClose({ code, unopenedAttempts, authRejections })) {
+        scheduleReconnect(code);
+        return;
+      }
+      if (isPtyAuthRejection(code)) {
+        // Certain: the server named the cause. Say it plainly and offer the
+        // one control that can fix it. The banner also parks the page-resume
+        // path, which would otherwise keep re-firing a doomed connect.
+        stopReconnecting("auth", code);
+        setBanner(PTY_STALE_TAB_MESSAGE);
+        return;
+      }
+      stopReconnecting("unreachable", code);
+    };
     // Give up on the ticket phase and hand off to the ordinary backoff.
     const failTicketAttempt = () => {
       ticketSuperseded = true;
       clearTicketTimer();
       connectInFlightRef.current = false;
-      scheduleReconnect(null);
+      failAttempt(null);
     };
     void (async () => {
       if (unmounting) return;
@@ -1190,8 +1264,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearConnectingTimer();
       connectInFlightRef.current = false;
       reconnectAttemptRef.current = 0;
+      // NOT the place to clear the failure counters. A rejected credential
+      // now arrives as accept-then-close(4401), so `open` fires on EVERY
+      // attempt including the doomed ones. Zeroing here made the auth counter
+      // unable to pass 1, which is the whole stop condition, and the tab
+      // retried a dead token forever: the exact loop this was built to end.
+      // The counters are cleared on the first inbound frame instead, which is
+      // the only evidence the socket carried a session rather than a refusal.
       setBanner(null);
       setLastCloseCode(null);
+      setPtyStopReason(null);
       setPtyState("open");
       blockedInputNoticeRef.current = false;
       // Connected — cancel any pending reconnect from a prior transient drop.
@@ -1256,6 +1338,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     ws.onmessage = (ev) => {
+      // First frame is the proof `open` cannot give: this socket is carrying
+      // a real session, not an accepted-then-refused handshake. Clearing the
+      // counters here keeps a genuine reconnect cheap while leaving a
+      // rejected credential counted, so the stop condition can be reached.
+      unopenedAttemptsRef.current = 0;
+      authRejectionsRef.current = 0;
       if (typeof ev.data === "string") {
         // The active-session fallback (no `?resume=` on the URL) tells us
         // via a one-off JSON control frame that a replay is starting (#93518,
@@ -1321,16 +1409,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const why = ev.reason ? ` reason=${ev.reason}` : "";
       console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       setLastCloseCode(ev.code);
-      if (ev.code === 4401) {
+      if (isPtyAuthRejection(ev.code)) {
+        // The gateway rejected this tab's credential. In loopback mode the
+        // fresh token is one reload away, so take it automatically (once,
+        // guarded by sessionStorage) before bothering the user.
         if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
           return;
         }
-        setPtyState("closed");
-        setBanner(
-          ev.reason
-            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
-            : "Auth failed. Reload the page to refresh the session token.",
-        );
+        // Otherwise allow exactly one more attempt (a gated single-use
+        // ticket may simply have expired in flight) and then stop: no amount
+        // of retrying mints a credential this tab is allowed to hold.
+        failAttempt(ev.code);
         return;
       }
       if (ev.code === 4403) {
@@ -1378,11 +1467,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setPtyState("closed");
         return;
       }
-      if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+      if (!ev.wasClean || ev.code === 1001 || ev.code === PTY_CLOSE_ABNORMAL) {
         // Transient transport drop (refresh, sleep/wake, signal loss).
         // Reconnect with backoff; the same ?attach= token reattaches to
         // the still-living PTY, so the conversation continues in place.
-        scheduleReconnect(ev.code);
+        //
+        // A gateway older than the readable-4401 contract refuses a stale
+        // credential BEFORE accepting the upgrade, which the browser also
+        // reports here as a bare 1006. `failAttempt` bounds the retries so
+        // that case stops spinning instead of retrying forever.
+        failAttempt(ev.code);
         return;
       }
       // Normal/clean exit: the agent process ended (e.g. the user typed
@@ -1783,8 +1877,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       {mobileModelToolsPortal}
 
       {visibleBanner && (
-        <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
-          {visibleBanner}
+        <div className="flex flex-wrap items-center gap-2 border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
+          <span className="min-w-0 flex-1">{visibleBanner}</span>
+          {ptyStopReason === "auth" && (
+            <Button
+              size="sm"
+              outlined
+              onClick={reloadDashboard}
+              prefix={<RotateCcw className="h-4 w-4" />}
+              aria-label="Reload the dashboard to refresh this tab's session"
+            >
+              Reload page
+            </Button>
+          )}
         </div>
       )}
 
@@ -1811,17 +1916,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
                     ? "Chat is reconnecting."
-                    : "Chat disconnected."}
+                    : ptyStopReason === "unreachable"
+                      ? "Chat could not reconnect. If the agent gateway was restarted, reload the page; otherwise it will retry when the connection returns."
+                      : "Chat disconnected."}
                 </div>
-                <Button
-                  size="sm"
-                  outlined
-                  onClick={reconnectPty}
-                  prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Reconnect chat"
-                >
-                  Reconnect now
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={reconnectPty}
+                    prefix={<RotateCcw className="h-4 w-4" />}
+                    aria-label="Reconnect chat"
+                  >
+                    Reconnect now
+                  </Button>
+                  {ptyStopReason === "unreachable" && (
+                    <Button
+                      size="sm"
+                      outlined
+                      onClick={reloadDashboard}
+                      aria-label="Reload the dashboard to refresh this tab's session"
+                    >
+                      Reload page
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           )}

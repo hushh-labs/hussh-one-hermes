@@ -275,6 +275,48 @@ describe("ChatPage", () => {
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
   });
 
+  it("stops reconnecting a dead credential even though every attempt opens first", async () => {
+    // The regression guard for the founder's endless loop. The gateway
+    // rejects a bad token by ACCEPTING the upgrade and then closing 4401
+    // (a close before accept carries no frame and shows up as a bare 1006),
+    // so `open` fires on doomed attempts too. While the open handler cleared
+    // the credential counter, that counter could never reach its bound and
+    // the tab reconnected forever. Opening before every close is the whole
+    // point of this test: without it, it passes against the broken code.
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    // Fake timers only from here: the render above needs real ones, and the
+    // reconnect timers this drives are all created after the first close.
+    vi.useFakeTimers();
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const socket =
+          FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+        await act(async () => {
+          socket.onopen?.({});
+          socket.onclose?.({ code: 4401, reason: "auth", wasClean: true });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5_000);
+        });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // One retry is allowed, for a ticket that was merely late. After that the
+    // socket count must stop growing rather than climbing with every tick.
+    expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(2);
+  });
+
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
     // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
     // route. The keyboard-inset/scroll-pin listeners must only be live while

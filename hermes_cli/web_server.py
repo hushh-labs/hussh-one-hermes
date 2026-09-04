@@ -5579,11 +5579,11 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
       server → ``{"type": "fallback"}`` when the configured provider has no
                chunked API — the client uses the POST endpoint instead.
     """
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+    if not _ws_auth_ok(ws):
+        await _ws_reject_after_accept(ws, 4401, "auth")
         return
     await ws.accept()
 
@@ -17083,6 +17083,43 @@ def _ws_close_reason(text: str) -> str:
     return encoded[:120].decode("utf-8", "ignore") + "..."
 
 
+async def _ws_reject_after_accept(
+    ws: "WebSocket", code: int, reason: str = ""
+) -> None:
+    """Refuse an upgrade with a close code the BROWSER can actually read.
+
+    Closing a WebSocket *before* ``accept()`` does not deliver a close frame:
+    the ASGI server fails the HTTP upgrade instead (uvicorn answers 403), and
+    a handshake that never completed has no frame to carry the code. Every
+    browser reports that as ``code 1006`` with an empty reason, which is
+    indistinguishable from a dropped network, so a tab holding a dead
+    credential retries forever instead of being told to reload.
+
+    Accepting the upgrade and immediately closing it delivers the real code.
+    No application frame is ever sent or read on this path.
+
+    Call this ONLY after the Host/Origin and peer gates have already passed
+    (see :func:`_ws_request_reason`). An off-origin caller must keep getting
+    the opaque handshake failure, or the readable close code becomes a
+    credential oracle: "wrong token" would be distinguishable from "wrong
+    origin" by any page on the internet.
+    """
+    offered = {
+        value.strip()
+        for value in str(ws.headers.get("sec-websocket-protocol", "") or "").split(",")
+        if value.strip()
+    }
+    # Echo only the stable public protocol, never a ticket-bearing one. A
+    # subprotocol the client did not offer would make the browser fail the
+    # connection, putting us back at an unreadable 1006.
+    subprotocol = _GATEWAY_WS_PROTOCOL if _GATEWAY_WS_PROTOCOL in offered else None
+    try:
+        await ws.accept(subprotocol=subprotocol)
+        await ws.close(code=code, reason=_ws_close_reason(reason))
+    except Exception:  # pragma: no cover - peer vanished mid-handshake
+        _log.debug("ws reject close failed code=%s", code, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # /api/console — safe Hermes Console command WebSocket.
 #
@@ -17307,16 +17344,11 @@ async def console_ws(ws: WebSocket) -> None:
         await ws.close(code=4404, reason="embedded chat disabled")
         return
 
-    auth_reason, cred = _ws_auth_reason(ws)
-    mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning(
-            "console auth rejected reason=%s mode=%s cred=%s peer=%s",
-            auth_reason, mode, cred, peer,
-        )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return
-
+    # Host/Origin and peer first, then the credential: only a caller that
+    # already proved it is the local dashboard earns a readable close code
+    # (see _ws_reject_after_accept for why that ordering is the security
+    # boundary). These two stay pre-accept, so an off-origin prober keeps
+    # getting an opaque handshake failure.
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("console refused: %s peer=%s", host_origin_reason, peer)
@@ -17327,6 +17359,16 @@ async def console_ws(ws: WebSocket) -> None:
     if client_reason is not None:
         _log.warning("console refused: %s", client_reason)
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        return
+
+    auth_reason, cred = _ws_auth_reason(ws)
+    mode = _ws_auth_mode()
+    if auth_reason is not None:
+        _log.warning(
+            "console auth rejected reason=%s mode=%s cred=%s peer=%s",
+            auth_reason, mode, cred, peer,
+        )
+        await _ws_reject_after_accept(ws, 4401, f"auth: {auth_reason}")
         return
 
     await ws.accept()
@@ -17657,22 +17699,20 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4404, reason="embedded chat disabled")
         return
 
-    # --- auth + host/origin/peer check (before accept so we can close
-    #     cleanly AND tell the client WHY via the close code + reason).
-    #     Each gate maps to a distinct close code so the log and the
-    #     browser banner agree on the cause:
+    # --- host/origin/peer check, then the credential. Each gate maps to a
+    #     distinct close code so the log and the browser banner agree:
     #       4401 bad credential   4403 host/origin mismatch
     #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
-    mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning(
-            "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
-            auth_reason, mode, cred, peer,
-        )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return
-
+    #
+    #     Ordering is the security boundary. The host/origin and peer gates
+    #     close BEFORE accept, which fails the HTTP upgrade: an off-origin
+    #     prober only ever sees an opaque browser-side 1006 and learns
+    #     nothing. The credential gate runs last, once the caller has proved
+    #     it is the local dashboard, and rejects AFTER accept so the real tab
+    #     receives 4401 in a close frame it can read (see
+    #     _ws_reject_after_accept). Without that, a tab holding a token from
+    #     a previous gateway process reads its rejection as a network blip
+    #     and reconnects forever.
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("pty refused: %s peer=%s", host_origin_reason, peer)
@@ -17683,6 +17723,16 @@ async def pty_ws(ws: WebSocket) -> None:
     if client_reason is not None:
         _log.warning("pty refused: %s", client_reason)
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
+        return
+
+    auth_reason, cred = _ws_auth_reason(ws)
+    mode = _ws_auth_mode()
+    if auth_reason is not None:
+        _log.warning(
+            "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
+            auth_reason, mode, cred, peer,
+        )
+        await _ws_reject_after_accept(ws, 4401, f"auth: {auth_reason}")
         return
 
     await ws.accept()
@@ -17857,12 +17907,15 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
+    # Boundary gates first (pre-accept, opaque to an off-origin prober),
+    # credential last and rejected after accept so a real dashboard tab can
+    # read the 4401 instead of an ambiguous 1006. See _ws_reject_after_accept.
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await _ws_reject_after_accept(ws, 4401, "auth")
         return
 
     from tui_gateway.ws import handle_ws
@@ -17896,12 +17949,12 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await _ws_reject_after_accept(ws, 4401, "auth")
         return
 
     channel = _channel_or_close_code(ws)
@@ -17924,12 +17977,12 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
-        await ws.close(code=4401)
-        return
-
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
+        return
+
+    if not _ws_auth_ok(ws):
+        await _ws_reject_after_accept(ws, 4401, "auth")
         return
 
     channel = _channel_or_close_code(ws)

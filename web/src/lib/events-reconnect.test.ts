@@ -10,6 +10,8 @@ import {
   eventsRejectedMessage,
   isEventsAuthRejection,
   isEventsFeedMessage,
+  EVENTS_MAX_AUTH_RETRIES,
+  shouldRetryEventsAuthRejection,
   shouldRetryEventsClose,
   EVENTS_DISCONNECTED_MESSAGE,
 } from "./events-reconnect";
@@ -77,6 +79,28 @@ describe("shouldRetryEventsClose", () => {
         false,
       );
     }
+  });
+});
+
+describe("shouldRetryEventsAuthRejection", () => {
+  it("allows one fresh credential, then stops, matching the chat socket", () => {
+    // A gated ticket is single-use with a 30s TTL, so the first rejection
+    // can mean "late". A second one in a row means dead: the tab is holding
+    // a credential from a previous gateway process and only a reload fixes
+    // it. The PTY socket applies the same allowance so the banner and the
+    // feed never disagree about what happened.
+    expect(shouldRetryEventsAuthRejection(4401, 1)).toBe(true);
+    expect(
+      shouldRetryEventsAuthRejection(4401, EVENTS_MAX_AUTH_RETRIES + 1),
+    ).toBe(false);
+    expect(shouldRetryEventsAuthRejection(4401, 9)).toBe(false);
+  });
+
+  it("never retries a Host/Origin refusal", () => {
+    // 4403 says the request is at the wrong address. No credential, however
+    // fresh, makes that right.
+    expect(shouldRetryEventsAuthRejection(4403, 1)).toBe(false);
+    expect(shouldRetryEventsAuthRejection(undefined, 1)).toBe(false);
   });
 });
 

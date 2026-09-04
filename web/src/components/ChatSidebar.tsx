@@ -45,6 +45,7 @@ import {
   eventsRejectedMessage,
   isEventsAuthRejection,
   isEventsFeedMessage,
+  shouldRetryEventsAuthRejection,
   shouldRetryEventsClose,
 } from "@/lib/events-reconnect";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
@@ -299,6 +300,10 @@ export function ChatSidebar({
     let connectTimer: ReturnType<typeof setTimeout> | null = null;
     let connectGeneration = 0;
     let attempt = 0;
+    // Consecutive credential rejections, reset by a successful open.
+    // See shouldRetryEventsAuthRejection: a gated ticket can be late
+    // rather than dead, so the first 4401 earns one fresh attempt.
+    let authRejections = 0;
 
     const clearConnectTimer = () => {
       if (connectTimer) {
@@ -400,7 +405,12 @@ export function ChatSidebar({
           return;
         }
         clearConnectTimer();
-        attempt = 0;
+        // Counters are NOT cleared here. The gateway now rejects a bad
+        // credential as accept-then-close(4401), so `open` fires on every
+        // doomed attempt too; zeroing here would keep `authRejections` at 1
+        // forever and turn a previously-terminal rejection into an endless
+        // reconnect that re-mints a single-use ticket every time round.
+        // Cleared on the first frame instead, below.
         clearEventsBanner();
       });
 
@@ -422,6 +432,11 @@ export function ChatSidebar({
           return;
         }
         if (isEventsAuthRejection(ev.code)) {
+          authRejections += 1;
+          if (shouldRetryEventsAuthRejection(ev.code, authRejections)) {
+            scheduleReconnect();
+            return;
+          }
           surface(eventsRejectedMessage(ev.code));
           return;
         }
@@ -431,6 +446,12 @@ export function ChatSidebar({
       });
 
       socket.addEventListener("message", (ev) => {
+        // A frame arrived, so this socket is genuinely serving rather than
+        // an accepted-then-refused handshake. This is the reset `open` used
+        // to do, moved to where it is actually earned.
+        attempt = 0;
+        authRejections = 0;
+
         let frame: RpcEnvelope;
 
         try {

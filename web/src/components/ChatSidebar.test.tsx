@@ -399,12 +399,99 @@ describe("ChatSidebar event socket reconnect", () => {
     await advance(1_000);
     expect(FakeWebSocket.instances).toHaveLength(2);
 
-    // Reconnected — the next drop should start from 1s again, not 2s.
+    // Reconnected, and the socket actually SERVED: it carries a frame. That
+    // is what resets the backoff now, because a handshake alone no longer
+    // distinguishes a working feed from a credential the gateway accepts and
+    // then refuses. The next drop should start from 1s again, not 2s.
     await act(async () => {
       FakeWebSocket.instances[1].emit("open", {});
+      FakeWebSocket.instances[1].emit("message", {
+        data: JSON.stringify({ jsonrpc: "2.0", method: "hello", params: {} }),
+      });
       FakeWebSocket.instances[1].emit("close", { code: 1006 });
     });
     await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+  });
+
+  it("retries a rejected credential once, then tells the user to reload", async () => {
+    // The founder's case: the gateway restarted, so this tab's session token
+    // is dead and every reconnect is refused with 4401. One retry proves the
+    // credential is dead rather than merely late; after that the feed must
+    // stop and say so instead of reconnecting forever.
+    //
+    // `open` is emitted before every close ON PURPOSE. The gateway rejects a
+    // bad credential by ACCEPTING the upgrade and then closing 4401, because
+    // a close sent before accept carries no frame and reaches the browser as
+    // a bare 1006. So `open` fires on doomed attempts too. An earlier version
+    // of this test closed without opening, which is why it stayed green while
+    // the running tab reconnected forever: the open handler was clearing the
+    // very counter that decides when to stop.
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("open", {});
+      FakeWebSocket.instances[0].emit("close", { code: 4401 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+      FakeWebSocket.instances[1].emit("close", { code: 4401 });
+    });
+    await advance(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(container.textContent).toContain("reload the page");
+  });
+
+  it("stops on a dead credential no matter how many times the socket opens first", async () => {
+    // The regression guard. Every rejected attempt completes a handshake, so
+    // if anything ever clears the credential counter on `open` again this
+    // loops without bound and this test fails on socket count.
+    await renderSidebar();
+
+    for (let i = 0; i < 6; i += 1) {
+      const socket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+      await act(async () => {
+        socket.emit("open", {});
+        socket.emit("close", { code: 4401 });
+      });
+      await advance(5_000);
+    }
+
+    // One retry allowed for a merely-late ticket, then terminal.
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(container.textContent).toContain("reload the page");
+  });
+
+  it("a socket that carried a frame is trusted again, so a later drop still retries", async () => {
+    // The counter reset moved from `open` to the first frame. This is the
+    // other half of that: a socket that genuinely served must be allowed to
+    // reconnect normally after a real network drop.
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("open", {});
+      FakeWebSocket.instances[0].emit("close", { code: 4401 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // The retry works and the feed carries a frame.
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+      FakeWebSocket.instances[1].emit("message", {
+        data: JSON.stringify({ jsonrpc: "2.0", method: "hello", params: {} }),
+      });
+    });
+
+    // A later ordinary drop must still reconnect rather than inherit the
+    // earlier rejection.
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("close", { code: 1006 });
+    });
+    await advance(5_000);
     expect(FakeWebSocket.instances).toHaveLength(3);
   });
 

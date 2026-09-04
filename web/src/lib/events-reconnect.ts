@@ -14,8 +14,10 @@ export const EVENTS_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Normal closure — the server said goodbye, don't chase it. */
 const WS_CLOSE_NORMAL = 1000;
+/** Credential rejected: the ticket or session token was not accepted. */
+const WS_CLOSE_TICKET_REJECTED = 4401;
 /** Ticket rejected / forbidden: retrying just burns tickets, user must reload. */
-const WS_CLOSE_AUTH_CODES = new Set([4401, 4403]);
+const WS_CLOSE_AUTH_CODES = new Set([WS_CLOSE_TICKET_REJECTED, 4403]);
 
 /**
  * Exponential backoff, 1s → 2s → 4s → … → 30s cap.
@@ -50,6 +52,30 @@ export function shouldRetryEventsClose(code: number | undefined): boolean {
 
 export function isEventsAuthRejection(code: number | undefined): boolean {
   return code !== undefined && WS_CLOSE_AUTH_CODES.has(code);
+}
+
+/**
+ * One retry allowance for a rejected credential, matching the PTY socket's
+ * `PTY_MAX_AUTH_RETRIES` so the two sockets tell the user the same story.
+ *
+ * A gated-mode ticket is single-use with a 30s TTL, so the first rejection
+ * can mean "late" rather than "dead", and the next attempt mints a fresh
+ * one. A credential rejected twice in a row is dead: stop, and say so.
+ */
+export const EVENTS_MAX_AUTH_RETRIES = 1;
+
+/**
+ * The allowance covers 4401 only. 4403 is a Host/Origin refusal: the request
+ * is at the wrong address, and no credential makes it right.
+ *
+ * @param authRejections Consecutive auth rejections including this one,
+ *   reset to 0 whenever the socket opens.
+ */
+export function shouldRetryEventsAuthRejection(
+  code: number | undefined,
+  authRejections: number,
+): boolean {
+  return code === WS_CLOSE_TICKET_REJECTED && authRejections <= EVENTS_MAX_AUTH_RETRIES;
 }
 
 // The sidebar's banner is shared with `info.credential_warning` and with the
