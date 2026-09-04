@@ -351,3 +351,43 @@ def test_a_real_measurement_never_reports_a_load_it_did_not_take():
         assert second is None or 0.0 <= second <= 100.0
     finally:
         tel._cpu_primed = False
+
+
+def test_a_missing_probe_binary_never_spawns_a_process(monkeypatch):
+    """`shutil.which` short-circuits before `subprocess.run`, and that is load-bearing.
+
+    Measured on this container: a real spawn costs **1.1ms** floor (`/bin/true`),
+    while the absent-binary path costs **0.031ms** because no process is created.
+    Rewriting this to try the spawn and catch `OSError` would return the same
+    `None` and pass the existing test, while adding a process launch to every
+    measurement on every machine without an accelerator — which is most of them.
+    """
+    import hermes_cli.hussh_one_burst.telemetry as tel
+
+    monkeypatch.setattr(tel.shutil, "which", lambda _name: None)
+
+    def _explode(*_a, **_kw):  # pragma: no cover - the point is that it never runs
+        raise AssertionError("spawned a process for a binary that is not installed")
+
+    monkeypatch.setattr(tel.subprocess, "run", _explode)
+    assert tel._run(["nvidia-smi", "--query-gpu=name", "--format=csv"]) is None
+
+
+def test_measuring_a_machine_with_no_accelerator_spawns_nothing_at_all(monkeypatch):
+    """The whole-probe version of the same invariant.
+
+    `measure_device` on a GPU-less machine must not launch a single subprocess.
+    That is what makes the monitoring overhead a fraction of a millisecond
+    rather than a multiple of one.
+    """
+    import hermes_cli.hussh_one_burst.telemetry as tel
+
+    monkeypatch.setattr(tel.shutil, "which", lambda _name: None)
+
+    def _explode(*_a, **_kw):  # pragma: no cover
+        raise AssertionError("measure_device spawned a process on a GPU-less machine")
+
+    monkeypatch.setattr(tel.subprocess, "run", _explode)
+    device = tel.measure_device()
+    assert device.gpu is None
+    assert device.cpu_cores >= 1
