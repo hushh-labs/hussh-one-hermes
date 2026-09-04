@@ -18,6 +18,13 @@ Two specific things will mislead if taken at face value here:
   [the architecture record](../../architecture/xtreme-burst.md) § *Vocabulary*.
 - **"One Puppy" is a Mac.** The husshone design assumes a single high-end Mac tier. Hermes
   places workloads on six device classes, including Windows workstations.
+- **Three cross-references in `design.md` do not resolve here**, and deliberately so.
+  Its header links `./customer/getting-started.md`, `../provisioning/README.md` and
+  `./specs/README.md` — paths in husshone's tree, which this repository cannot see.
+  Rewriting them would buy working links at the cost of the *verbatim* guarantee above,
+  which is the whole reason these files are worth keeping. They are left broken and
+  named here instead. Nothing else in `docs/hussh-one/` has an unresolvable link, and a
+  test holds that line.
 
 Paths in these files (`src/lib/burst/…`, `provisioning/`, `docs/specs/`) refer to the
 **husshone** tree, not this one. Three relative links —

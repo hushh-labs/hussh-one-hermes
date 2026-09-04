@@ -62,7 +62,7 @@ things are still true and matter more than the green cells below:
 | 1.1 Decision-layer correctness | ✅ 151 tests green | 100% | none | Re-run on every change |
 | 1.2 Placement rules ported | ✅ 6 rules + two-pool model | parity + discrete GPUs | none | Hold |
 | 1.3 Provenance accuracy | ✅ corrected 2026-08-07 | claims survive checking | none | Keep ported/originating split |
-| 1.4 Design record migrated | ✅ 4 docs + OpenAPI | durable in Hermes | none | — |
+| 1.4 Design record migrated | ✅ 4 docs + OpenAPI, **links now checked** | durable in Hermes | 3 cross-references in `design.md` point into husshone and are kept broken on purpose | Hold — rewriting them would cost the *verbatim* guarantee |
 | 1.5 Module is pure (no I/O) | ✅ I/O isolated in `telemetry` | invariant holds | none | **Guard this** |
 
 **Counted:** 2,382 lines across 12 modules in `hermes_cli/hussh_one_burst/`.
