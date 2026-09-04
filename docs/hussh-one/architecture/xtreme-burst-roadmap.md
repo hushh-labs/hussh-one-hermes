@@ -222,23 +222,25 @@ page keeps having to correct elsewhere.
 |---|---|---|---|---|
 | 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
 | 7.2 Mock provider | ✅ credential-free — **proven with the environment stripped** | testable path | none | — |
-| 7.3 CI coverage | ❌ **PR cannot reach green**; the suite was run locally instead | green in CI | the two large-runner jobs are **never assigned a runner** | Needs org access: runner capacity |
+| 7.3 CI coverage | ❌ **PR cannot reach green**; the suite was run locally instead | green in CI | **every `*-core` job repo-wide** is never assigned a runner and is cancelled at GitHub's 24h queue limit — `main` too, not just this PR | Needs org access: large-runner capacity or entitlement |
 | 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
 Verified live on this machine: `device_status` measured 4 cores / 15.09GB available;
 `decide` routed both presets to cloud with coherent reasons; `plan` returned 4× B200 at
 $84/hr, ~$126 total.
 
-### Why CI cannot tell us — three corrections, the last one settled by experiment
+### Why CI cannot tell us — four corrections, the last one settled by measurement
 
-**Correction 3 supersedes both earlier ones.** All three are kept, because the sequence is
-the lesson.
+**Correction 4 supersedes all three earlier ones.** All four are kept, because the sequence
+is the lesson.
 
 1. I reported the two required test jobs as "cancelled at exactly 31 minutes."
 2. I corrected that to "still queued at 18 minutes," and built a conclusion on it. **That
    run never happened** — I inferred elapsed time from a wall clock I assumed rather than
    read. The real figure was 3m24s.
 3. Then the durations themselves turned out to be the wrong measurement.
+4. And the conclusion I drew from the corrected durations — that these jobs never end —
+   was itself an over-read of a lower bound. They end at exactly 24 hours.
 
 **Every run lifetime in the first two corrections measured my own push cadence.** Four runs
 ended within seconds of a push of mine:
@@ -254,7 +256,8 @@ Four for four is a mechanism, not a coincidence: the push cancels the queued job
 the concurrency group, which releases the aggregator, which then reports failure because
 the lints genuinely had failed. The spread I could not explain — 57s, 1m27s, 1m40s, 1m49s,
 2m34s, 2m57s, then 15m55s and 55m7s — is just how long I happened to stay quiet. There is
-no queue timeout, and nothing ever supported the jobs getting runners.
+no queue timeout *within any window I watched* — see correction 4, which bounds it at
+24 hours — and nothing ever supported the jobs getting runners.
 
 **Tested rather than assumed.** Prediction: with nobody pushing, a run stays open
 indefinitely. `6b680f0c2` was pushed at 07:16:25Z, settled to those two jobs pending at
@@ -262,9 +265,9 @@ indefinitely. `6b680f0c2` was pushed at 07:16:25Z, settled to those two jobs pen
 whenever a push arrived. Confirmed. (The window is only a lower bound: recording this
 finding required a push, which ends it. The next quiet interval extends the number.)
 
-**What is established:** these two jobs are never assigned a runner in any window they get,
-while inside the same run every `ubuntu-latest` and `macos-latest` job is assigned one in
-**2–9 seconds** and finishes. They do not time out; they simply never start.
+**What is established:** these jobs are never assigned a runner in any window they get,
+while inside the same run every standard-label job is assigned one in seconds and finishes.
+They never start. (They *do* eventually end — correction 4.)
 
 **Now measured, not inferred.** The API came back at 16:24Z after roughly eleven hours of
 `invalid session`. Two runs read identically, and the second is the strongest evidence in
@@ -284,12 +287,51 @@ The alternative worth ruling out — that they were eventually assigned runners 
 ran long — is refuted outright: a job that ran would carry a runner id and steps, and these
 carry neither.
 
-**What is still a reading rather than a measurement:** *why*. `runner_group_id: 0` on an
-unassigned job is an unset field, not the identity of a misconfigured group, so it names no
-culprit. Capacity or runner-group configuration on those two labels remains the best
-explanation — the label is the only variable, and every `ubuntu-latest` and `macos-latest`
-job in the same run was assigned within 2–9 seconds — but nothing in the API confirms the
-cause, only the effect.
+#### Correction 4 — they do end, at exactly 24 hours, and it is not two jobs
+
+Everything above was measured on this branch, where every window I observed was ended by a
+push of mine. From that I wrote "there is no queue timeout" and "a run stays open
+indefinitely." **Both are wrong.** 6h48m was a lower bound, and I stated it as a property.
+
+The disproof came from CI's own timing report, which compares each run against a baseline
+cached from `main`, and whose baseline read **1440m18s** — 24 hours, a number too round to
+be a duration anybody measured. Following it to the run it came from, `main` run
+[`33716931376`](https://github.com/hushh-labs/hussh-one-hermes/actions/runs/33716931376):
+
+| Job | Label | Created | Completed | Δ | Runner |
+|---|---|---|---|---|---|
+| `Python tests / Run tests` | `ubuntu-latest-96-core` | 06:41:24Z Sep 3 | 06:41:24Z Sep 4 | **24h 00m 00s** | none |
+| `OS-specific tests / Windows-only tests` | `windows-latest-32-core` | 06:41:24Z Sep 3 | 06:41:24Z Sep 4 | **24h 00m 00s** | none |
+| `JS & TS checks` | `ubuntu-latest-32-core` | 06:41:24Z Sep 3 | 06:41:24Z Sep 4 | **24h 00m 00s** | none |
+| `Rust tests / cargo test` | `ubuntu-latest-32-core` | 06:41:24Z Sep 3 | 06:41:24Z Sep 4 | **24h 00m 00s** | none |
+
+All four `conclusion: cancelled`, none carrying a `runner_id` field at all. Twenty-four
+hours to the second, four times over, is GitHub's queue limit expiring — not a coincidence
+and not a duration.
+
+**Two things that changes.**
+
+*They terminate.* The correct statement is: never assigned a runner, and cancelled by
+GitHub at its 24-hour queue limit. Every window I measured on this branch was shorter only
+because I pushed first. "Never ends" was me reporting the longest thing I had waited as
+the longest thing that could happen.
+
+*It is not two jobs, and it is not this branch.* Four jobs, on `main`, in a run this
+workstream had nothing to do with. `JS & TS checks` and `Rust tests` are equally stranded
+and were never in view because this PR does not touch them. Scoping this to "the two
+required test jobs on PR #18" made a repo-wide problem look like a local one.
+
+**And *why* is now much better evidenced.** In that single run, at that single instant,
+every job on a `*-core` label was never assigned, and every job on a standard label —
+`ubuntu-latest`, `windows-latest`, `macos-latest`, fifteen of them — was assigned a runner
+in **2–3 seconds** and finished. Same run, same commit, same moment, one variable. That is
+a controlled comparison rather than a reading, and it puts the fault precisely on the
+large-runner labels.
+
+**What is still a reading:** the mechanism behind that. No capacity, no entitlement, a
+runner group not configured for these labels — the API distinguishes none of them, and
+`runner_group_id: 0` on an unassigned job is an unset field, not the identity of a
+misconfigured group. The effect is measured; the cause is not.
 
 **What I withdrew:** that fixing the inherited lint failures would not free the test jobs.
 That came from the imaginary 18-minute run. It is now moot in the other direction — the
