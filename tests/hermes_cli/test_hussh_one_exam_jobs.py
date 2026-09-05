@@ -182,6 +182,27 @@ class TestContractChecks:
         assert _fails(J.grade(run, now=datetime(2026, 9, 2))) == {}
         assert "artifact_exists" in _fails(J.grade(run, now=datetime(2026, 10, 2)))
 
+    def test_the_shipped_timesheet_contract_globs_the_real_desktop(self, tmp_path, monkeypatch):
+        # The contract used to hardcode ``~/Desktop``. With OneDrive Backup on,
+        # Windows leaves that path an empty husk and keeps the workbook under
+        # OneDrive, so the check reported a missing artifact for a file that
+        # was sitting on the Desktop. The contract now asks where the Desktop
+        # is; this pins that the placeholder is really expanded and that the
+        # shipped contract — not a stand-in — is the one that does it.
+        monkeypatch.setattr(J, "_desktop_dir", lambda: tmp_path)
+        folder = tmp_path / "Timesheets_and_Reimbursements"
+        folder.mkdir()
+        (folder / "Reimbursement_Tracker_Kushal_August2026.xlsx").write_bytes(b"x")
+        run = _run(name="monthly-timesheet-generator", text="saved", tool_calls=[("terminal", {})])
+        assert _fails(J.grade(run, now=datetime(2026, 9, 2))) == {}
+        assert "artifact_exists" in _fails(J.grade(run, now=datetime(2026, 10, 2)))
+
+    def test_the_desktop_is_still_plain_home_off_windows(self, monkeypatch):
+        # The Windows fix must not move the folder anywhere else: on macOS and
+        # Linux the answer is exactly what the hardcoded path used to produce.
+        monkeypatch.setattr(J.os, "name", "posix")
+        assert J._desktop_dir() == Path.home() / "Desktop"
+
     def test_the_rule_vocabulary_is_registered(self):
         assert "contradicts-evidence" in rules_for("cron_quality")
         assert "leaked-error" in rules_for("cron_quality")

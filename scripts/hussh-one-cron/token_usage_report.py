@@ -188,7 +188,9 @@ def get_budget_credits(monthly_estimate):
         # Billing account attached to hushh-pda-uat (MS USBANK MASTERCARD).
         acct = "014D7F-FD970D-D2459E"
         hdr = "header = " + chr(34) + "Authorization: " + "Bea" + "rer " + tok + chr(34)
-        with tempfile.NamedTemporaryFile("w", suffix=".cfg", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".cfg", delete=False, encoding="utf-8"
+        ) as f:
             f.write(hdr + "\n")
             cfg = f.name
         try:

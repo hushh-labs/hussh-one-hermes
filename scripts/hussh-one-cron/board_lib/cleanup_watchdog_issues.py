@@ -31,7 +31,10 @@ SIGNATURE = "Automatically initiated by Board Sync watchdog"
 
 
 def gh(args: list[str], timeout: int = 60) -> str:
-    p = subprocess.run(["gh", *args], text=True, capture_output=True, timeout=timeout)
+    p = subprocess.run(
+        ["gh", *args], text=True, capture_output=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
+    )
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip() or p.stdout.strip())
     return p.stdout
