@@ -309,6 +309,26 @@ All four `conclusion: cancelled`, none carrying a `runner_id` field at all. Twen
 hours to the second, four times over, is GitHub's queue limit expiring — not a coincidence
 and not a duration.
 
+**Predicted in advance, then confirmed without touching it.** The `main` run was evidence
+found after the fact, so correction 4 was still a reading of somebody else's run. On
+2026-09-04 at 20:30Z this branch's own run `33896645532` had two jobs queued since
+16:43:14Z and nothing pushed since — the first quiet window not ended by me. The
+prediction was written down before the fact: both jobs cancelled at 16:43:14Z the next
+day, no `runner_id`. Fetched at 16:44:18Z on 2026-09-05:
+
+```
+job 101100918335  Python tests / Run tests            ubuntu-latest-96-core
+job 101100918255  OS-specific tests / Windows-only    windows-latest-32-core
+  both:  created 2026-09-04T16:43:14Z   completed 2026-09-05T16:43:15Z   = 24h 00m 00.x s
+         conclusion: cancelled    runner_id 0    runner_name ""
+```
+
+**One second past twenty-four hours, on both.** Two independent instances now — four jobs
+on `main`, two here — and the second was called before it happened. The one thing that
+could have spoiled it was a push, which cancels queued jobs through the concurrency group;
+that is precisely how the three earlier answers went wrong, so the branch was deliberately
+left alone for twenty hours.
+
 **Two things that changes.**
 
 *They terminate.* The correct statement is: never assigned a runner, and cancelled by
