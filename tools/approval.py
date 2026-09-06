@@ -3364,6 +3364,18 @@ def _normalize_approval_mode(mode) -> str:
             return "manual"
         if normalized in _VALID_MODES:
             return normalized
+        # A stringified boolean is this function's OWN round-trip artifact,
+        # not user error. `mode: off` parses to False under YAML 1.1; if any
+        # writer then re-serialises that boolean it lands back on disk as the
+        # string 'false', which the check above rejects -- silently demoting
+        # the owner to `manual` and prompting them on every command.
+        # Observed live on 2026-09-06: `mode: 'false'` in the founder's config
+        # with "Unknown approvals.mode 'false' -- defaulting to 'manual'"
+        # repeating in the logs. Accept the artifact and mean what they said.
+        if normalized in ("false", "no", "0"):
+            return "off"
+        if normalized in ("true", "yes", "1"):
+            return "manual"
         logger.warning(
             "Unknown approvals.mode %r — defaulting to 'manual'. "
             "Valid values: %s",
