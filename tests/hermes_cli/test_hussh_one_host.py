@@ -235,36 +235,94 @@ class TestRestartAppClearsTheStaleLock:
         monkeypatch.setattr(H.time, "sleep", lambda _s: None)
         return calls
 
+    def _stale_trio(self, monkeypatch, tmp_path, *, dangling=True):
+        """The three files Electron's single-instance guard actually uses.
+
+        All three are made DANGLING, which is the real post-SIGKILL state:
+        `SingletonSocket` points into a scoped temp directory and
+        `SingletonCookie` at a bare number. This matters for the assertions
+        below -- ``Path.exists()`` FOLLOWS symlinks, so a dangling link reads
+        as absent and any test written with ``exists()`` passes whether the
+        file was removed or not. Only ``is_symlink()`` can tell.
+        """
+        files = []
+        for name, target in (
+            ("SingletonLock", "Mac-99999"),
+            ("SingletonSocket", str(tmp_path / "gone" / "SingletonSocket")),
+            ("SingletonCookie", "7410081187091955945"),
+        ):
+            path = tmp_path / name
+            if dangling:
+                path.symlink_to(target)
+            files.append(path)
+        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_FILES", tuple(files))
+        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", files[0])
+        return files
+
     def test_a_stale_lock_from_an_earlier_kill_is_removed(self, monkeypatch, tmp_path):
-        lock = tmp_path / "SingletonLock"
-        lock.symlink_to("Mac-99999")  # points at a pid that no longer exists
-        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", lock)
+        lock, _socket, _cookie = self._stale_trio(monkeypatch, tmp_path)
+        assert lock.is_symlink()  # the fixture is really stale to begin with
         self._patch_io(monkeypatch)
 
         H.restart_app(timeout=5)
-        assert not lock.exists()
+        assert not lock.is_symlink()
 
-    def test_no_lock_present_is_not_an_error(self, monkeypatch, tmp_path):
-        # The common case: a clean quit already removed it. unlink() on a
+    def test_the_stale_socket_and_cookie_are_removed_too(self, monkeypatch, tmp_path):
+        """Removing only SingletonLock is not enough, and looked like a crash.
+
+        On 2026-09-04 the lock was already gone while `SingletonSocket` and
+        `SingletonCookie` survived three days of `open -a`, `open -n -a`,
+        `launchctl asuser open`, a direct binary launch and `lms server
+        start` -- every one of which exited 0 in milliseconds with no
+        process, no bound port, no crash report and no entry in the app's
+        own main.log. Indistinguishable from a crash from the outside, and
+        it kept the founder's live gateway backend down.
+        """
+        lock, socket_link, cookie = self._stale_trio(monkeypatch, tmp_path)
+        lock.unlink()  # the exact 2026-09-04 state: lock clean, other two stale
+        self._patch_io(monkeypatch)
+
+        H.restart_app(timeout=5)
+        assert not socket_link.is_symlink()
+        assert not cookie.is_symlink()
+
+    def test_no_singleton_files_present_is_not_an_error(self, monkeypatch, tmp_path):
+        # The common case: a clean quit already removed them. unlink() on a
         # missing path must not raise past this point.
-        lock = tmp_path / "SingletonLock"
-        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", lock)
+        self._stale_trio(monkeypatch, tmp_path, dangling=False)
         self._patch_io(monkeypatch)
 
         H.restart_app(timeout=5)  # must not raise
 
     def test_the_lock_is_removed_before_the_relaunch_is_attempted(self, monkeypatch, tmp_path):
-        lock = tmp_path / "SingletonLock"
-        lock.symlink_to("Mac-99999")
-        monkeypatch.setattr(H, "_LMSTUDIO_SINGLETON_LOCK", lock)
+        files = self._stale_trio(monkeypatch, tmp_path)
         calls = self._patch_io(monkeypatch)
 
         H.restart_app(timeout=5)
         # 'open -a LM Studio' is the second subprocess call, after the pkill;
-        # by then the lock must already be gone, or the relaunch it triggers
-        # inherits the exact silent no-op this fix exists to prevent.
-        assert lock.exists() is False
+        # by then every singleton file must already be gone, or the relaunch
+        # it triggers inherits the exact silent no-op this fix prevents.
+        assert not any(path.is_symlink() for path in files)
         assert any(cmd[:2] == ["open", "-a"] for cmd in calls)
+
+    def test_a_server_that_never_returns_says_it_is_not_the_lock_trap(
+        self, monkeypatch, tmp_path
+    ):
+        """The timeout message must not send the next reader back to the lock.
+
+        Once the files are cleared, a still-dead server means something
+        outside this process's reach. Saying so is what stops the next
+        session force-killing more of the app's local state looking for a
+        lock that is already gone.
+        """
+        self._stale_trio(monkeypatch, tmp_path)
+        self._patch_io(monkeypatch, server_up=False)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            H.restart_app(timeout=0.01)
+        message = str(excinfo.value)
+        assert "NOT the stale-lock trap" in message
+        assert "main.log" in message
 
     def test_the_default_timeout_has_real_headroom_over_the_measured_cold_start(self):
         # Measured on this machine: ~128s from kill to the server answering.

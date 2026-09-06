@@ -135,9 +135,33 @@ def load_at_context(
 
 _LMSTUDIO_APP_PATTERN = r"/Applications/LM Studio\.app/Contents/MacOS/LM Studio$"
 
-_LMSTUDIO_SINGLETON_LOCK = (
-    Path.home() / "Library" / "Application Support" / "LM Studio" / "SingletonLock"
+_LMSTUDIO_APP_SUPPORT = (
+    Path.home() / "Library" / "Application Support" / "LM Studio"
 )
+
+# Electron's single-instance guard is THREE files, not one. Removing only
+# `SingletonLock` -- which is what this module did until 2026-09-04 -- leaves
+# `SingletonSocket` as a dangling symlink into a scoped temp directory that
+# SIGKILL never cleaned up, and `SingletonCookie` beside it. The next launch
+# then finds a socket path it can neither connect to nor rebind, concludes it
+# is a secondary instance, and exits 0 in milliseconds: no window, no port, no
+# crash report, no line in the app's own main.log. From the outside that is
+# indistinguishable from "LM Studio crashed", which is exactly how it was
+# misread on 2026-09-01 and again on 2026-09-04.
+#
+# Observed on 2026-09-04: `SingletonCookie -> 7410081187091955945` and
+# `SingletonSocket -> /var/.../T/scoped_dir6xduje/SingletonSocket`, both
+# stamped 2026-09-01 16:12, i.e. surviving a full three days and every
+# `open -a`, `open -n -a`, `launchctl asuser open`, direct-binary launch and
+# `lms server start` attempted against them.
+_LMSTUDIO_SINGLETON_FILES = (
+    _LMSTUDIO_APP_SUPPORT / "SingletonLock",
+    _LMSTUDIO_APP_SUPPORT / "SingletonSocket",
+    _LMSTUDIO_APP_SUPPORT / "SingletonCookie",
+)
+
+# Backwards compatibility for anything importing the old single-file name.
+_LMSTUDIO_SINGLETON_LOCK = _LMSTUDIO_SINGLETON_FILES[0]
 
 # Measured cold start on this machine, after the lock-cleanup fix below: about
 # 128s from a `kill -9` to the server accepting connections. Before that fix
@@ -190,10 +214,13 @@ def restart_app(
         check=False,
     )
     time.sleep(1.0)  # let the OS finish tearing the killed process down
-    try:
-        _LMSTUDIO_SINGLETON_LOCK.unlink()
-    except FileNotFoundError:
-        pass
+    for stale in _LMSTUDIO_SINGLETON_FILES:
+        # `unlink` on a DANGLING symlink still removes the link, which is the
+        # case that matters here; `missing_ok` covers the already-clean case.
+        try:
+            stale.unlink(missing_ok=True)
+        except OSError as exc:  # noqa: PERF203 - one file, one diagnosis
+            logger.warning("could not remove stale %s: %s", stale.name, exc)
     subprocess.run(["open", "-a", "LM Studio"], capture_output=True, check=False)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -203,7 +230,13 @@ def restart_app(
         except Exception:  # noqa: BLE001
             time.sleep(3)
     raise RuntimeError(
-        f"LM Studio server did not come back within {timeout}s of restart"
+        f"LM Studio server did not come back within {timeout}s of restart. "
+        "The singleton files were cleared, so this is NOT the stale-lock trap. "
+        "Check whether an LM Studio process exists at all (`pgrep -f 'LM "
+        "Studio'`): if none does and ~/Library/Logs/'LM Studio'/main.log has "
+        "no entry for the launch, the app is refusing to start for a reason "
+        "outside this process's reach and needs a human to open it from the "
+        "Dock. Do not keep force-killing or deleting more of its local state."
     )
 
 
