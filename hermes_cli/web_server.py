@@ -61,7 +61,7 @@ from hermes_cli.config import (
     build_cron_model_impact,
     cfg_get,
     DEFAULT_CONFIG,
-    OPTIONAL_ENV_VARS,
+    ensure_provider_env_vars as _ensure_optional_env_vars,
     clear_model_endpoint_credentials,
     get_config_path,
     get_env_path,
@@ -8113,7 +8113,8 @@ def _catalog_provider_env_metadata() -> dict:
     # promoted into a provider card. Copilot lists GITHUB_TOKEN among its auth
     # aliases, but its provider card uses the provider-owned COPILOT_GITHUB_TOKEN.
     try:
-        from hermes_cli.config import OPTIONAL_ENV_VARS as _OPT
+        from hermes_cli.config import ensure_provider_env_vars as _ensure_opt
+        _OPT = _ensure_opt()
     except Exception:
         _OPT = {}
     _non_provider_keys = {
@@ -8241,7 +8242,7 @@ def _get_env_vars_sync(profile: Optional[str] = None):
         }
 
     result = {}
-    for var_name, info in OPTIONAL_ENV_VARS.items():
+    for var_name, info in _ensure_optional_env_vars().items():
         result[var_name] = _row(var_name, info)
     # Synthesize rows for catalog provider env vars that have no hand entry in
     # OPTIONAL_ENV_VARS — these are the providers that were CLI-configurable but
@@ -9345,7 +9346,7 @@ def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
     """All messaging-category env vars for a platform (override + plugin + prefix)."""
     prefixes = _platform_env_prefixes(platform_id)
     keys: list[str] = []
-    for name, info in OPTIONAL_ENV_VARS.items():
+    for name, info in _ensure_optional_env_vars().items():
         if info.get("category") != "messaging":
             continue
         if name in _MESSAGING_KEYS_PAGE_KEYS:
@@ -9423,7 +9424,7 @@ def _catalog_lookup(platform_id: str) -> dict[str, Any] | None:
 
 
 def _messaging_env_info(key: str) -> dict[str, Any]:
-    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+    info = _ensure_optional_env_vars().get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),

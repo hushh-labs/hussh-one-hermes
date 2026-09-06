@@ -1021,7 +1021,7 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
 
     # Check optional vars (if not required_only)
     if not required_only:
-        for var_name, info in OPTIONAL_ENV_VARS.items():
+        for var_name, info in ensure_provider_env_vars().items():
             if not get_env_value(var_name):
                 missing.append({"name": var_name, **info, "is_required": False})
 
@@ -2473,9 +2473,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     if new_var_names and interactive and not quiet:
         new_and_unset = [
-            (name, OPTIONAL_ENV_VARS[name])
+            (name, ensure_provider_env_vars()[name])
             for name in sorted(new_var_names)
-            if not get_env_value(name) and name in OPTIONAL_ENV_VARS
+            if not get_env_value(name) and name in ensure_provider_env_vars()
         ]
         if new_and_unset:
             print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
@@ -4467,7 +4467,7 @@ def reload_env() -> int:
     _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
     """
     env_vars = load_env()
-    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+    known_keys = set(ensure_provider_env_vars().keys()) | _EXTRA_ENV_KEYS
     count = 0
     for key, value in env_vars.items():
         if os.environ.get(key) != value:
@@ -5932,7 +5932,7 @@ def config_command(args):
 
         print()
         print(color("  Optional:", Colors.BOLD))
-        for var_name, info in OPTIONAL_ENV_VARS.items():
+        for var_name, info in ensure_provider_env_vars().items():
             if get_env_value(var_name):
                 print(f"    ✓ {var_name}")
             else:
@@ -5969,40 +5969,78 @@ def config_command(args):
 # gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
 # Runs once at import time.
 
-_profile_env_vars_injected = False
+# Provider names already folded into OPTIONAL_ENV_VARS. Tracking these (rather
+# than a single "have we run yet" flag) is what makes the pass re-runnable.
+_injected_profile_providers: set = set()
 
 
 def _inject_profile_env_vars() -> None:
     """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Re-runnable by design, and it has to be. The provider registry is dynamic —
+    ``providers.register_provider`` can add a profile at any point, including
+    from a user plugin — and this module is itself imported *during* provider
+    package initialisation on some entry paths, so the very first call can
+    legitimately observe a partial registry.
+
+    This previously latched a module-level flag **before** doing the work, inside
+    a bare ``except: pass``. A partial or failed first pass therefore became
+    permanent, silently: every provider that registered afterwards had its env
+    vars missing from OPTIONAL_ENV_VARS for the life of the process, with no
+    error raised anywhere. Two consequences, neither of them cosmetic:
+
+      * ``hermes setup`` never offers the key, so the provider looks unsupported.
+      * ``tools/environments/local.py`` reads this dict to decide which env vars
+        are secrets to redact — an absent entry means a real API key is printed
+        in the clear.
+
+    Tracking the providers already processed keeps repeat calls cheap (a set
+    lookup per provider) while letting a late registration heal itself.
     """
-    global _profile_env_vars_injected
-    if _profile_env_vars_injected:
-        return
-    _profile_env_vars_injected = True
     try:
         from providers import list_providers
-        for _pp in list_providers():
-            if _pp.auth_type not in {"api_key",}:
-                continue
-            for _var in _pp.env_vars:
-                if _var in OPTIONAL_ENV_VARS:
-                    continue
-                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
-                OPTIONAL_ENV_VARS[_var] = {
-                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
-                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
-                    "url": _pp.signup_url or None,
-                    "password": _is_key,
-                    "category": "provider",
-                    "advanced": True,
-                }
+
+        profiles = list_providers()
     except Exception:
-        pass
+        # Registry genuinely unavailable — leave nothing latched, so the next
+        # caller retries rather than inheriting this failure forever.
+        logger.debug("Provider env-var injection skipped", exc_info=True)
+        return
+
+    for _pp in profiles:
+        name = getattr(_pp, "name", None)
+        if not name or name in _injected_profile_providers:
+            continue
+        _injected_profile_providers.add(name)
+        if _pp.auth_type not in {"api_key",}:
+            continue
+        for _var in _pp.env_vars:
+            if _var in OPTIONAL_ENV_VARS:
+                continue
+            _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
+            OPTIONAL_ENV_VARS[_var] = {
+                "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
+                "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                "url": _pp.signup_url or None,
+                "password": _is_key,
+                "category": "provider",
+                "advanced": True,
+            }
 
 
-# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
+def ensure_provider_env_vars() -> dict:
+    """Return OPTIONAL_ENV_VARS with every currently-registered provider folded in.
+
+    The public way to read the dict. Callers that import OPTIONAL_ENV_VARS
+    directly get whatever the registry happened to hold at import time; this
+    reconciles first. Cheap enough to call on every read.
+    """
+    _inject_profile_env_vars()
+    return OPTIONAL_ENV_VARS
+
+
+# Eagerly inject so that OPTIONAL_ENV_VARS is populated at import time for
+# direct importers; later callers re-reconcile via ensure_provider_env_vars().
 _inject_profile_env_vars()
 
 

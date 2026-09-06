@@ -239,8 +239,11 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     try:
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        for name, metadata in OPTIONAL_ENV_VARS.items():
+        # ensure_provider_env_vars() rather than the bare dict: a provider that
+        # registered after hermes_cli.config was imported would otherwise be
+        # absent here, and its API key would not be recognised as a secret.
+        from hermes_cli.config import ensure_provider_env_vars
+        for name, metadata in ensure_provider_env_vars().items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:
                 blocked.add(name)
