@@ -51,8 +51,6 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-import snowballstemmer
-
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.tool_search")
@@ -403,8 +401,41 @@ _thread_local = threading.local()
 
 
 def _stemmer() -> Any:
+    """The English stemmer, imported lazily and allowed to be missing.
+
+    **Why this is not a module-level import any more (2026-09-04).** It was
+    one, and on the founder's own machine ``snowballstemmer`` was absent from
+    the venv despite being pinned in ``pyproject.toml`` -- an ``uv pip install
+    -e .`` that never finished. A hard top-level import made that missing
+    package take down this ENTIRE module, and ``model_tools`` catches the
+    ImportError as a generic exception and logs one WARNING line:
+
+        Tool search assembly skipped: No module named 'snowballstemmer'
+
+    The visible consequence was not a broken search. It was that every MCP and
+    plugin schema shipped EAGERLY on every turn: 237 tool schemas, 402,964
+    bytes, ~100,741 tokens, of which ~86,383 tokens were the 213 deferrable
+    MCP tools the turn never called. That is 68% of a 148,673-token request
+    spent on a catalog, on a device whose models run at 131,072 -- and it ran
+    that way for days behind a warning nobody reads.
+
+    A stemmer is a search-RANKING nicety used by exactly one function. It must
+    never be able to disable schema deferral. When it is missing, stemming
+    degrades to identity: "issues" no longer matches ``create_issue``, which
+    costs a little recall inside ``tool_search`` and nothing at all in tokens.
+    """
     st = getattr(_thread_local, "stemmer", None)
     if st is None:
+        try:
+            import snowballstemmer
+        except ImportError:
+            logger.warning(
+                "snowballstemmer is not installed; tool_search will match "
+                "unstemmed tokens (slightly lower recall). Schema deferral is "
+                "unaffected. Install it with: uv pip install -e ."
+            )
+            _thread_local.stemmer = False
+            return False
         st = snowballstemmer.stemmer("english")
         _thread_local.stemmer = st
     return st
@@ -412,8 +443,15 @@ def _stemmer() -> Any:
 
 @functools.lru_cache(maxsize=16384)
 def _stem(token: str) -> str:
-    """Stem one token, memoized across stateless catalog rebuilds."""
-    return _stemmer().stemWord(token)
+    """Stem one token, memoized across stateless catalog rebuilds.
+
+    Falls back to the token itself when no stemmer is available. Identity is
+    a valid stemming function; it is simply the least effective one.
+    """
+    stemmer = _stemmer()
+    if not stemmer:
+        return token
+    return stemmer.stemWord(token)
 
 
 def _tokenize(text: str) -> List[str]:
