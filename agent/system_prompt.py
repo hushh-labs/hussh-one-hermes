@@ -502,8 +502,36 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()
             # Google model operational guidance (conciseness, absolute
-            # paths, parallel tool calls, verify-before-edit, etc.)
-            if "gemini" in _model_lower or "gemma" in _model_lower:
+            # paths, verify-before-edit, keep-going, etc.).  Controlled by
+            # config.yaml agent.google_operational_guidance:
+            #   "auto" (default) — Gemini/Gemma only, the historical behaviour
+            #   true  — inject for every model
+            #   false — inject for none
+            #   list  — custom model-name substrings to match
+            #
+            # The gate exists because this block is not neutral scaffolding:
+            # it tells the model to verify before editing and to "keep going
+            # ... don't stop with a plan — execute it", which is precisely the
+            # behaviour an agentic benchmark scores. Handing it to one family
+            # and not another silently measures the prompt instead of the
+            # model. Measured 2026-09-04 across the four on-device candidates:
+            # gemma matched this block AND tool-use enforcement, qwen matched
+            # enforcement plus execution guidance, and meta/muse-glimmer and
+            # nvidia/nemotron matched NOTHING — three different system prompts
+            # across four models being compared on the same tasks.
+            _google = getattr(agent, "_google_operational_guidance", "auto")
+            if _google is True or (isinstance(_google, str)
+                                   and _google.lower() in {"true", "always", "yes", "on"}):
+                _inject_google = True
+            elif _google is False or (isinstance(_google, str)
+                                      and _google.lower() in {"false", "never", "no", "off"}):
+                _inject_google = False
+            elif isinstance(_google, list):
+                _inject_google = any(p.lower() in _model_lower
+                                     for p in _google if isinstance(p, str))
+            else:
+                _inject_google = "gemini" in _model_lower or "gemma" in _model_lower
+            if _inject_google:
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
 
     # Execution-discipline guidance (tool persistence, mandatory tool use

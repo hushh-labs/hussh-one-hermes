@@ -2029,6 +2029,14 @@ def init_agent(
     # agent/system_prompt.py for the injection gate.
     agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
 
+    # Google operational-guidance gate: "auto" (default — Gemini/Gemma only,
+    # the historical behaviour), true (every model), false (none), or a list
+    # of model-name substrings.  Exists so a cross-model comparison can hold
+    # the system prompt constant; see agent/system_prompt.py for why that
+    # block is not neutral scaffolding.
+    agent._google_operational_guidance = _agent_section.get(
+        "google_operational_guidance", "auto")
+
     # Wall-clock run budget from config (agent.run_budget_seconds) — only
     # consulted when the constructor arg was not given. Absent/None/invalid
     # keeps the feature fully off (zero behavior change in the default path).
