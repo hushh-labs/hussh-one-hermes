@@ -518,3 +518,161 @@ class TestTheClaimDetectorCatchesPlainCompletionClaims:
         # only calls it fabrication because the goal was not reached, which is
         # the correct reading -- it reported work the world does not show.
         assert run.claimed_success is True
+
+
+class TestContextIsReadNotChosen:
+    """The loaded window is the operating window; the harness must not invent one.
+
+    Measured 2026-09-06 on one set of gemma-4-12b-qat weights: LM Studio loaded
+    them at 128,000 by default, the ceiling is 262,144, and the harness's old
+    pin default was 131,072. Three numbers, one model, and only the loaded one
+    bounds a real request. Pinning also failed asymmetrically -- the MLX loader
+    ignored `-c` and used its ceiling while the GGUF build obeyed -- so a
+    "common" pinned context silently compared two different configurations.
+    """
+
+    def _args(self, **over):
+        import argparse
+        base = dict(
+            models=["m"], quests=None, root=None, context=None, timeout=None,
+            provider="lmstudio", out=None, artifacts=None, pin=False, loop=1,
+            list=False,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_pin_is_off_by_default(self):
+        """A default run must never load, evict, or restart the server."""
+        import hermes_cli.puppy_cmd as pc
+        parser = pc.build_parser() if hasattr(pc, "build_parser") else None
+        if parser is None:
+            args = self._args()
+            assert args.pin is False
+        else:
+            ns = parser.parse_args(["puppy", "quest", "m"])
+            assert ns.pin is False
+
+    def test_default_reads_the_loaded_window_from_the_server(self, monkeypatch):
+        seen = {}
+
+        import hermes_cli.hussh_one_routing.host as H
+        monkeypatch.setattr(H, "loaded_context", lambda m: 128000)
+
+        def _no_pinning(*a, **k):
+            raise AssertionError("default run must not call ensure_context")
+
+        monkeypatch.setattr(H, "ensure_context", _no_pinning)
+        seen["ctx"] = H.loaded_context("m")
+        assert seen["ctx"] == 128000
+
+    def test_an_explicit_context_without_pin_is_a_declaration(self):
+        """A bare llama-server has no /api/v0/models to probe.
+
+        `--context N` without `--pin` says "the server was started with N", and
+        must not trigger a probe that would fail on such a host.
+        """
+        args = self._args(context=64000)
+        assert args.pin is False and args.context == 64000
+
+
+class TestAgentContainment:
+    """A --yolo agent must die when the harness dies.
+
+    Measured 2026-09-06: SIGKILL on the harness left a quest agent running,
+    re-parented to init, driving LM Studio for eight more minutes after the run
+    was reported stopped -- and it evicted the model the founder's live gateway
+    was serving from. `subprocess.run` cannot give this: killing the parent does
+    not kill the child, and its `timeout=` kills only the direct child, never
+    the shell or python the agent itself spawned.
+    """
+
+    def test_agent_is_spawned_as_its_own_session_leader(self, monkeypatch):
+        import hermes_cli.hussh_one_routing.quest as Q
+
+        seen = {}
+
+        class _Proc:
+            pid = 4242
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return ("out", "")
+
+        def _popen(cmd, **kw):
+            seen.update(kw)
+            return _Proc()
+
+        monkeypatch.setattr(Q.subprocess, "Popen", _popen)
+        monkeypatch.setattr(Q, "_install_agent_reaper", lambda: None)
+        rc, out, err, timed_out = Q._run_agent(
+            ["x"], cwd=".", env={}, timeout=5,
+        )
+        assert seen.get("start_new_session") is True, (
+            "without start_new_session the agent shares our process group and "
+            "cannot be group-killed independently"
+        )
+        assert (rc, out, timed_out) == (0, "out", False)
+
+    def test_timeout_kills_the_whole_group_not_just_the_child(self, monkeypatch):
+        import hermes_cli.hussh_one_routing.quest as Q
+
+        killed = []
+
+        class _Proc:
+            pid = 5150
+            returncode = -9
+
+            def __init__(self):
+                self._calls = 0
+
+            def communicate(self, timeout=None):
+                self._calls += 1
+                if self._calls == 1:
+                    raise Q.subprocess.TimeoutExpired("cmd", timeout)
+                return ("partial", "")
+
+            def kill(self):
+                killed.append("direct")
+
+        monkeypatch.setattr(Q.subprocess, "Popen", lambda cmd, **kw: _Proc())
+        monkeypatch.setattr(Q, "_install_agent_reaper", lambda: None)
+        monkeypatch.setattr(Q, "_kill_agent_group", lambda pid: killed.append(pid))
+
+        rc, out, err, timed_out = Q._run_agent(["x"], cwd=".", env={}, timeout=1)
+        assert timed_out is True
+        assert 5150 in killed, "the process GROUP must be killed on timeout"
+        assert out == "partial", "partial output must survive the timeout"
+
+    def test_a_live_agent_is_registered_then_released(self, monkeypatch):
+        import hermes_cli.hussh_one_routing.quest as Q
+
+        during = {}
+
+        class _Proc:
+            pid = 777
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                during["registered"] = 777 in Q._LIVE_AGENT_PGIDS
+                return ("", "")
+
+        monkeypatch.setattr(Q.subprocess, "Popen", lambda cmd, **kw: _Proc())
+        monkeypatch.setattr(Q, "_install_agent_reaper", lambda: None)
+        Q._LIVE_AGENT_PGIDS.discard(777)
+        Q._run_agent(["x"], cwd=".", env={}, timeout=5)
+        assert during["registered"] is True, "must be tracked while running"
+        assert 777 not in Q._LIVE_AGENT_PGIDS, "must be released when done"
+
+    def test_reaper_kills_every_tracked_group(self, monkeypatch):
+        import hermes_cli.hussh_one_routing.quest as Q
+
+        killed = []
+        monkeypatch.setattr(Q, "_kill_agent_group", lambda pid: killed.append(pid))
+        Q._LIVE_AGENT_PGIDS.update({11, 22, 33})
+        Q._reap_live_agents()
+        assert sorted(killed) == [11, 22, 33]
+        assert not Q._LIVE_AGENT_PGIDS
+
+    def test_kill_group_never_raises_on_a_dead_process(self):
+        import hermes_cli.hussh_one_routing.quest as Q
+        Q._kill_agent_group(2**30)  # certainly not a live pid

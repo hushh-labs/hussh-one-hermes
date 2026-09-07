@@ -62,9 +62,11 @@ quest grades the model rather than the anchor bug.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
+import signal
 import re
 import shlex
 import shutil
@@ -929,6 +931,104 @@ def feedback_prompt(quest: Quest, failed: Sequence[dict]) -> str:
     )
 
 
+
+# ── Child containment ────────────────────────────────────────────────────────
+# A quest agent runs with --yolo: it executes shell commands unsupervised. It
+# must therefore die when this harness dies, and `subprocess.run` alone does not
+# give that. Two holes, both hit in practice on 2026-09-06:
+#
+#   1. SIGKILL on the harness left the agent running, re-parented to init. It
+#      kept driving LM Studio for eight more minutes after the run was reported
+#      stopped, evicting the model the founder's live gateway was using.
+#   2. `subprocess.run(timeout=...)` kills only the direct child. The agent's
+#      own grandchildren (a shell, a `python`, an editor) survive it.
+#
+# Each agent is spawned as its own process-group leader and the whole GROUP is
+# signalled, so a stop is a real stop. The group must then be killed explicitly
+# on every exit path -- a session leader no longer receives the terminal's
+# Ctrl-C -- which is what the handlers and the atexit hook below guarantee.
+
+_LIVE_AGENT_PGIDS: set = set()
+
+
+def _kill_agent_group(pid: int) -> None:
+    """SIGKILL the whole process group led by *pid*. Never raises."""
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass  # already gone, or never ours to signal
+
+
+def _reap_live_agents() -> None:
+    for pid in list(_LIVE_AGENT_PGIDS):
+        _kill_agent_group(pid)
+        _LIVE_AGENT_PGIDS.discard(pid)
+
+
+def _install_agent_reaper() -> None:
+    """Tear down running agents on interrupt, terminate, and normal exit."""
+    if getattr(_install_agent_reaper, "_done", False):
+        return
+    _install_agent_reaper._done = True
+    atexit.register(_reap_live_agents)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            previous = signal.getsignal(sig)
+        except (ValueError, OSError):
+            continue
+
+        def _handler(signum, frame, _prev=previous):
+            _reap_live_agents()
+            if callable(_prev) and _prev not in (
+                signal.SIG_IGN, signal.SIG_DFL,
+            ):
+                _prev(signum, frame)
+            else:
+                signal.signal(signum, signal.SIG_DFL)
+                os.kill(os.getpid(), signum)
+
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            pass  # not the main thread; atexit still covers the normal path
+
+
+def _run_agent(
+    command: Sequence[str],
+    *,
+    cwd: str,
+    env: dict,
+    timeout: float,
+) -> tuple[Optional[int], str, str, bool]:
+    """Run one agent turn, contained. Returns (rc, stdout, stderr, timed_out).
+
+    Replaces ``subprocess.run(timeout=...)`` so the timeout kills the agent's
+    descendants too, not just the process this harness can see.
+    """
+    _install_agent_reaper()
+    proc = subprocess.Popen(  # noqa: S603 - command is built by this module
+        list(command), cwd=cwd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True,
+    )
+    _LIVE_AGENT_PGIDS.add(proc.pid)
+    timed_out = False
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_agent_group(proc.pid)
+        try:
+            out, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = "", ""
+    finally:
+        _LIVE_AGENT_PGIDS.discard(proc.pid)
+    return proc.returncode, out or "", err or "", timed_out
+
+
 def run_quest(
     model: str,
     quest: Quest,
@@ -983,20 +1083,18 @@ def run_quest(
         attempt_command[attempt_command.index("-z") + 1] = prompt
 
         started = time.time()
-        try:
-            proc = subprocess.run(
-                attempt_command, cwd=str(workspace), env=run_env,
-                capture_output=True, text=True, timeout=budget,
-            )
-            run.exit_code = proc.returncode
-            run.final_text = (proc.stdout or "").strip()
-            if proc.returncode != 0 and not run.final_text:
-                run.error = (proc.stderr or "")[-2000:]
-        except subprocess.TimeoutExpired as exc:
+        rc, out, err, timed_out = _run_agent(
+            attempt_command, cwd=str(workspace), env=run_env, timeout=budget,
+        )
+        if timed_out:
             run.timed_out = True
             run.error = f"timed out after {budget}s"
-            run.final_text = (exc.stdout or b"").decode("utf-8", "replace").strip() \
-                if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            run.final_text = (out or "").strip()
+        else:
+            run.exit_code = rc
+            run.final_text = (out or "").strip()
+            if rc != 0 and not run.final_text:
+                run.error = (err or "")[-2000:]
         run.wall_s += time.time() - started
 
         if usage_path.exists():
