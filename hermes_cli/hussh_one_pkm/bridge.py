@@ -159,6 +159,11 @@ class HusshVaultBridge:
                         active_sessions=1 if self._vault_key is not None else 0,
                         busy=self._device_sync_status == "syncing",
                         agent_version=agent_version(),
+                        # Cron and sessions are per-profile stores, and this
+                        # bridge already resolved which profile it speaks for.
+                        # Passing it keeps a second profile's scheduled work
+                        # out of this profile's beat.
+                        home=self.profile_home,
                     ),
                 )
             return self._presence

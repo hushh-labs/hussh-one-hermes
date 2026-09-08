@@ -421,6 +421,13 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
 _LOCAL_CTX_PROBE_CACHE: Dict[tuple, tuple] = {}
 
+# Same shape, but for the LM Studio *loaded-instance* window specifically.
+# Kept separate from _LOCAL_CTX_PROBE_CACHE because this one is consulted
+# ahead of the static config override, so it must never be warmed by the
+# looser generic local probe (which can fall back to a non-loaded value).
+_LMSTUDIO_LOADED_CTX_TTL_SECONDS = 30.0
+_LMSTUDIO_LOADED_CTX_CACHE: Dict[tuple, tuple] = {}
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -1396,6 +1403,19 @@ def fetch_endpoint_model_metadata(
                         if isinstance(ctx, int) and ctx > 0:
                             context_length = ctx
                             break
+                    if context_length is None:
+                        # No loaded instance (JIT loading, or the user has not
+                        # opened this model yet). LM Studio still reports the
+                        # model's own ceiling, which is a real server-supplied
+                        # bound and strictly better than falling through to the
+                        # generic 256K default — that default is what makes a
+                        # cold start overshoot a 131K model on its first turn.
+                        # It stays a FALLBACK: once an instance is loaded, the
+                        # allocated window above wins, because a model can be
+                        # loaded well below its ceiling.
+                        max_ctx = model.get("max_context_length")
+                        if isinstance(max_ctx, int) and max_ctx > 0:
+                            context_length = max_ctx
                     if context_length is not None:
                         entry["context_length"] = context_length
 
@@ -2282,6 +2302,98 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     return result
 
 
+def _lmstudio_loaded_context_length(
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[int]:
+    """Return the window LM Studio has actually LOADED for *model*, if any.
+
+    LM Studio allocates the KV cache at load time and publishes the resulting
+    window on its native ``/api/v1/models`` endpoint, under
+    ``loaded_instances[].config.context_length``. That number is ground truth
+    for the running server, and it changes every time a model is reloaded with
+    a different setting -- which a static config entry structurally cannot
+    track. A hand-maintained entry is therefore wrong in both directions: too
+    high and Hermes overshoots into a hard ``exceed_context_size_error``; too
+    low (or missing) and it strands capacity the server already paid for.
+
+    Deliberately strict. It returns a value ONLY when the server is a reachable
+    LM Studio instance that holds a loaded instance of this exact model:
+
+    - ``max_context_length`` is ignored -- it is what the model *could* take,
+      not what was allocated, and using it would recreate the overshoot bug.
+    - A model that is merely present but not loaded (JIT loading) returns None,
+      so the configured value still applies until the server has an opinion.
+    - Any transport failure returns None rather than a guess.
+
+    Callers treat None as "no live evidence", never as "no context".
+    """
+    import time as _time
+
+    bare_model = _strip_provider_prefix(model)
+    if not bare_model or not base_url:
+        return None
+
+    cache_key = (bare_model, base_url.rstrip("/"))
+    now = _time.monotonic()
+    cached = _LMSTUDIO_LOADED_CTX_CACHE.get(cache_key)
+    if cached is not None and (now - cached[1]) < _LMSTUDIO_LOADED_CTX_TTL_SECONDS:
+        return cached[0]
+
+    if not is_local_endpoint(base_url):
+        return None
+
+    lmstudio_url = _localhost_to_ipv4(_lmstudio_server_root(base_url))
+    if _endpoint_blackholed(lmstudio_url):
+        return None
+
+    try:
+        if detect_local_server_type(base_url, api_key=api_key) != "lm-studio":
+            return None
+    except Exception:
+        return None
+
+    import httpx
+
+    try:
+        with httpx.Client(timeout=3.0, headers=_auth_headers(api_key)) as client:
+            resp = client.get(f"{lmstudio_url}/api/v1/models")
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+    except Exception as exc:
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(lmstudio_url)
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    for entry in payload.get("models", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if not (
+            _model_id_matches(entry.get("key", "") or "", bare_model)
+            or _model_id_matches(entry.get("id", "") or "", bare_model)
+        ):
+            continue
+        for inst in entry.get("loaded_instances", []) or []:
+            if not isinstance(inst, dict):
+                continue
+            cfg = inst.get("config")
+            ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+            if isinstance(ctx, int) and ctx > 0:
+                # Positive-only caching, same rationale as
+                # _query_local_context_length: a miss must not be memoized or a
+                # startup race would suppress the retry seconds later.
+                _LMSTUDIO_LOADED_CTX_CACHE[cache_key] = (ctx, now)
+                return ctx
+        break
+
+    return None
+
+
 def _query_local_context_length_uncached(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -2927,6 +3039,8 @@ def get_model_context_length(
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
     0b. model_overrides config (per-provider+model context_window override)
+    0b-lms. LM Studio's live LOADED window (outranks static per-model config —
+       the allocation is ground truth, a config entry is a stale snapshot)
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs,
        LM Studio, and Codex OAuth bypass the cache here so their provider
@@ -3003,6 +3117,36 @@ def get_model_context_length(
                 return mo_ctx
         except Exception:
             pass  # fall through to other resolution paths
+
+    # 0b-lms. LM Studio's LOADED window outranks any static entry.
+    #
+    # LM Studio allocates the KV cache at load time and reports the resulting
+    # window on its native API. A configured `context_length` for the same
+    # model is a snapshot of what someone believed at the time they wrote it,
+    # and it goes stale the moment the model is reloaded differently — so it is
+    # wrong in both directions, and both were observed in the field:
+    #
+    #   * OVERSTATED — config said 262144, the server had loaded 131072.
+    #     Hermes grew the conversation to ~132k and LM Studio answered with a
+    #     hard `exceed_context_size_error`. No compression could recover it,
+    #     because the request was legal by Hermes' accounting and illegal by
+    #     the server's.
+    #   * MISSING — the model had no entry at all, so resolution fell through
+    #     to a smaller default and Hermes gave up with "cannot compress
+    #     further" while ~75,000 tokens of loaded window sat unused.
+    #
+    # The live value cannot go stale: it *is* the allocation. So it is
+    # consulted first, and the configured value becomes the fallback for when
+    # the server has no opinion (model not loaded yet under JIT loading, or
+    # unreachable). An explicit `model.context_length` (step 0 above) still
+    # wins over everything — that remains the deliberate manual escape hatch.
+    if base_url and model:
+        try:
+            lms_ctx = _lmstudio_loaded_context_length(model, base_url, api_key=api_key)
+        except Exception:
+            lms_ctx = None  # never let a probe failure block resolution
+        if lms_ctx:
+            return lms_ctx
 
     # 0c. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall

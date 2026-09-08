@@ -395,7 +395,14 @@ def test_list_models_reads_the_v0_state_field(monkeypatch):
     models = lmstudio_manager.list_models("http://127.0.0.1:1234/v1")
 
     assert captured[0][0] == "http://127.0.0.1:1234/api/v0/models"
-    assert models == [
+
+    # Assert the fields this test is about, not the whole dict: list_models has
+    # since grown publisher/quantization/capabilities, and an exact-equality
+    # assertion turned every additive change into a failure. The residency
+    # contract is what matters here — the malformed rows are dropped, and each
+    # surviving row carries the v0 `state` verbatim.
+    fields = ("id", "state", "type", "max_context_length")
+    assert [{k: m[k] for k in fields} for m in models] == [
         {
             "id": "google/gemma-4-26b-a4b-qat",
             "state": "loaded",

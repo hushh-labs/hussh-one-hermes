@@ -59,6 +59,7 @@ def cmd_puppy(args) -> int:
         "goal-progress": _cmd_goal_progress,
         "freeze": _cmd_freeze,
         "jobs": _cmd_jobs,
+        "quest": _cmd_quest,
         "routing": _cmd_routing,
     }.get(action)
     if handler is None:
@@ -867,6 +868,115 @@ def _first_call(turn):
     return name, (raw if isinstance(raw, dict) else {})
 
 
+def _cmd_quest(args) -> int:
+    """Run every quest against every model and grade the world, not the text.
+
+    Ordering is quest-major inside model-major: one model stays resident for
+    its whole sweep, because a swap costs a cold load (~128s measured) and this
+    host also serves the founder's live gateway off the same LM Studio.
+
+    Pinning is deliberate and self-healing. ``ensure_context`` is idempotent --
+    it never evicts a model that already holds the requested context -- and it
+    wraps exactly one LM Studio restart around a mismatch, which is the only
+    known cure for that server's session-stickiness. ``--no-pin`` opts out
+    entirely for a host somebody else owns.
+    """
+    from hermes_cli.hussh_one_routing import host as H
+    from hermes_cli.hussh_one_routing import quest as Q
+
+    if getattr(args, "list", False):
+        for entry in Q.QUESTS:
+            print(f"{entry.id:<24} [{entry.rung:<18}] {entry.title}")
+            print(f"{'':<24} checks: "
+                  f"{', '.join(c.name for c in entry.checks)}")
+        return EXIT_OK
+
+    selected = list(args.quests or []) or [q.id for q in Q.QUESTS]
+    unknown = [q for q in selected if q not in Q.QUESTS_BY_ID]
+    if unknown:
+        print(f"unknown quest id(s): {', '.join(unknown)}", file=sys.stderr)
+        return EXIT_ERROR
+    quests = [Q.QUESTS_BY_ID[q] for q in selected]
+
+    from hermes_constants import get_hermes_home
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    root = Path(args.root) if args.root else (
+        get_hermes_home() / "puppy-quests" / stamp)
+    root.mkdir(parents=True, exist_ok=True)
+
+    context = args.context or Q.QUEST_CONTEXT_LENGTH
+    repo = Path(__file__).resolve().parent.parent
+    hermes_bin = [sys.executable, "-m", "hermes_cli.main"]
+
+    artifacts = Path(args.artifacts) if args.artifacts else (root / "runs.jsonl")
+    artifacts.parent.mkdir(parents=True, exist_ok=True)
+
+    runs = []
+    for model in args.models:
+        if not args.no_pin:
+            loaded = H.ensure_context(
+                model, context,
+                unload=H.unload, resident=H.resident, restart=H.restart_app,
+            )
+            if loaded != context:
+                print(f"[{model}] could not pin {context} (server reports "
+                      f"{loaded}); running anyway and recording the real value",
+                      file=sys.stderr)
+            context_for_model = loaded
+        elif args.context:
+            # An explicit context with --no-pin is a DECLARATION, not a
+            # request: the caller is telling us what the server was started
+            # with. Probing would be worse than useless here, because the
+            # probe is LM Studio's own `/api/v0/models` and the host may be a
+            # bare `llama-server`, which does not implement it.
+            context_for_model = args.context
+        else:
+            try:
+                context_for_model = H.loaded_context(model)
+            except Exception as exc:  # noqa: BLE001 - a host we cannot probe
+                print(f"[{model}] could not read the loaded context "
+                      f"({type(exc).__name__}); recording it as unknown. Pass "
+                      f"--context to declare it.", file=sys.stderr)
+                context_for_model = None
+        print(f"=== {model} @ context {context_for_model} ===", flush=True)
+
+        for entry in quests:
+            started = time.time()
+            run = Q.run_quest(
+                model, entry, root=root, hermes_bin=hermes_bin, repo=repo,
+                provider=args.provider, context_length=context_for_model,
+                timeout=args.timeout, loop_attempts=getattr(args, "loop", 1),
+            )
+            runs.append(run)
+            with artifacts.open("a") as handle:
+                handle.write(json.dumps(run.to_dict()) + "\n")
+            verdict = "REACHED" if run.goal_reached else "missed"
+            flag = " FABRICATED" if run.fabricated else ""
+            if run.recovered_by_feedback:
+                flag += f" recovered@{run.reached_on_attempt}"
+            if run.regressed_under_feedback:
+                flag += " REGRESSED"
+            print(f"  {entry.id:<24} {verdict:<8}"
+                  f"{run.checks_passed}/{len(run.check_results)} checks  "
+                  f"{run.tool_calls:>3} calls  {time.time() - started:6.1f}s"
+                  f"{flag}", flush=True)
+            for result in run.check_results:
+                if not result["passed"]:
+                    print(f"      x {result['name']}: {result['detail'][:160]}",
+                          flush=True)
+
+    summary = Q.summarise(runs)
+    print()
+    print(json.dumps(summary, indent=2))
+    if args.out:
+        Path(args.out).write_text(json.dumps(
+            {"context": context, "root": str(root), "quests": selected,
+             "summary": summary}, indent=2))
+    print(f"\nartifacts: {artifacts}")
+    return EXIT_OK
+
+
 def _cmd_routing(args) -> int:
     """What the ledger actually supports recommending."""
     from hermes_cli.hussh_one_pkm.judge_queue import (
@@ -1078,6 +1188,40 @@ def build_puppy_parser(subparsers) -> None:
     jobs_report.add_argument("--judge", required=True,
                              help="Label identifying who graded this queue")
     jobs_report.add_argument("--ledger", help="Evolution ledger path (default: shared)")
+
+    quest = sub.add_parser(
+        "quest",
+        help="Run long-horizon goals end to end and check the world afterwards",
+    )
+    quest.add_argument("models", nargs="+", help="On-device model ids")
+    quest.add_argument("--quests", nargs="*",
+                       help="Quest ids to run (default: all)")
+    quest.add_argument("--root",
+                       help="Workspace root (default: "
+                            "$HERMES_HOME/puppy-quests/<timestamp>)")
+    quest.add_argument("--context", type=int,
+                       help="Pinned context (default: 131072, so the real "
+                            "compactor fires during the run)")
+    quest.add_argument("--timeout", type=float,
+                       help="Per-quest wall budget in seconds")
+    quest.add_argument("--provider", default="lmstudio")
+    quest.add_argument("--out", help="Write the summary JSON here")
+    quest.add_argument("--artifacts",
+                       help="Write one JSON line per run here (feeds the "
+                            "blinded judge queue)")
+    quest.add_argument("--no-pin", action="store_true",
+                       help="Trust whatever context is loaded; never load, "
+                            "evict or restart. Use when another agent owns "
+                            "the LM Studio host")
+    quest.add_argument("--loop", type=int, default=1, metavar="N",
+                       help="Goal loop: on a missed goal, tell the agent "
+                            "which conditions are still unmet (never how to "
+                            "fix them) and let it try again in the same "
+                            "workspace, up to N attempts. Measures whether a "
+                            "model converges, stalls, or regresses under "
+                            "honest feedback")
+    quest.add_argument("--list", action="store_true",
+                       help="List the quests and exit")
 
     routing = sub.add_parser("routing", help="What the ledger supports recommending")
     routing.add_argument("--ledger", help="Ledger path (default: $HERMES_HOME)")

@@ -696,3 +696,81 @@ class TestDeferredCallSchemaProbe:
         ))
         assert result.get("ok") is True
         assert result.get("doc") == "abc"
+
+
+class TestStemmerIsNeverLoadBearing:
+    """A missing stemmer must cost recall, never schema deferral.
+
+    Found live on 2026-09-04. ``snowballstemmer`` is pinned in
+    ``pyproject.toml`` but was absent from the founder's venv (an
+    ``uv pip install -e .`` that never completed). It was imported at module
+    top level, so its absence made ``tools.tool_search`` unimportable;
+    ``model_tools`` caught that as a generic exception and logged one line:
+
+        Tool search assembly skipped: No module named 'snowballstemmer'
+
+    The consequence was not degraded search. It was that every MCP schema
+    shipped eagerly on every turn -- measured on the founder's own failing
+    request: 237 tools, 402,964 bytes, ~100,741 tokens, 68% of a 148,673-token
+    request, on a device running models at 131,072. It ran that way for days.
+
+    After the fix, the same machine with the same MCP servers connected
+    assembled 23 tools: 0 MCP, plus the three bridge tools, ~16,024 tokens.
+    """
+
+    def test_the_module_imports_with_no_stemmer_installed(self, monkeypatch):
+        """The whole point: no stemmer must not mean no deferral."""
+        import importlib
+
+        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) \
+            else __builtins__.__import__
+
+        def _no_stemmer(name, *args, **kwargs):
+            if name == "snowballstemmer":
+                raise ImportError("No module named 'snowballstemmer'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", _no_stemmer)
+        module = importlib.reload(importlib.import_module("tools.tool_search"))
+        assert hasattr(module, "assemble_tool_defs")
+
+    def test_stemming_degrades_to_identity_rather_than_raising(self, monkeypatch):
+        from tools import tool_search as ts
+
+        monkeypatch.setattr(ts, "_thread_local", type("L", (), {})())
+        monkeypatch.setattr(ts, "_stemmer", lambda: False)
+        ts._stem.cache_clear()
+        try:
+            assert ts._stem("issues") == "issues"
+            assert ts._stem("running") == "running"
+        finally:
+            ts._stem.cache_clear()
+
+    def test_deferral_still_happens_without_a_stemmer(self, monkeypatch):
+        """The regression that matters: tokens, not recall."""
+        from tools import tool_search as ts
+
+        monkeypatch.setattr(ts, "_stemmer", lambda: False)
+        ts._stem.cache_clear()
+        monkeypatch.setattr(ts, "is_deferrable_tool_name",
+                            lambda name: name.startswith("mcp__"))
+        defs = [_td("terminal"), _td("mcp__wiki__write", "write a page"),
+                _td("mcp__gmail__search", "search mail")]
+        result = ts.assemble_tool_defs(
+            defs, context_length=131072,
+            config=ts.ToolSearchConfig(
+                enabled="on", threshold_pct=10.0,
+                search_default_limit=5, max_search_limit=20))
+        ts._stem.cache_clear()
+        assert result.activated is True
+        assert result.deferred_count == 2
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert "mcp__wiki__write" not in names
+        assert ts.BRIDGE_TOOL_NAMES <= names
+
+    def test_the_pin_stays_declared_so_a_full_install_gets_the_better_ranking(self):
+        """Lazy does not mean optional-to-declare; a full install must have it."""
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parents[2]
+        assert "snowballstemmer" in (repo / "pyproject.toml").read_text()
