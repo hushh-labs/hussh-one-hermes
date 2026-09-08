@@ -222,7 +222,7 @@ page keeps having to correct elsewhere.
 |---|---|---|---|---|
 | 7.1 End-to-end run | ✅ **provisioned + released a real T4** | full path on real cloud | none | — |
 | 7.2 Mock provider | ✅ credential-free — **proven with the environment stripped** | testable path | none | — |
-| 7.3 CI coverage | ❌ **PR cannot reach green**; the suite was run locally instead | green in CI | **every `*-core` job repo-wide** is never assigned a runner and is cancelled at GitHub's 24h queue limit — `main` too, not just this PR | Needs org access: large-runner capacity or entitlement |
+| 7.3 CI coverage | ❌ **the gate goes green without the suite ever running** — worse than a red gate | the suite actually runs in CI | every `*-core` job repo-wide goes unassigned and is cancelled at 24h; the required-checks gate counts only `failure`, so `cancelled` passes it | Needs org access **and** a decision on the gate — see below |
 | 7.4 Integration test vs real GCP | ✅ `hushh-pda-dev`, 404 confirmed after | one provision + teardown | not yet automated in CI | Automate behind an opt-in marker |
 
 Verified live on this machine: `device_status` measured 4 cores / 15.09GB available;
@@ -363,6 +363,51 @@ were facts about my own cadence. Second: correcting a fabricated number with ano
 fabricated number in the same breath. Third, and the only one that worked: stating a
 falsifiable prediction, changing nothing, and watching. A duration needs two clock
 readings. A mechanism needs an experiment.
+
+### Correction 5 — the gate does go green, and that is the bad news
+
+**"This PR cannot reach green" was wrong**, and it was wrong the same way the previous four
+were: an impossibility asserted from the strongest evidence available at the time, which
+turned out to be a *not yet*. On `6d35e243d`, `All required checks pass` concluded
+**success** at 2026-09-06T16:45:45Z. It needed 24 hours, because the gate waits for the
+stranded jobs and they only resolve when GitHub cancels them.
+
+That is not a reprieve. It is a hole in the control. From the gate's own log:
+
+```
+❌ tests: cancelled
+❌ tests-os: cancelled
+All checks passed (or were skipped)
+```
+
+And from `.github/workflows/ci.yaml`, the rule that produces it:
+
+```python
+failed = [name for name, info in needs.items() if info['result'] == 'failure']
+...
+if failed:
+    sys.exit(1)
+```
+
+**Only `failure` counts.** `cancelled` does not, so a required job that never executed
+passes the gate — while the same loop prints ❌ beside it, because its icon test is
+`result in ('success', 'skipped')`. The log tells the truth and the exit code does not.
+
+**What this means beyond this PR:** any PR in this repository can satisfy
+`All required checks pass` with the Python suite and the Windows suite never having run.
+Not skipped by a path filter — never executed, on a runner that never arrived. The gate is
+reporting a green that nothing earned, which is the precise failure this workstream has
+been finding in its own code all week: a control that returns success without doing the
+work.
+
+**Not fixed here, and deliberately.** Making `cancelled` fail the gate is a one-line change
+and the wrong call to make unilaterally: it would block every PR in the repository until
+large-runner capacity is restored. That is a founder decision about which failure mode the
+team prefers — a gate that lies green, or a repository that cannot merge. Flagged, not
+patched.
+
+**Still red regardless:** `Mixed-license provenance` runs in its own workflow, is not among
+the gate's `needs`, and is unaffected by any of this. 21 inherited files.
 
 ### Blocking checks — what was ours and what was not
 
