@@ -181,6 +181,7 @@ from agent.credential_pool import load_pool
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
+    is_local_endpoint,
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
 )
 from hermes_cli.config import get_hermes_home
@@ -8673,7 +8674,8 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
+        # We do NOT cap output by default on hosted providers. Most
+        # chat-completions providers treat
         # an omitted max_tokens as "use the model's max output", which is what we
         # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
         # an explicit cap only risks truncating a summary or 400-ing on providers
@@ -8686,6 +8688,10 @@ def _build_call_kwargs(
         # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
         # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
         # there.
+        #
+        # Local OpenAI-compatible servers are a third exception: their server
+        # default can reserve the full output window, so callers may pass an
+        # explicit, context-fitted cap for compression and long sessions.
         #
         # NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints) is a
         # second exception: some models—notably minimaxai/minimax-m3—return HTTP
@@ -8716,6 +8722,9 @@ def _build_call_kwargs(
                 _is_gemini_native = is_native_gemini_base_url(_effective_base)
             except Exception:
                 pass
+        _is_local = _is_local_aux_provider(_provider_norm) or is_local_endpoint(
+            _effective_base
+        )
         _nous_on_messages = False
         if _provider_norm in {"nous", "nous-portal", "nousresearch"}:
             from hermes_cli.providers import nous_api_mode
@@ -8727,6 +8736,7 @@ def _build_call_kwargs(
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
+            or _is_local
         ):
             # Use auxiliary_max_tokens_param() so models that require
             # max_completion_tokens (GPT-5 family, Copilot) get the right

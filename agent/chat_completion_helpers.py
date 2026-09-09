@@ -36,7 +36,7 @@ from agent.error_classifier import (
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import estimate_request_tokens_rough, is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
@@ -64,6 +64,103 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 # billing reasons keep their own 60s cooldown (set above); this is the
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+# Local OpenAI-compatible servers often reserve their maximum completion size
+# when ``max_tokens`` is omitted.  That reservation counts against the same
+# context window as the prompt, so an otherwise fitting ~70K-token prompt can
+# fail against a 131K window when the server reserves 65K output tokens.
+# Leave a small estimator margin because the rough estimator intentionally
+# trades tokenizer fidelity for speed.
+_LOCAL_OUTPUT_CONTEXT_MARGIN_TOKENS = 1024
+_LOCAL_DEFAULT_OUTPUT_CAP_TOKENS = 65_536
+
+
+def _fit_local_output_cap(agent, api_kwargs: dict) -> dict:
+    """Keep local prompt + completion within the live model context window.
+
+    LM Studio/Ollama-compatible endpoints commonly apply a large server-side
+    output default when the request omits ``max_tokens``.  Hermes knows the
+    loaded context window and can compute a safer per-request cap.  This is
+    deliberately limited to local/private endpoints; hosted providers retain
+    their native output-cap semantics.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    base_url = getattr(agent, "base_url", "") or ""
+    if (
+        provider
+        not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}
+        and not is_local_endpoint(base_url)
+    ):
+        return api_kwargs
+
+    compressor = getattr(agent, "context_compressor", None)
+    context_length = getattr(compressor, "context_length", None)
+    try:
+        context_length = int(context_length)
+    except (TypeError, ValueError):
+        return api_kwargs
+    if context_length <= 0:
+        return api_kwargs
+
+    messages = api_kwargs.get("messages") or []
+    tools = api_kwargs.get("tools") or None
+    try:
+        prompt_tokens = estimate_request_tokens_rough(messages, tools=tools)
+    except Exception:
+        logger.debug(
+            "Unable to estimate local request size for output-cap fitting",
+            exc_info=True,
+        )
+        return api_kwargs
+
+    available = context_length - prompt_tokens - _LOCAL_OUTPUT_CONTEXT_MARGIN_TOKENS
+    if available <= 0:
+        # The normal preflight compressor owns an input-only overflow. Do not
+        # invent a one-token request here: it would still fail and could hide
+        # the real compression problem.
+        return api_kwargs
+
+    cap = min(_LOCAL_DEFAULT_OUTPUT_CAP_TOKENS, available)
+    output_key = next(
+        (
+            key
+            for key in ("max_output_tokens", "max_completion_tokens", "max_tokens")
+            if key in api_kwargs
+        ),
+        None,
+    )
+    current = None
+    if output_key is not None:
+        try:
+            current = int(api_kwargs[output_key])
+        except (TypeError, ValueError):
+            current = None
+    if current is not None and current > 0:
+        cap = min(cap, current)
+    if cap <= 0:
+        return api_kwargs
+
+    # Preserve an explicitly selected wire key. For an omitted cap, use the
+    # agent's provider-aware selector so GPT-family models still receive
+    # ``max_completion_tokens`` when their endpoint requires it.
+    if output_key is None:
+        try:
+            selected = agent._max_tokens_param(cap)
+        except Exception:
+            selected = {"max_tokens": cap}
+        api_kwargs.update(selected)
+        output_key = next(iter(selected), "max_tokens")
+    elif current is None or current != cap:
+        api_kwargs[output_key] = cap
+
+    if current is None or current != cap:
+        logger.info(
+            "Fitting local output cap to context window: prompt~%s, context=%s, %s=%s",
+            f"{prompt_tokens:,}", f"{context_length:,}", output_key, f"{cap:,}",
+        )
+    return api_kwargs
 
 
 def _context_thread_target(callback):
@@ -2039,7 +2136,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
+        return _fit_local_output_cap(agent, _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
@@ -2060,7 +2157,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
-        )
+        ))
 
     # ── Legacy flag path ────────────────────────────────────────────
     # Reached only when get_provider_profile() returns None — i.e. a
@@ -2072,7 +2169,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    return _fit_local_output_cap(agent, _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -2108,7 +2205,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
-    )
+    ))
 
 
 

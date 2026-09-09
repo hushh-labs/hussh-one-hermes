@@ -40,6 +40,7 @@ from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
     estimate_tokens_rough,
+    is_local_endpoint,
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
@@ -4977,17 +4978,26 @@ This compaction should PRIORITISE preserving all information related to the focu
                     "api_mode": self.api_mode,
                 },
                 "messages": [{"role": "user", "content": prompt}],
-                # NO max_tokens: the output cap must never truncate a summary.
-                # ``summary_budget`` is prompt-level guidance only ("Target ~N
-                # tokens" above). Most OpenAI-compatible wires already omit the
-                # param (see _build_call_kwargs), but the Anthropic Messages
-                # wire and NVIDIA NIM forward it — a hard cap there cut
-                # summaries mid-section (thinking models burn the cap on
-                # reasoning first), producing truncated/thinking-only
-                # summaries and compaction loops. Omitting lets the adapter
-                # fall back to the model's native output ceiling.
+                # Hosted OpenAI-compatible wires omit max_tokens so the
+                # provider can use its native summary ceiling. Local servers
+                # are the exception below: their large default reservation
+                # competes with the prompt, so the bounded summary budget is
+                # sent explicitly to keep the compression request inside the
+                # loaded context window. The Anthropic Messages and NVIDIA NIM
+                # wires also forward an explicit cap where their contracts
+                # require it.
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
+            # Local OpenAI-compatible servers reserve a large completion
+            # budget when this field is omitted. The summary prompt is already
+            # bounded and its budget is computed from the compressed turns, so
+            # sending that explicit cap prevents the summarizer itself from
+            # exceeding the same 131K window as the main request.
+            _local_summary_provider = str(self.provider or "").strip().lower()
+            if _local_summary_provider in {
+                "lmstudio", "lm-studio", "lm_studio", "ollama", "local",
+            } or is_local_endpoint(self.base_url):
+                call_kwargs["max_tokens"] = summary_budget
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             _aux_provider = ""
