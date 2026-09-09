@@ -18,6 +18,8 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ### 2026-09-09 — Local context budget and resumable compaction
 
+Commit: `c48ece87c9`
+
 Local LM Studio/Ollama requests now account for prompt messages, system
 instructions, and tool schemas before choosing the response budget. When a
 server would otherwise reserve a full completion window, Hermes fits the
