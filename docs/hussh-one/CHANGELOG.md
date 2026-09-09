@@ -16,6 +16,16 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-09 — Low-power LM Studio health watchdog
+
+Commit: `pending`
+
+The LM Studio watchdog is now a versioned `no_agent` cron job that runs every
+30 minutes and checks only the lightweight `/v1/models` inventory. It no longer
+wakes Hermes or sends a completion request on every tick. A one-token
+inference probe remains available only through the explicit manual `--deep`
+flag. Existing failure alerts remain local and silent on success.
+
 ### 2026-09-09 — Local context budget and resumable compaction
 
 Commit: `c48ece87c9`

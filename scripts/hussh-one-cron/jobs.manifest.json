@@ -66,6 +66,14 @@
       "default_deliver": "local"
     },
     {
+      "name": "LM Studio Health Watchdog",
+      "schedule": "every 30m",
+      "script": "lmstudio_health_watchdog.py",
+      "no_agent": true,
+      "default_deliver": "local",
+      "purpose": "Low-power metadata-only reachability check; emits only on failure. Use --deep manually for an inference probe."
+    },
+    {
       "name": "Hussh One Self-Healing Doctor",
       "schedule": "every 15m",
       "script": "hussh_one_doctor_heal.py",

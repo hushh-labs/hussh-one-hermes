@@ -33,6 +33,12 @@ come back up.
 | **1. launchd `KeepAlive`** | `~/Library/LaunchAgents/ai.hermes.gateway.plist` | `KeepAlive` is the unconditional boolean form (`<true/>`), not the `{SuccessfulExit: false}` dict form — so launchd restarts the gateway on **any** exit, clean or crashed. `ThrottleInterval=30` stops a crash-looping process from hammering respawns faster than once per 30s. `ExitTimeOut=25` gives a graceful `SIGTERM`→drain window before launchd escalates to `SIGKILL`. `RunAtLoad=true` also brings it up on login/reboot. This is the primary, OS-level defense and requires no agent or script to be running. |
 | **2. "Hussh One Self-Healing Doctor" cron** | `~/.hermes/scripts/hussh_one_doctor_heal.py`, cron job id `594d722646a1`, every 15 minutes, `no_agent: true` | A deterministic Python script (installed by `hussh-one-bootstrap.sh`, **not** hand-edited) that checks each label in `CORE_SERVICES` (including `ai.hermes.gateway`) via `launchctl print`, and for anything not `running`, issues `launchctl kickstart -k`. This is the backstop for the case layer 1 can't fix on its own: a launchd job that has gone **`not-loaded`** (unloaded, e.g. after a `launchctl bootout` or a plist edit) rather than merely crashed — `kickstart` can't revive a job that isn't loaded, so the doctor reports that as an unresolved finding via self-chat instead of silently failing. It also runs `hussh-one-health-index.py`, heals bloated WhatsApp sessions on a 24h cooldown, and rate-limits its own alerts to at most one reminder per 6 hours per unresolved issue (`~/.hermes/health/hussh-one-doctor-alert-state.json`). |
 
+The separate **LM Studio Health Watchdog** is an alert-only, no-agent job that
+runs every 30 minutes. It performs a bounded metadata request to
+`/v1/models` and does not issue a completion probe. This check is intentionally
+less frequent than the service doctor and cannot restart the gateway; launchd
+and the doctor remain responsible for process recovery.
+
 Layer 1 handles the overwhelming majority of exits without anyone or anything
 noticing. Layer 2 exists for the failure mode layer 1 structurally cannot
 cover — the job itself being unloaded — and to give the owner a self-chat

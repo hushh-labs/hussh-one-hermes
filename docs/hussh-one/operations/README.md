@@ -9,6 +9,7 @@ under `scripts/hussh-one-*`.
 | `hussh-one-bootstrap.sh` | Fresh-clone setup; detects + optionally starts a supervisor |
 | `hussh-one-supervisor.sh` | Owns lifecycle (launchd/systemd/s6/screen); install/restart/status |
 | `hussh-one-doctor.sh` | Health check; `--require-services` for strict mode |
+| `lmstudio_health_watchdog.py` | Low-power LM Studio reachability check; metadata-only and no-agent by default |
 | `hussh-one-guard.sh` | Post-merge invariant guard (branding, header, capsule, dashboard) |
 | `hussh-one-restart.sh` | Convenience restart wrapper |
 | `hussh-one-copilot-setup.sh` | VS Code Copilot BYOK: LiteLLM proxy (:8643) + auth shim (:8644) + `chatLanguageModels.json` with live-probed context windows (see `scripts/copilot-byok/README.md`) |
@@ -127,6 +128,20 @@ Bootstrap installs the deterministic no-agent doctor at
 **Hussh One Self-Healing Doctor** cron job in place; its ID, schedule, and
 self-chat delivery target are preserved. The script is deliberately silent
 when health is unchanged, because cron delivers script stdout verbatim.
+
+## Low-power LM Studio watchdog
+
+The **LM Studio Health Watchdog** is a versioned no-agent cron job scheduled
+every 30 minutes. Its normal path performs one bounded GET of LM Studio's
+`/v1/models` inventory and emits nothing when the server responds with a
+loaded model. It never calls `/chat/completions`, loads a model, or wakes the
+agent, so an idle device does not spend inference power on health polling.
+Failures emit one concise local alert. Run
+`~/.hermes/scripts/lmstudio_health_watchdog.py --deep` manually when an
+intentional one-token inference probe is needed; the scheduled job never
+passes `--deep`.
+
+### Doctor alert behavior
 
 - A new failure sends one self-chat alert; a resolved failure sends one
   recovery notice; an unresolved failure is reminded at most once every six

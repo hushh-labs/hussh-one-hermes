@@ -944,7 +944,7 @@ second Puppy One could receive, and a change nobody could review. The day's
 Auto-Dream rewrite, the wiki job's injected discovery facts and the
 every-15-minute doctor's delivery change were all edits to files outside
 the repository. They are now under `scripts/hussh-one-cron/` with a
-manifest (`jobs.manifest.json`: eleven jobs, the disabled PR-train jobs
+manifest (`jobs.manifest.json`: twelve jobs, the disabled PR-train jobs
 deliberately absent) and a sync (`hussh-one-cron-sync.py`) that installs
 the scripts into `$HERMES_HOME/scripts` and reconciles each job by name,
 updating only the fields the manifest owns. A job's `deliver` is set only
@@ -955,7 +955,7 @@ daily updater runs the sync whenever the fork fast-forwards and then asks
 the gateway to restart gracefully, so the code the jobs run on is the code
 in the checkout; before this the gateway was thirteen commits behind the
 checkout it had been started from. Run `--check` by hand to see drift; on
-the founder's machine the first check read all eleven jobs and nothing
+the founder's machine the first check read all twelve jobs and nothing
 differing.
 
 ## The monthly refresh: what to actually run when a new model drops
