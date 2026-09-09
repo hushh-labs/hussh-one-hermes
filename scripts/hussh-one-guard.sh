@@ -73,6 +73,7 @@ if [[ -x "scripts/run_tests.sh" ]]; then
     tests/scripts/test_hussh_one_scripts.py \
     tests/scripts/test_hussh_one_doctor_reliability.py \
     tests/scripts/test_hussh_one_legacy_heartbeat.py \
+    tests/scripts/test_hussh_one_updater_execution.py \
     tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py \
     -- -q
 else
@@ -96,6 +97,7 @@ else
     tests/scripts/test_hussh_one_scripts.py \
     tests/scripts/test_hussh_one_doctor_reliability.py \
     tests/scripts/test_hussh_one_legacy_heartbeat.py \
+    tests/scripts/test_hussh_one_updater_execution.py \
     tests/scripts/copilot_byok/test_litellm_auth_shim_gemini_schema.py \
     -q
 fi

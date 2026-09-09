@@ -16,6 +16,16 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-08 — Update service validation
+
+Update checks report fork and official upstream revisions separately. Fork
+advances install dependencies through uv when available, rebuild both UIs, and
+pass the guard before restarting both services. Failed validation leaves a
+pending marker so the next run retries even after the source fast-forward.
+Native merge conflicts are previewed without changing live main. Launchd has
+an explicit tool PATH, and apply dry runs cannot mutate source or services.
+Seven executable tests cover real temporary Git remotes and installer failures.
+
 ### 2026-09-08 — Local runtime recovery
 
 Supervisor setup and restart retire the legacy macOS cross-service heartbeat,

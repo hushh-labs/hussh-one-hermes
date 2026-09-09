@@ -69,7 +69,7 @@ python_bin() {
 }
 
 refresh_runtime_dependencies() {
-  local python
+  local python uv
   local -a npm=()
   python="$(python_bin)"
   [[ -n "$python" && -x "$python" ]] || die "repository .venv Python is required for an update"
@@ -85,10 +85,18 @@ refresh_runtime_dependencies() {
   fi
 
   log "Reconciling Python and locked Node dependencies for the verified upstream revision..."
-  "$python" -m pip install -e ".[all,dev]"
-  "${npm[@]}" ci
-  "${npm[@]}" run build --workspace @hermes/ink
-  "${npm[@]}" --prefix ui-tui run build
+  # uv-created/repaired environments deliberately need not contain pip.
+  uv="$(command -v uv || true)"
+  if [[ -z "$uv" && -x "$HOME/.local/bin/uv" ]]; then uv="$HOME/.local/bin/uv"; fi
+  if [[ -z "$uv" && -x "$HERMES_HOME/bin/uv" ]]; then uv="$HERMES_HOME/bin/uv"; fi
+  if [[ -n "$uv" ]]; then
+    "$uv" pip install --python "$python" -e ".[all,dev]" || return
+  else
+    "$python" -m pip install -e ".[all,dev]" || return
+  fi
+  "${npm[@]}" ci || return
+  "${npm[@]}" run build --workspace @hermes/ink || return
+  "${npm[@]}" --prefix ui-tui run build || return
   "${npm[@]}" --prefix web run build
 }
 
@@ -184,6 +192,10 @@ check_update() {
   run_cmd git fetch origin --tags --prune --quiet
   run_cmd git fetch upstream --tags --prune --quiet
   local behind ahead
+  local fork_behind fork_ahead
+  fork_behind="$(git rev-list --count main..origin/main)"
+  fork_ahead="$(git rev-list --count origin/main..main)"
+  log "Hussh One origin/main: $fork_behind commit(s) available; $fork_ahead local commit(s) not published."
   behind="$(git rev-list --count main..upstream/main)"
   ahead="$(git rev-list --count upstream/main..main)"
   if git merge-base --is-ancestor upstream/main main; then
@@ -197,10 +209,9 @@ check_update() {
 after_fork_advance() {
   # The fork moved. Two things must follow or the device silently runs stale:
   # the cron jobs and their scripts (versioned under scripts/hussh-one-cron)
-  # are reconciled onto this machine, and the long-running gateway is
-  # restarted gracefully (SIGUSR1: drain, exit, launchd respawns) when
-  # --restart was asked for. Before 2026-09-02 a nightly fast-forward left
-  # the gateway on yesterday's code until someone restarted it by hand.
+  # are reconciled onto this machine, and both long-running services are
+  # restarted through their supervisor when --restart was requested, after
+  # dependency installation, builds and the guard have succeeded.
   if [[ -x "$REPO_ROOT/.venv/bin/python" && -f "$REPO_ROOT/scripts/hussh-one-cron/hussh-one-cron-sync.py" ]]; then
     if "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/hussh-one-cron/hussh-one-cron-sync.py" --apply; then
       log "Cron jobs and scripts reconciled from scripts/hussh-one-cron."
@@ -209,14 +220,9 @@ after_fork_advance() {
     fi
   fi
   if [[ "$RESTART" == "1" ]]; then
-    local pid
-    pid="$(pgrep -f 'hermes_cli.main gateway run' | head -1 || true)"
-    if [[ -n "$pid" ]]; then
-      log "Gateway pid $pid asked to restart gracefully (SIGUSR1) so it runs the fast-forwarded code."
-      kill -USR1 "$pid" || warn "could not signal the gateway; a manual restart is needed"
-    else
-      warn "No running gateway found to restart after the fast-forward."
-    fi
+    # Both surfaces import the checkout. Do not pick an arbitrary profile's
+    # process using pgrep or leave the dashboard on yesterday's code.
+    scripts/hussh-one-supervisor.sh restart --manager "$MANAGER"
   fi
 }
 
@@ -226,13 +232,38 @@ apply_update() {
   git fetch origin --tags --prune --quiet
   git fetch upstream --tags --prune --quiet
   local before_ff after_ff
+  local pending="$HERMES_HOME/cache/hussh-one-update-pending"
   before_ff="$(git rev-parse HEAD)"
+  if [[ "$before_ff" != "$(git rev-parse origin/main)" ]]; then
+    mkdir -p "$(dirname "$pending")"
+    git rev-parse origin/main >"$pending"
+  fi
   git pull --ff-only origin main
   after_ff="$(git rev-parse HEAD)"
-  if [[ "$before_ff" != "$after_ff" ]]; then
-    log "Fork main fast-forwarded ${before_ff:0:10} -> ${after_ff:0:10}."
+  if [[ -f "$pending" ]]; then
+    log "Validating fork runtime ${before_ff:0:10} -> ${after_ff:0:10}."
+    if ! refresh_runtime_dependencies || ! scripts/hussh-one-guard.sh; then
+      die "Fork runtime validation failed; services were not restarted. Repair dependencies and rerun the guard before restarting."
+    fi
     after_fork_advance
+    rm -f "$pending"
   fi
+
+  # Discover conflicts without ever putting the live checkout on a conflicted
+  # branch. The native update can be deferred while fork updates still land.
+  local merge_preview
+  merge_preview="$(mktemp)"
+  if ! git merge-tree --write-tree main upstream/main >"$merge_preview" 2>&1; then
+    if grep -q 'CONFLICT' "$merge_preview"; then
+      rm -f "$merge_preview"
+      log "Deferred: fork main is current; official Hermes upstream/main has merge conflicts requiring manual reconciliation. Live main was not changed by the native merge."
+      return 0
+    fi
+    cat "$merge_preview" >&2
+    rm -f "$merge_preview"
+    die "Could not preview the official upstream merge; no native update applied."
+  fi
+  rm -f "$merge_preview"
   if git merge-base --is-ancestor upstream/main main; then
     log "Hussh One main already contains official Hermes upstream/main."
     return 0
@@ -248,6 +279,8 @@ apply_update() {
   log "Created remote safety tag $safety_tag"
 
   git switch -c "$sync_branch" main
+  # A failed dependency install must not strand the runtime on a sync branch.
+  trap 'if [[ "$(git branch --show-current)" == "${sync_branch:-}" ]]; then git merge --abort 2>/dev/null || true; git switch main; fi; release_lock' EXIT
   if ! git merge --no-ff --no-edit upstream/main; then
     warn "Official upstream requires manual conflict resolution. main was not changed."
     git merge --abort || true
@@ -322,7 +355,7 @@ install_launchd_schedule() {
   <key>Label</key><string>${SCHEDULE_LABEL}</string>
   <key>ProgramArguments</key><array>${launcher_head}</array>
   <key>WorkingDirectory</key><string>${HERMES_HOME}</string>
-  <key>EnvironmentVariables</key><dict><key>HERMES_HOME</key><string>${HERMES_HOME}</string></dict>
+  <key>EnvironmentVariables</key><dict><key>HERMES_HOME</key><string>${HERMES_HOME}</string><key>PATH</key><string>${REPO_ROOT}/.venv/bin:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>${SCHEDULE_HOUR}</integer><key>Minute</key><integer>${SCHEDULE_MINUTE}</integer></dict>
   <key>StandardOutPath</key><string>${log_dir}/hussh-one-upstream-update.log</string>
   <key>StandardErrorPath</key><string>${log_dir}/hussh-one-upstream-update.error.log</string>
@@ -407,4 +440,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$MANAGER" in auto|launchd|systemd|s6|screen) ;; *) die "unsupported manager '$MANAGER'" ;; esac
+if [[ "$ACTION" == "apply" && "$DRY_RUN" == "1" ]]; then
+  verify_repository_contract
+  log "dry-run: no commits, dependencies, cron jobs or services will be changed."
+  log "dry-run: would fetch origin and upstream, validate fork updates, and preview native reconciliation."
+  exit 0
+fi
 case "$ACTION" in check) check_update ;; apply) apply_update ;; install-daily) install_daily ;; remove-daily) remove_daily ;; status) schedule_status ;; esac

@@ -6,6 +6,18 @@ Never merge upstream directly into a running `main` checkout.
 
 ## Standard daily updater
 
+Use the installed runtime's checkout, reported by `hermes --version`. On macOS
+the background service checkout should live outside protected Documents/Desktop
+directories; the development checkout can stay where it is. Verify both remotes
+with `git remote -v`: origin is the Hussh fork, upstream is Nous Hermes, and the
+upstream push URL is DISABLED. A plain clone does not copy the upstream remote.
+
+`--check` reports fork updates and native upstream reconciliation separately.
+An installed schedule alone is not proof that either update completed. Inspect
+the launchd exit status and updater logs, then compare HEAD with origin/main.
+For model-driven audits, use these exact commands and the known LaunchAgents
+path; never search all of `/Users` to locate the updater.
+
 Fresh Hussh One setup registers the guarded daily updater automatically. It
 fetches both remotes, creates and pushes a safety tag, reconciles official
 Hermes on a short-lived `sync/upstream-*` branch, runs the Hussh guard, merges
@@ -25,7 +37,10 @@ scripts/hussh-one-upstream-update.sh --status
 scripts/hussh-one-upstream-update.sh --install-daily
 ```
 
-If upstream conflicts or the guard fails, the script leaves `main` unchanged.
+Native upstream conflicts are previewed before touching live main. Fork updates
+can still be applied while that reconciliation is deferred. Dependency or guard
+failure on a fork update prevents restart and leaves a pending marker for retry.
+If the native upstream guard fails, the script leaves `main` unchanged.
 For a conflict, start the manual upgrade loop below; for a guard failure, the
 script retains the sync branch for maintainer review. Setup can opt out on an
 exceptional machine with `scripts/hussh-one-bootstrap.sh --no-daily-updater`.
