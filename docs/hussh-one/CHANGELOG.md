@@ -16,6 +16,14 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-09 — Local context resilience runbook
+
+Commit: `dc50c29140`
+
+The local context recovery contract now has an operator runbook covering
+checkpoint boundaries, bounded compaction, resumable sessions, and the evidence
+needed to distinguish a recoverable context limit from a runtime failure.
+
 ### 2026-09-09 — Low-power LM Studio health watchdog
 
 Commit: `6249920b36`
@@ -28,7 +36,7 @@ flag. Existing failure alerts remain local and silent on success.
 
 ### 2026-09-09 — Local context budget and resumable compaction
 
-Commit: `c48ece87c9`
+Commit: `948bc4c8bb`
 
 Local LM Studio/Ollama requests now account for prompt messages, system
 instructions, and tool schemas before choosing the response budget. When a
