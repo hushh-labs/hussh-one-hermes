@@ -14,6 +14,9 @@ under `scripts/hussh-one-*`.
 | `hussh-one-copilot-setup.sh` | VS Code Copilot BYOK: LiteLLM proxy (:8643) + auth shim (:8644) + `chatLanguageModels.json` with live-probed context windows (see `scripts/copilot-byok/README.md`) |
 | `hussh-one-license-audit.py` | Verifies SPDX metadata, notices, attribution coverage, and release-file inclusion |
 
+For long local-model sessions, use [Local Context Budget and Resumable Compaction](./local-context-resilience.md)
+for the prompt/output budget, checkpoint ownership, restart, and verification runbook.
+
 ## Bootstrapping a new machine
 ```bash
 git clone https://github.com/hushh-labs/hussh-one-hermes.git
@@ -182,6 +185,7 @@ resuming work on one after a gap:
 - [Changelog — dated index of every Hussh-One capability](../CHANGELOG.md)
 - [Gateway resilience — launchd + doctor cron, incident SOP](./gateway-resilience.md)
 - [Crash resilience — dashboard OOM & session-model persistence](./crash-resilience.md)
+- [Local context budget and resumable compaction](./local-context-resilience.md)
 - [Upgrading from upstream](./upgrading.md)
 - [`docs/hussh-one-deployment.md`](../../hussh-one-deployment.md)
 - [`docs/hussh-one-upstream-maintenance.md`](../../hussh-one-upstream-maintenance.md)

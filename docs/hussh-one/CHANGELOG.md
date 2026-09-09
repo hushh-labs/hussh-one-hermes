@@ -16,6 +16,17 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-09 — Local context budget and resumable compaction
+
+Local LM Studio/Ollama requests now account for prompt messages, system
+instructions, and tool schemas before choosing the response budget. When a
+server would otherwise reserve a full completion window, Hermes fits the
+output cap to the loaded context and leaves a small estimator margin. Local
+compression summaries use their computed summary budget as well, so the
+compaction call does not reproduce the same overflow. The durable conversation
+checkpoint remains SessionDB; filesystem checkpoints continue to cover file
+mutations only. See [Local Context Budget and Resumable Compaction](./operations/local-context-resilience.md).
+
 ### 2026-09-08 — Update service validation
 
 Update checks report fork and official upstream revisions separately. Fork
