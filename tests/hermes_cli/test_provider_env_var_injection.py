@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Provider env-var injection must survive a partial registry.
 
 ``_inject_profile_env_vars`` used to latch a module flag BEFORE doing its work,

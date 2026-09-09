@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Pre-run discovery for the Wiki Maintenance job. Its stdout is injected into
 # the job prompt as context, so the numbers the report must carry come from
 # here, not from the model's memory of what it might have run.

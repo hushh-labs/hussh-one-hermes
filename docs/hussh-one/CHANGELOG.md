@@ -16,6 +16,15 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-08 — Local runtime recovery
+
+Supervisor setup and restart retire the legacy macOS cross-service heartbeat,
+which restarted healthy dashboard chats whenever WhatsApp rejected its session.
+Service-owned recovery remains active. Six executable supervisor regressions
+cover the migration and its manager boundaries. The dashboard reconnect test
+now typechecks, and missing Hussh-owned SPDX headers are restored so the latest
+trunk passes its required deployment guard.
+
 | Date | Commit | What shipped |
 |------|--------|---------------|
 | 2026-08-28 | `679803f1` | **Fail-closed on-device gate.** Pinning the provider only ever covered the main turn; auxiliary tasks defaulted to `provider: auto` and fell through OpenRouter, Nous and Codex to a paid Gemini. With `hussh_one.on_device_only` set, any non-local provider resolution now refuses instead of reaching for the network. |

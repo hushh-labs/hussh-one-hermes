@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Wrapper for the scheduled daily Board Sync job.
 
 Runs the STABLE, cron-owned copy of board_sync_cycle.py from

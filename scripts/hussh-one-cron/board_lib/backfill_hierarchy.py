@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """One-time + idempotent Hierarchy-field backfill/correction for the
 Hushh Engineering Core board (project #73).
 

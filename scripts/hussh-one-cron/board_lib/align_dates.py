@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Align Start date + Target date on the Hushh Engineering Core board (#73).
 
 The Roadmap view (#4) sorts by Target date, but dates were ~0% populated, so the

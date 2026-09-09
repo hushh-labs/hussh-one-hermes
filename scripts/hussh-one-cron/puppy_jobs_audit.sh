@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Daily contract audit of the on-device cron jobs (deterministic half of
 # `hermes puppy jobs`). Runs after the last daily job. Prints a short
 # WhatsApp-sized note ONLY when a run failed its contract; silence means every

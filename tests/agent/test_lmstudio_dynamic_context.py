@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """LM Studio's loaded window is the context config, not a hand-kept list.
 
 Two field failures motivated this, and they are opposite halves of one bug:

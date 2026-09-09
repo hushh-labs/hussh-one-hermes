@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """A rejected WS credential must reach the browser as a readable 4401.
 
 Background: the dashboard session token is regenerated on every gateway

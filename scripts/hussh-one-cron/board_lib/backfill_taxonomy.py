@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Backfill + maintain the Sector and Workstream single-select fields on the
 Hushh Engineering Core board (project #73).
 

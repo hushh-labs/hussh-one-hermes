@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # 🤫 Hussh One — thin cron wrapper for the versioned WhatsApp session janitor.
 # The real, reviewed logic lives in the repo; this only locates and runs it so
 # the weekly no_agent cron has a stable path under ~/.hermes/scripts/.

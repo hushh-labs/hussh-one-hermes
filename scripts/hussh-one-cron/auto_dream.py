@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """
 Auto-Dream Consolidated Suite: Slow-Wave Consolidation + REM Phase Seeds.
 Fuses log collection, memory state compilation, distant memory collisions, and dream seeds

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Engineering Board Synchronization Cycle (hussh 🤫 One variant).
 
 OWNERSHIP-SAFE board sync for the Hushh Engineering Core board.

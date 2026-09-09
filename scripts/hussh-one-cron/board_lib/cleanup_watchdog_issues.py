@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Close + de-board the junk issues the Board Sync watchdog auto-created.
 
 Root cause: initiate_local_plans_if_needed() turned every local commit/merge

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Remove PullRequest items from the Hushh Engineering Core board (#73).
 
 PRs are implementation artifacts, not board items. The board tracks ISSUES;

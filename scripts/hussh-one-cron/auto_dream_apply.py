@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Apply the Auto-Dream model's structured output to the memory layers.
 
 The model thinks; this script writes. Three Auto-Dream runs on 2026-09-02
