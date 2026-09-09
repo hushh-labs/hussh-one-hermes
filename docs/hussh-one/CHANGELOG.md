@@ -18,7 +18,7 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ### 2026-09-09 — Low-power LM Studio health watchdog
 
-Commit: `pending`
+Commit: `3805cfaf6c`
 
 The LM Studio watchdog is now a versioned `no_agent` cron job that runs every
 30 minutes and checks only the lightweight `/v1/models` inventory. It no longer
