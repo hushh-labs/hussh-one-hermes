@@ -73,24 +73,33 @@ def test_expected_model_mismatch_is_reported_without_inference(monkeypatch):
     assert [request.get_method() for request, _ in opener.requests] == ["GET"]
 
 
-def test_manifest_keeps_watchdog_no_agent_and_low_frequency():
+def test_manifest_keeps_health_checks_hourly_and_no_agent():
     manifest = json.loads(
         (ROOT / "scripts" / "hussh-one-cron" / "jobs.manifest.json").read_text(
             encoding="utf-8"
         )
     )
-    job = next(
-        item for item in manifest["jobs"] if item["name"] == "LM Studio Health Watchdog"
-    )
+    jobs = {item["name"]: item for item in manifest["jobs"]}
 
-    assert job == {
-        "name": "LM Studio Health Watchdog",
-        "schedule": "every 30m",
-        "script": "lmstudio_health_watchdog.py",
-        "no_agent": True,
-        "default_deliver": "local",
-        "purpose": (
-            "Low-power metadata-only reachability check; emits only on failure. "
-            "Use --deep manually for an inference probe."
-        ),
+    assert {
+        name: jobs[name]["schedule"]
+        for name in (
+            "Hermes Performance Maintenance",
+            "LM Studio Health Watchdog",
+            "Hussh One Self-Healing Doctor",
+        )
+    } == {
+        "Hermes Performance Maintenance": "every 60m",
+        "LM Studio Health Watchdog": "every 60m",
+        "Hussh One Self-Healing Doctor": "every 60m",
     }
+    assert all(jobs[name]["no_agent"] is True for name in (
+        "Hermes Performance Maintenance",
+        "LM Studio Health Watchdog",
+        "Hussh One Self-Healing Doctor",
+    ))
+    watchdog = jobs["LM Studio Health Watchdog"]
+    assert watchdog["script"] == "lmstudio_health_watchdog.py"
+    assert watchdog["default_deliver"] == "local"
+    assert "metadata-only" in watchdog["purpose"]
+    assert "inference" in watchdog["purpose"]

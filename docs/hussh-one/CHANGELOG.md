@@ -16,6 +16,16 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-09 — Hourly low-power health cadence
+
+Commit: `5eb822b637`
+
+The service doctor, stale-process maintenance, and LM Studio metadata
+watchdog now run hourly as `no_agent` scripts. The scheduled watchdog still
+only reads `/v1/models`; an inference probe remains an explicit manual
+`--deep` operation, so routine health work does not spend on-device model
+tokens or wake the agent.
+
 ### 2026-09-09 — Local context resilience runbook
 
 Commit: `dc50c29140`
