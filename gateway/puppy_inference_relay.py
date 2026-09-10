@@ -10,9 +10,11 @@ executor is reachable through this client.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import random
 from typing import Any
 from urllib.parse import urlparse
 
@@ -22,6 +24,7 @@ from websockets.asyncio.client import connect
 logger = logging.getLogger(__name__)
 _MAX_FRAME_BYTES = 1_048_576
 _DEFAULT_MODEL_TIMEOUT = 60.0
+_DEFAULT_HEARTBEAT_SECONDS = 30.0
 
 
 def _messages(body: dict[str, Any]) -> list[dict[str, Any]]:
@@ -97,6 +100,23 @@ class PuppyInferenceRelay:
         }:
             raise ValueError("PUPPY_LOCAL_MODEL_URL must point to a loopback model endpoint")
 
+    async def _heartbeat(self, websocket: Any) -> None:
+        try:
+            interval = float(
+                os.getenv("PUPPY_RELAY_HEARTBEAT_SECONDS") or _DEFAULT_HEARTBEAT_SECONDS
+            )
+        except ValueError:
+            interval = _DEFAULT_HEARTBEAT_SECONDS
+        interval = max(10.0, min(interval, 120.0))
+        while True:
+            await asyncio.sleep(interval + random.uniform(-2.0, 2.0))
+            await websocket.send(
+                json.dumps(
+                    {"type": "relay.heartbeat", "status": "ready", "deviceId": self.device_id},
+                    separators=(",", ":"),
+                )
+            )
+
     async def _infer(self, request: dict[str, Any], websocket: Any) -> None:
         request_id = str(request.get("requestId") or "")
         if not request_id:
@@ -166,11 +186,21 @@ class PuppyInferenceRelay:
 
     async def serve(self) -> None:
         """Keep the outbound socket alive while the profile is enabled."""
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "X-Hussh-Relay-Role": "device",
+        }
+        relay_environment = str(
+            os.getenv("PUPPY_RELAY_ENV") or os.getenv("HUSHH_DEPLOY_ENV") or ""
+        ).strip()
+        if relay_environment:
+            headers["X-Hussh-Deploy-Env"] = relay_environment
+        reconnect_delay = 2.0
         while True:
             try:
                 async with connect(
                     self.relay_url,
-                    additional_headers={"Authorization": f"Bearer {self.token}"},
+                    additional_headers=headers,
                     max_size=_MAX_FRAME_BYTES,
                     ping_interval=20,
                     ping_timeout=20,
@@ -181,17 +211,25 @@ class PuppyInferenceRelay:
                     ready = json.loads(await websocket.recv())
                     if ready.get("type") != "relay.ready":
                         raise RuntimeError("Puppy relay admission refused")
-                    async for raw in websocket:
-                        if isinstance(raw, bytes) or len(raw.encode("utf-8")) > _MAX_FRAME_BYTES:
-                            raise RuntimeError("Puppy relay frame too large")
-                        frame = json.loads(raw)
-                        if frame.get("type") == "inference.request":
-                            await self._infer(frame, websocket)
+                    heartbeat_task = asyncio.create_task(self._heartbeat(websocket))
+                    try:
+                        async for raw in websocket:
+                            if isinstance(raw, bytes) or len(raw.encode("utf-8")) > _MAX_FRAME_BYTES:
+                                raise RuntimeError("Puppy relay frame too large")
+                            frame = json.loads(raw)
+                            if frame.get("type") == "inference.request":
+                                await self._infer(frame, websocket)
+                    finally:
+                        heartbeat_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await heartbeat_task
+                    reconnect_delay = 2.0
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.info("puppy_inference.reconnecting")
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(reconnect_delay + random.uniform(0.0, min(1.0, reconnect_delay / 4)))
+                reconnect_delay = min(reconnect_delay * 2.0, 30.0)
 
 
 async def run_puppy_inference_relay(**kwargs: Any) -> None:
