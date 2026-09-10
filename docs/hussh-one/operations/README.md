@@ -126,13 +126,14 @@ python3 scripts/hussh-one-changelog-check.py
 Bootstrap installs the deterministic no-agent doctor at
 `~/.hermes/scripts/hussh_one_doctor_heal.py` and updates the existing
 **Hussh One Self-Healing Doctor** cron job in place; its ID, schedule, and
-self-chat delivery target are preserved. The script is deliberately silent
+self-chat delivery target are preserved. The versioned schedule is hourly. The
+script is deliberately silent
 when health is unchanged, because cron delivers script stdout verbatim.
 
 ## Low-power LM Studio watchdog
 
 The **LM Studio Health Watchdog** is a versioned no-agent cron job scheduled
-every 30 minutes. Its normal path performs one bounded GET of LM Studio's
+every 60 minutes. Its normal path performs one bounded GET of LM Studio's
 `/v1/models` inventory and emits nothing when the server responds with a
 loaded model. It never calls `/chat/completions`, loads a model, or wakes the
 agent, so an idle device does not spend inference power on health polling.
@@ -140,6 +141,10 @@ Failures emit one concise local alert. Run
 `~/.hermes/scripts/lmstudio_health_watchdog.py --deep` manually when an
 intentional one-token inference probe is needed; the scheduled job never
 passes `--deep`.
+
+The **Hermes Performance Maintenance** reaper is also versioned as a
+no-agent, hourly job. It only removes stale local processes when its bounded
+criteria match and does not invoke an on-device model.
 
 ### Doctor alert behavior
 

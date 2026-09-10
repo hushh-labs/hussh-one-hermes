@@ -60,14 +60,14 @@
     },
     {
       "name": "Hermes Performance Maintenance",
-      "schedule": "every 30m",
+      "schedule": "every 60m",
       "script": "reap_stale_processes.sh",
       "no_agent": true,
       "default_deliver": "local"
     },
     {
       "name": "LM Studio Health Watchdog",
-      "schedule": "every 30m",
+      "schedule": "every 60m",
       "script": "lmstudio_health_watchdog.py",
       "no_agent": true,
       "default_deliver": "local",
@@ -75,7 +75,7 @@
     },
     {
       "name": "Hussh One Self-Healing Doctor",
-      "schedule": "every 15m",
+      "schedule": "every 60m",
       "script": "hussh_one_doctor_heal.py",
       "no_agent": true,
       "default_deliver": "local",
