@@ -117,11 +117,17 @@ CONTRACTS: tuple = (
         name_contains="Auto-Dream Apply",
         header=("*🤫 Hussh One* · *Auto-Dream Daemon*",
                 "======================================"),
-        required_substrings=("• Memory:",),
+        # "Prompt memory:" is the line that proves the night's facts reached the
+        # file the prompt actually reads (memories/MEMORY.md through the memory
+        # tool's own store), not only the root journal nothing reads. Measured
+        # 2026-09-10: zero facts had reached the prompt since 2026-08-25.
+        required_substrings=("• Memory:", "Prompt memory:"),
         judge_hint=(
             "The delivered brief must match the applied counts it states, "
-            "carry one dream teaser and one vision bullet, and say plainly if "
-            "anything could not be applied."
+            "carry one dream teaser and one vision bullet, state how many facts "
+            "were promoted into prompt memory (and how many were deferred or "
+            "refused, with the reason), and say plainly if anything could not "
+            "be applied."
         ),
     ),
     JobContract(

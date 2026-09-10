@@ -292,6 +292,31 @@ def snapshot_memory_layers():
         return None
 
 
+PROMPT_MEMORY_DIR = os.path.join(HERMES_DIR, "memories")
+PROMPT_MEMORY_BUDGET_CHARS = 6_000
+
+
+def prompt_memory_sections(memory_dir=None):
+    """The two files the PROMPT actually reads, for the model half's context.
+
+    ``memories/MEMORY.md`` and ``memories/USER.md`` are the memory tool's own
+    store (``§``-delimited, 2,200 / 1,375 characters). Until this dump the model
+    consolidated against the root journal and never saw what its own prompt
+    carried, so it could neither notice a fact missing from the prompt nor a
+    stale one still in it. Read as text, never parsed: this is context, not a
+    write path. Bounded small because these files are bounded small.
+    """
+    root = memory_dir or PROMPT_MEMORY_DIR
+    sections = []
+    for name, label in (("MEMORY.md", "Prompt Memory"), ("USER.md", "User Profile")):
+        path = os.path.join(root, name)
+        text = clip(
+            read_file_if_exists(path, f"(no {name} in the memory tool's store yet)"),
+            PROMPT_MEMORY_BUDGET_CHARS, name, path)
+        sections.append(f"\n--- {label} (memories/{name}, what the agent's prompt actually reads) ---\n{text}")
+    return "\n".join(sections)
+
+
 def main():
     snapshot_memory_layers()
     recent_logs = collect_recent_logs()
@@ -324,6 +349,7 @@ def main():
     print(main_memory)
     print("\n--- Procedures Memory (procedures.md) ---")
     print(procedures)
+    print(prompt_memory_sections())
     print("\n--- Episodic Memory Summary ---")
     print(episodes_text)
     print("\n--- Memory Index JSON ---")

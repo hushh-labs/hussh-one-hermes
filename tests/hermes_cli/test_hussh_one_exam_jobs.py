@@ -156,9 +156,14 @@ class TestContractChecks:
 
     def test_auto_dream_apply_brief_states_what_it_applied(self):
         text = ("*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n"
-                "• Consolidated x\n\n• Memory: +3 facts, +1 procedures, +2 index entries, 0 archived, dream recorded")
+                "• Consolidated x\n\n• Memory: +3 facts, +1 procedures, +2 index entries, 0 archived, dream recorded"
+                "\n• Prompt memory: +3 promoted, 0 deferred, 0 refused")
         assert _fails(J.grade(_run(name="Auto-Dream Apply", text=text))) == {}
         assert "has:• Memory:" in _fails(J.grade(_run(name="Auto-Dream Apply", text=HEADER + "• x")))
+        # A brief that journals the facts but never says whether they reached the
+        # prompt is the exact 2026-08-25 to 2026-09-10 silence; it fails the contract.
+        journal_only = text.rsplit("\n• Prompt memory:", 1)[0]
+        assert "has:Prompt memory:" in _fails(J.grade(_run(name="Auto-Dream Apply", text=journal_only)))
 
     def test_usage_report_requires_every_key(self):
         text = "🤫 Hussh One\nUsage Daemon [S]\n════════════════════\n\n*Today:*\n\n*Cost:*\n$0"
@@ -240,7 +245,8 @@ def _databases(tmp_path):
     saved = output / "2026-09-02_05-30-03.md"
     # The scheduler's saved output carries a preamble the owner never sees.
     saved.write_text("# Cron Job: Auto-Dream Apply\n\n**Job ID:** j4\n**Mode:** no_agent (script)\n\n---\n\n"
-                     "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• Memory: +2 facts",
+                     "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• Memory: +2 facts"
+                     "\n• Prompt memory: +2 promoted, 0 deferred, 0 refused",
                      encoding="utf-8")
     import os
     stamp = datetime.fromisoformat("2026-09-02T05:30:02-07:00").timestamp()

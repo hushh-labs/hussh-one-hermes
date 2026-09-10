@@ -77,6 +77,9 @@ def _strings(value) -> list[str]:
 
 
 def _append(path: Path, block: str) -> None:
+    # The model half creates these directories on its own run; a first apply on a
+    # fresh home must not fail on a missing folder and lose the night's facts.
+    path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     sep = "" if not existing or existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
     path.write_text(existing + sep + block, encoding="utf-8")
@@ -88,16 +91,113 @@ def _atomic_json(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
+PROMPT_MEMORY_TARGET = "memory"
+
+
+def _load_memory_store():
+    """The memory tool's own on-disk store, or None when the tool cannot import.
+
+    THIS is the file the prompt reads. Verified on the founder's machine on
+    2026-09-10: this script appended every night's facts to ``$HERMES_HOME/MEMORY.md``
+    (73 KB, last touched 2026-09-03) while the prompt is built from
+    ``$HERMES_HOME/memories/MEMORY.md`` (1.6 KB, last touched 2026-08-25) through
+    ``tools.memory_tool``; no symlink joined them, so nothing consolidated since
+    2026-08-25 ever reached a conversation. Going through the tool's store keeps
+    its ``§`` delimiter, its 2,200-character budget, its injection scan and its
+    drift guard, instead of a second writer that would race the first.
+    """
+    try:
+        from tools.memory_tool import load_on_disk_store  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - import failures are reported, never guessed at
+        return None
+    try:
+        return load_on_disk_store()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def promote_to_prompt_memory(facts: list[str], store=None) -> dict:
+    """Promote ``long_term`` facts into the prompt's memory through the tool's store.
+
+    Returns ``{"available", "promoted", "deferred_budget", "refused_scan", "reason"}``.
+    The whole batch is tried first (all-or-nothing on the FINAL budget); when the
+    budget refuses it, facts are retried one by one so what fits lands and what
+    does not is reported as deferred rather than lost in silence. A fact the
+    tool's own scan rejects is refused and never written. If the tool cannot be
+    imported nothing is promoted and the brief says so: a silent fallback to the
+    journal is exactly the defect this replaces.
+    """
+    result = {"available": False, "promoted": 0, "deferred_budget": 0, "refused_scan": 0,
+              "reason": ""}
+    clean = [f for f in (str(x).strip() for x in facts) if f]
+    if not clean:
+        result["available"] = True
+        return result
+    store = store if store is not None else _load_memory_store()
+    if store is None:
+        result["reason"] = "memory tool unavailable; nothing promoted"
+        return result
+    result["available"] = True
+    try:
+        from tools.memory_tool import _scan_memory_content  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        _scan_memory_content = None  # the store scans on write regardless
+    accepted: list[str] = []
+    for fact in clean:
+        if _scan_memory_content is not None and _scan_memory_content(fact):
+            result["refused_scan"] += 1
+            continue
+        accepted.append(fact)
+    if not accepted:
+        return result
+
+    def _present() -> set:
+        return set(store._entries_for(PROMPT_MEMORY_TARGET))
+
+    before = _present()
+    batch = store.apply_batch(
+        PROMPT_MEMORY_TARGET, [{"action": "add", "content": fact} for fact in accepted]
+    )
+    if not batch.get("success"):
+        # The batch is refused as a whole. Anything the scan caught inside the
+        # store counts as refused; anything else is retried one by one.
+        for fact in accepted:
+            if fact in _present():
+                continue
+            single = store.add(PROMPT_MEMORY_TARGET, fact)
+            if single.get("success"):
+                continue
+            error = str(single.get("error") or "")
+            if "current_entries" in single or "limit" in error or "chars" in error:
+                result["deferred_budget"] += 1
+            else:
+                result["refused_scan"] += 1
+    after = _present()
+    result["promoted"] = len([f for f in accepted if f in after and f not in before])
+    return result
+
+
 def apply(payload: dict, stamp: str) -> tuple[dict, list[str]]:
-    counts = {"facts": 0, "procedures": 0, "index": 0, "archived": 0, "dream": 0}
+    counts = {"facts": 0, "procedures": 0, "index": 0, "archived": 0, "dream": 0,
+              "prompt": {"available": False, "promoted": 0, "deferred_budget": 0,
+                         "refused_scan": 0, "reason": ""}}
     problems: list[str] = []
     date = time.strftime("%Y-%m-%d")
 
     facts = _strings(payload.get("long_term"))
     if facts:
+        # The root file stays as the long-term JOURNAL (append-only history of what
+        # each night consolidated). It is not what the prompt reads; that is the
+        # promotion below, through the memory tool's own store.
         _append(HERMES_DIR / "MEMORY.md",
-                f"## {date} — Consolidated by Auto-Dream\n" + "".join(f"- {f}\n" for f in facts))
+                f"## {date} — Long-term journal, consolidated by Auto-Dream\n"
+                + "".join(f"- {f}\n" for f in facts))
         counts["facts"] = len(facts)
+        counts["prompt"] = promote_to_prompt_memory(facts)
+        if not counts["prompt"]["available"]:
+            problems.append(
+                f"prompt memory not updated ({counts['prompt']['reason'] or 'memory tool unavailable'})"
+            )
 
     procedures = _strings(payload.get("procedures"))
     if procedures:
@@ -163,6 +263,19 @@ def apply(payload: dict, stamp: str) -> tuple[dict, list[str]]:
     return counts, problems
 
 
+def prompt_memory_line(counts: dict) -> str:
+    """The brief line the Auto-Dream Apply job contract requires, verbatim shape:
+    ``• Prompt memory: +N promoted, M deferred, K refused`` plus the reason when
+    nothing could be promoted at all."""
+    prompt = counts.get("prompt") or {}
+    line = (f"• Prompt memory: +{int(prompt.get('promoted') or 0)} promoted, "
+            f"{int(prompt.get('deferred_budget') or 0)} deferred, "
+            f"{int(prompt.get('refused_scan') or 0)} refused")
+    if not prompt.get("available", False) and prompt.get("reason"):
+        line += f" ({prompt['reason']})"
+    return line
+
+
 def main() -> int:
     source = latest_output()
     if source is None:
@@ -194,7 +307,7 @@ def main() -> int:
     memory_line = (f"• Memory: +{counts['facts']} facts, +{counts['procedures']} procedures, "
                    f"+{counts['index']} index entries, {counts['archived']} archived, "
                    f"{'dream recorded' if counts['dream'] else 'no dream recorded'}")
-    out = brief.rstrip() + "\n\n" + memory_line + "\n"
+    out = brief.rstrip() + "\n\n" + memory_line + "\n" + prompt_memory_line(counts) + "\n"
     for problem in problems:
         out += f"\n• Not applied: {problem}\n"
     print(out)
