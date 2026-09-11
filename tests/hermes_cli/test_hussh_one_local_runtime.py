@@ -205,3 +205,55 @@ def test_admission_wait_does_not_block_other_threads_forever():
     thread.join(timeout=1)
     lease.release()
     assert result == [True]
+
+
+def test_interactive_waiter_preempts_queued_background_work():
+    key = "priority-admission-" + str(time.time_ns())
+    first = LocalInferenceAdmission.acquire(key, wait=0)
+    background_started = threading.Event()
+    interactive_started = threading.Event()
+    background_acquired = threading.Event()
+    interactive_acquired = threading.Event()
+    release_interactive = threading.Event()
+
+    def background():
+        background_started.set()
+        lease = LocalInferenceAdmission.acquire(
+            key, wait=1.0, priority="background"
+        )
+        background_acquired.set()
+        lease.release()
+
+    def interactive():
+        interactive_started.set()
+        lease = LocalInferenceAdmission.acquire(
+            key, wait=1.0, priority="interactive"
+        )
+        interactive_acquired.set()
+        release_interactive.wait(timeout=1.0)
+        lease.release()
+
+    background_thread = threading.Thread(target=background)
+    interactive_thread = threading.Thread(target=interactive)
+    background_thread.start()
+    assert background_started.wait(timeout=1.0)
+    interactive_thread.start()
+    assert interactive_started.wait(timeout=1.0)
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        with LocalInferenceAdmission._lock:
+            pool = LocalInferenceAdmission._pools.get(key)
+        if pool is not None:
+            with pool.condition:
+                if pool.interactive_waiters:
+                    break
+        time.sleep(0.005)
+    try:
+        first.release()
+        assert interactive_acquired.wait(timeout=1.0)
+        assert not background_acquired.is_set()
+    finally:
+        release_interactive.set()
+        interactive_thread.join(timeout=1.0)
+        background_thread.join(timeout=1.0)
+    assert background_acquired.is_set()

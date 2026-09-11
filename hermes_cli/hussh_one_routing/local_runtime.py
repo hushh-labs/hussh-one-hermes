@@ -24,7 +24,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Iterator, Optional
 from urllib.parse import urlparse
@@ -322,9 +322,12 @@ class LocalModelResolver:
 
 @dataclass
 class _AdmissionPool:
-    semaphore: threading.BoundedSemaphore
     limit: int
+    condition: threading.Condition = field(default_factory=threading.Condition)
+    active: int = 0
     waiters: int = 0
+    interactive_waiters: int = 0
+    background_waiters: int = 0
 
 
 class AdmissionLease:
@@ -341,7 +344,9 @@ class AdmissionLease:
             if self._released:
                 return
             self._released = True
-            self._pool.semaphore.release()
+        with self._pool.condition:
+            self._pool.active = max(0, self._pool.active - 1)
+            self._pool.condition.notify_all()
 
     def __enter__(self) -> "AdmissionLease":
         return self
@@ -363,26 +368,46 @@ class LocalInferenceAdmission:
         *,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         wait: float = DEFAULT_ADMISSION_WAIT_S,
+        priority: str = "interactive",
     ) -> AdmissionLease:
         key = str(key or "local").strip()
         limit = max(1, int(max_concurrency))
+        priority = "background" if str(priority).strip().lower() == "background" else "interactive"
         with cls._lock:
             pool = cls._pools.get(key)
             if pool is None or pool.limit != limit:
-                pool = _AdmissionPool(threading.BoundedSemaphore(limit), limit)
+                pool = _AdmissionPool(limit)
                 cls._pools[key] = pool
+        timeout = max(0.0, float(wait))
+        deadline = time.monotonic() + timeout
+        with pool.condition:
             pool.waiters += 1
-        try:
-            acquired = pool.semaphore.acquire(timeout=max(0.0, float(wait)))
-        finally:
-            with cls._lock:
+            if priority == "interactive":
+                pool.interactive_waiters += 1
+            else:
+                pool.background_waiters += 1
+            try:
+                while True:
+                    interactive_priority = (
+                        priority == "interactive" or pool.interactive_waiters == 0
+                    )
+                    if pool.active < pool.limit and interactive_priority:
+                        pool.active += 1
+                        return AdmissionLease(pool, key)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise LocalModelOverloaded(
+                            f"local inference admission is full for {key}; "
+                            f"priority={priority} waited {timeout:.2f}s"
+                        )
+                    pool.condition.wait(timeout=remaining)
+            finally:
                 pool.waiters = max(0, pool.waiters - 1)
-        if not acquired:
-            raise LocalModelOverloaded(
-                f"local inference admission is full for {key}; "
-                f"waited {max(0.0, float(wait)):.2f}s"
-            )
-        return AdmissionLease(pool, key)
+                if priority == "interactive":
+                    pool.interactive_waiters = max(0, pool.interactive_waiters - 1)
+                else:
+                    pool.background_waiters = max(0, pool.background_waiters - 1)
+                pool.condition.notify_all()
 
 
 @dataclass
@@ -468,7 +493,13 @@ class LocalRuntime:
     def key(self, model: str) -> str:
         return f"{self.resolver.base_url}|{model}"
 
-    def acquire(self, model: str, *, wait: float = DEFAULT_ADMISSION_WAIT_S) -> AdmissionLease:
+    def acquire(
+        self,
+        model: str,
+        *,
+        wait: float = DEFAULT_ADMISSION_WAIT_S,
+        priority: str = "interactive",
+    ) -> AdmissionLease:
         model = str(model or "").strip()
         key = self.key(model)
         self.circuit.before(key)
@@ -478,7 +509,7 @@ class LocalRuntime:
             self.resolver.invalidate(model)
             self.circuit.record_failure(key, exc)
             raise
-        return LocalInferenceAdmission.acquire(key, wait=wait)
+        return LocalInferenceAdmission.acquire(key, wait=wait, priority=priority)
 
     def record_success(self, model: str) -> None:
         self.circuit.record_success(self.key(model))
@@ -569,6 +600,7 @@ def guarded_call(
     model: str,
     api_key: str | None = None,
     wait: float = DEFAULT_ADMISSION_WAIT_S,
+    priority: str = "interactive",
 ) -> Iterator[LocalRuntime | None]:
     """Guard one synchronous local call; non-local routes are a no-op."""
 
@@ -576,7 +608,7 @@ def guarded_call(
         yield None
         return
     runtime = runtime_for(base_url, api_key)
-    lease = runtime.acquire(model, wait=wait)
+    lease = runtime.acquire(model, wait=wait, priority=priority)
     try:
         yield runtime
     except BaseException as exc:

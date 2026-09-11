@@ -1047,6 +1047,20 @@ def _local_runtime_for_agent(agent, api_kwargs: dict):
         return None
 
 
+def _local_inference_priority(agent) -> str:
+    """Classify local work so interactive turns can pass queued cron work."""
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    session_id = str(getattr(agent, "session_id", "") or "").strip().lower()
+    origin = str(getattr(agent, "_memory_write_origin", "") or "").strip().lower()
+    if (
+        platform in {"cron", "scheduler", "watchdog"}
+        or session_id.startswith("cron_")
+        or origin == "background_review"
+    ):
+        return "background"
+    return "interactive"
+
+
 def _local_attempt_metadata(agent, api_kwargs: dict, model: str) -> dict[str, Any]:
     """Build bounded, non-sensitive coordinates for the local attempt ledger."""
     messages = api_kwargs.get("messages") or []
@@ -1158,7 +1172,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
     model = str(api_kwargs.get("model") or getattr(agent, "model", "") or "")
     request_id = str(getattr(agent, "_current_api_request_id", "") or "")
-    lease = runtime.acquire(model)
+    lease = runtime.acquire(model, priority=_local_inference_priority(agent))
     ledger = None
     attempt_id = None
     try:
@@ -4178,7 +4192,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             attempt_id = None
             model = str(stream_kwargs.get("model") or getattr(agent, "model", "") or "")
             if runtime is not None:
-                lease = runtime.acquire(model)
+                lease = runtime.acquire(
+                    model, priority=_local_inference_priority(agent)
+                )
                 metadata = _local_attempt_metadata(agent, stream_kwargs, model)
                 try:
                     from agent.local_recovery import LocalAttemptLedger

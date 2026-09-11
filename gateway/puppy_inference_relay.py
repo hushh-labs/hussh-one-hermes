@@ -342,12 +342,14 @@ class PuppyInferenceRelay:
         calls: dict[int, dict[str, Any]] = {}
         observed_model = ""
         lease = None
-        admission_key = f"{self.model_url}|{self.model}"
         try:
             from hermes_cli.hussh_one_routing.local_runtime import (
                 LocalInferenceAdmission,
                 LocalModelOverloaded,
+                normalize_front_url,
             )
+
+            admission_key = f"{normalize_front_url(self.model_url)}|{self.model}"
 
             # The relay is already a single async consumer, but the shared
             # process-wide permit also accounts for Hermes chat/cron calls.
@@ -357,6 +359,7 @@ class PuppyInferenceRelay:
                 LocalInferenceAdmission.acquire,
                 admission_key,
                 wait=min(0.25, max(0.0, self.model_timeout / 10.0)),
+                priority="interactive",
             )
         except LocalModelOverloaded:
             await websocket.send(
