@@ -72,7 +72,23 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # Leave a small estimator margin because the rough estimator intentionally
 # trades tokenizer fidelity for speed.
 _LOCAL_OUTPUT_CONTEXT_MARGIN_TOKENS = 1024
-_LOCAL_DEFAULT_OUTPUT_CAP_TOKENS = 65_536
+_LOCAL_DEFAULT_OUTPUT_CAP_TOKENS = 8_192
+
+
+def _local_default_output_cap() -> int:
+    """Return the bounded local output budget, with an explicit escape hatch."""
+    raw = os.environ.get("HERMES_LOCAL_MAX_OUTPUT_TOKENS", "")
+    if raw:
+        try:
+            configured = int(raw)
+        except (TypeError, ValueError):
+            configured = 0
+        if configured > 0:
+            # Keep the override bounded as well; a local model can still make
+            # progress across turns instead of reserving the whole context for
+            # one unbounded reasoning response.
+            return min(configured, 65_536)
+    return _LOCAL_DEFAULT_OUTPUT_CAP_TOKENS
 
 
 def _fit_local_output_cap(agent, api_kwargs: dict) -> dict:
@@ -122,7 +138,7 @@ def _fit_local_output_cap(agent, api_kwargs: dict) -> dict:
         # the real compression problem.
         return api_kwargs
 
-    cap = min(_LOCAL_DEFAULT_OUTPUT_CAP_TOKENS, available)
+    cap = min(_local_default_output_cap(), available)
     output_key = next(
         (
             key

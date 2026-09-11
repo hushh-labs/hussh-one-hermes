@@ -67,3 +67,25 @@ def test_local_auxiliary_cap_is_forwarded_to_chat_completions():
     )
 
     assert kwargs["max_tokens"] == 2_000
+
+
+def test_local_omitted_cap_uses_bounded_reasoning_budget(monkeypatch):
+    from agent.chat_completion_helpers import _fit_local_output_cap
+
+    monkeypatch.delenv("HERMES_LOCAL_MAX_OUTPUT_TOKENS", raising=False)
+    kwargs = {"messages": [{"role": "user", "content": "short request"}]}
+
+    fitted = _fit_local_output_cap(_local_agent(), kwargs)
+
+    assert fitted["max_tokens"] == 8_192
+
+
+def test_local_cap_override_remains_bounded(monkeypatch):
+    from agent.chat_completion_helpers import _fit_local_output_cap
+
+    monkeypatch.setenv("HERMES_LOCAL_MAX_OUTPUT_TOKENS", "100000")
+    kwargs = {"messages": [{"role": "user", "content": "short request"}]}
+
+    fitted = _fit_local_output_cap(_local_agent(), kwargs)
+
+    assert fitted["max_tokens"] == 65_536
