@@ -60,6 +60,21 @@ class _FakeAnthropicStream:
         return self._final_message
 
 
+class _FakeLocalStream:
+    def __init__(self, values):
+        self.values = iter(values)
+        self.closed = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.values)
+
+    def close(self):
+        self.closed = True
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
@@ -103,6 +118,58 @@ def codex_auth_dir(tmp_path, monkeypatch):
 
 class TestAuxiliaryMaxTokensParam:
     pass
+
+
+class TestLocalAuxiliaryAdmission:
+    def test_local_auxiliary_completion_uses_shared_admission(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        lease = MagicMock()
+        acquire = MagicMock(return_value=lease)
+        monkeypatch.setattr(
+            "hermes_cli.hussh_one_routing.local_runtime.LocalInferenceAdmission.acquire",
+            acquire,
+        )
+        client = SimpleNamespace(base_url="http://127.0.0.1:1234/v1")
+        response = SimpleNamespace(choices=[])
+
+        result = aux._relay_sync_completion(
+            client,
+            {"model": "meta/muse-glimmer"},
+            create=lambda _request: response,
+        )
+
+        assert result is response
+        acquire.assert_called_once_with(
+            "http://127.0.0.1:1234/v1|meta/muse-glimmer",
+            wait=0.25,
+            priority="background",
+        )
+        lease.release.assert_called_once_with()
+
+    def test_local_auxiliary_stream_holds_permit_until_consumed(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        lease = MagicMock()
+        monkeypatch.setattr(
+            "hermes_cli.hussh_one_routing.local_runtime.LocalInferenceAdmission.acquire",
+            MagicMock(return_value=lease),
+        )
+        stream = _FakeLocalStream(["chunk"])
+        client = SimpleNamespace(
+            base_url="http://127.0.0.1:1234/v1",
+            chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: stream)),
+        )
+
+        result = aux._relay_sync_stream(
+            client,
+            {"model": "meta/muse-glimmer", "stream": True},
+        )
+
+        assert lease.release.call_count == 0
+        assert list(result) == ["chunk"]
+        assert stream.closed is True
+        assert lease.release.call_count == 1
 
 
 
