@@ -971,6 +971,23 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     return _timeout
 
 
+def _cap_local_stream_stale_timeout(agent, timeout: float) -> float:
+    """Apply an active run budget to a local stream's stale deadline."""
+    _run_budget = getattr(agent, "run_budget_seconds", None)
+    _run_started = getattr(agent, "_run_budget_started_at", None)
+    base_url = getattr(agent, "base_url", None)
+    if not (_run_budget and _run_started and base_url and is_local_endpoint(base_url)):
+        return timeout
+    _remaining = float(_run_budget) - (time.time() - float(_run_started))
+    _deadline_cap = max(5.0, _remaining * 0.5)
+    if timeout != float("inf"):
+        timeout = min(timeout, _deadline_cap)
+    else:
+        timeout = _deadline_cap
+    logger.debug("Local stream stale timeout capped by run budget: %.0fs", timeout)
+    return timeout
+
+
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
 
@@ -5416,6 +5433,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _reasoning_floor = get_reasoning_stale_timeout_floor(api_kwargs.get("model"))
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
+
+    # A per-run deadline must also govern local streams. The local patience
+    # setting is intentionally generous for slow prefill, but allowing it to
+    # outrun an explicit ``--run-budget`` leaves a one-shot session parked on
+    # an established socket forever. This cap applies only to local providers;
+    # hosted providers retain their explicit stale-timeout contract.
+    _stream_stale_timeout = _cap_local_stream_stale_timeout(
+        agent, _stream_stale_timeout
+    )
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
     t.start()
