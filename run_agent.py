@@ -1502,8 +1502,14 @@ class AIAgent:
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
-            return float("inf")
-
+            # A local model may legitimately spend minutes in prefill or
+            # hidden reasoning, but an infinite detector turns one wedged
+            # socket into a session that can never checkpoint or resume.
+            # Keep the generous local allowance finite and let an active
+            # run-budget cap it further below. Operators who run a slower
+            # model can raise this bound explicitly without changing the
+            # provider route or disabling recovery altogether.
+            stale_base = env_float("HERMES_LOCAL_NONSTREAM_STALE_TIMEOUT", 900.0)
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
