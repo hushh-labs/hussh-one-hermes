@@ -341,6 +341,32 @@ class PuppyInferenceRelay:
         )
         calls: dict[int, dict[str, Any]] = {}
         observed_model = ""
+        lease = None
+        admission_key = f"{self.model_url}|{self.model}"
+        try:
+            from hermes_cli.hussh_one_routing.local_runtime import (
+                LocalInferenceAdmission,
+                LocalModelOverloaded,
+            )
+
+            # The relay is already a single async consumer, but the shared
+            # process-wide permit also accounts for Hermes chat/cron calls.
+            # Never wait behind an interactive request long enough to make the
+            # hub believe this device disappeared.
+            lease = await asyncio.to_thread(
+                LocalInferenceAdmission.acquire,
+                admission_key,
+                wait=min(0.25, max(0.0, self.model_timeout / 10.0)),
+            )
+        except LocalModelOverloaded:
+            await websocket.send(
+                json.dumps({
+                    "type": "inference.error",
+                    "requestId": request_id,
+                    "code": "LOCAL_MODEL_OVERLOADED",
+                })
+            )
+            return
         try:
             async with httpx.AsyncClient(timeout=self.model_timeout) as client:
                 async with client.stream(
@@ -428,6 +454,9 @@ class PuppyInferenceRelay:
                     "code": "LOCAL_MODEL_UNAVAILABLE",
                 })
             )
+        finally:
+            if lease is not None:
+                lease.release()
 
     async def serve(self) -> None:
         """Keep the outbound socket alive while the profile is enabled."""

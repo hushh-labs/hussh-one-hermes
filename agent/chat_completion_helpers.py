@@ -1020,7 +1020,59 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return None
 
 
-def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+def _local_runtime_for_agent(agent, api_kwargs: dict):
+    """Return the shared local runtime for loopback model calls only."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider == "moa":
+        return None
+    base_url = getattr(agent, "base_url", None)
+    # A loopback URL is also used by test doubles and local ACP shims. Only
+    # Hermes' explicitly local providers own the LM Studio admission contract;
+    # a remote provider pointed at a local compatibility proxy keeps its own
+    # transport semantics.
+    if provider not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}:
+        return None
+    try:
+        from hermes_cli.hussh_one_routing.local_runtime import runtime_for
+
+        api_key = getattr(agent, "api_key", None)
+        return runtime_for(
+            base_url,
+            api_key=api_key if isinstance(api_key, str) else None,
+        )
+    except (TypeError, ValueError):
+        # A provider may advertise a loopback-looking URL while using a custom
+        # transport. Preserve that provider's existing behavior rather than
+        # turning a malformed optional guard into a routing failure.
+        return None
+
+
+def _local_attempt_metadata(agent, api_kwargs: dict, model: str) -> dict[str, Any]:
+    """Build bounded, non-sensitive coordinates for the local attempt ledger."""
+    messages = api_kwargs.get("messages") or []
+    tools = api_kwargs.get("tools") or None
+    try:
+        context_tokens = estimate_request_tokens_rough(messages, tools=tools)
+    except Exception:
+        context_tokens = 0
+    generation = str(
+        getattr(agent, "model_generation", "")
+        or getattr(agent, "_model_generation", "")
+        or model
+    )[:128]
+    timeout = api_kwargs.get("timeout")
+    deadline = None
+    if isinstance(timeout, (int, float)) and timeout > 0:
+        deadline = time.time() + float(timeout)
+    return {
+        "context_tokens": max(0, int(context_tokens)),
+        "message_cursor": len(messages) if isinstance(messages, list) else 0,
+        "model_generation": generation,
+        "deadline": deadline,
+    }
+
+
+def _dispatch_nonstreaming_api_request_unchecked(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
     Shared by the interrupt-worker path (``interruptible_api_call``) and the
@@ -1094,6 +1146,57 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
     return request_client.chat.completions.create(**api_kwargs)
+
+
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+    """Dispatch one request under local readiness and admission guards."""
+    runtime = _local_runtime_for_agent(agent, api_kwargs)
+    if runtime is None:
+        return _dispatch_nonstreaming_api_request_unchecked(
+            agent, api_kwargs, make_client=make_client
+        )
+
+    model = str(api_kwargs.get("model") or getattr(agent, "model", "") or "")
+    request_id = str(getattr(agent, "_current_api_request_id", "") or "")
+    lease = runtime.acquire(model)
+    ledger = None
+    attempt_id = None
+    try:
+        metadata = _local_attempt_metadata(agent, api_kwargs, model)
+        try:
+            from agent.local_recovery import LocalAttemptLedger
+
+            ledger = LocalAttemptLedger.for_agent(agent)
+            if ledger is not None:
+                attempt_id = ledger.begin(
+                    request_id=request_id,
+                    model=model,
+                    base_url=runtime.resolver.base_url,
+                    **metadata,
+                )
+        except Exception:
+            logger.debug("local attempt ledger begin failed", exc_info=True)
+        response = _dispatch_nonstreaming_api_request_unchecked(
+            agent, api_kwargs, make_client=make_client
+        )
+    except BaseException as exc:
+        runtime.record_failure(model, exc)
+        if ledger is not None and attempt_id is not None:
+            try:
+                ledger.finish(attempt_id, success=False, error=exc)
+            except Exception:
+                logger.debug("local attempt ledger failure finish failed", exc_info=True)
+        raise
+    else:
+        runtime.record_success(model)
+        if ledger is not None and attempt_id is not None:
+            try:
+                ledger.finish(attempt_id, success=True)
+            except Exception:
+                logger.debug("local attempt ledger success finish failed", exc_info=True)
+        return response
+    finally:
+        lease.release()
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -4069,16 +4172,61 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Native Gemini rejects OpenAI's usage-streaming extension.
             if not is_native_gemini_base_url(agent.base_url):
                 stream_kwargs["stream_options"] = {"include_usage": True}
-            request_client = _set_request_client(
-                agent._create_request_openai_client(
-                    reason="chat_completion_stream_request",
-                    api_kwargs=stream_kwargs,
+            runtime = _local_runtime_for_agent(agent, stream_kwargs)
+            lease = None
+            ledger = None
+            attempt_id = None
+            model = str(stream_kwargs.get("model") or getattr(agent, "model", "") or "")
+            if runtime is not None:
+                lease = runtime.acquire(model)
+                metadata = _local_attempt_metadata(agent, stream_kwargs, model)
+                try:
+                    from agent.local_recovery import LocalAttemptLedger
+
+                    ledger = LocalAttemptLedger.for_agent(agent)
+                    if ledger is not None:
+                        attempt_id = ledger.begin(
+                            request_id=str(getattr(agent, "_current_api_request_id", "") or "turn"),
+                            model=model,
+                            base_url=runtime.resolver.base_url,
+                            **metadata,
+                        )
+                except Exception:
+                    logger.debug("local stream attempt ledger begin failed", exc_info=True)
+
+            def _finish_local_attempt(success: bool, error: BaseException | None) -> None:
+                if ledger is not None and attempt_id is not None:
+                    ledger.finish(attempt_id, success=success, error=error)
+            try:
+                request_client = _set_request_client(
+                    agent._create_request_openai_client(
+                        reason="chat_completion_stream_request",
+                        api_kwargs=stream_kwargs,
+                    )
                 )
-            )
-            attempt_request_client["value"] = request_client
-            last_chunk_time["t"] = time.time()
-            agent._touch_activity("waiting for provider response (streaming)")
-            return request_client.chat.completions.create(**stream_kwargs)
+                attempt_request_client["value"] = request_client
+                last_chunk_time["t"] = time.time()
+                agent._touch_activity("waiting for provider response (streaming)")
+                raw_stream = request_client.chat.completions.create(**stream_kwargs)
+                if runtime is not None and lease is not None:
+                    from hermes_cli.hussh_one_routing.local_runtime import LeasedStream
+
+                    return LeasedStream(
+                        raw_stream,
+                        lease,
+                        runtime,
+                        model,
+                        on_finish=_finish_local_attempt,
+                    )
+                return raw_stream
+            except BaseException as exc:
+                if runtime is not None:
+                    runtime.record_failure(model, exc)
+                if ledger is not None and attempt_id is not None:
+                    ledger.finish(attempt_id, success=False, error=exc)
+                if lease is not None:
+                    lease.release()
+                raise
 
         def _stream_created(raw_stream: Any) -> None:
             response = getattr(raw_stream, "response", None)
