@@ -1501,7 +1501,8 @@ class AIAgent:
         """
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+        local_endpoint = bool(base_url and is_local_endpoint(base_url))
+        if uses_implicit_default and local_endpoint:
             # A local model may legitimately spend minutes in prefill or
             # hidden reasoning, but an infinite detector turns one wedged
             # socket into a session that can never checkpoint or resume.
@@ -1531,7 +1532,8 @@ class AIAgent:
             started = getattr(self, "_run_budget_started_at", None)
             if started:
                 remaining = float(run_budget) - (time.time() - started)
-                deadline_cap = max(60.0, remaining * 0.5)
+                deadline_floor = 5.0 if local_endpoint else 60.0
+                deadline_cap = max(deadline_floor, remaining * 0.5)
                 if deadline_cap < timeout:
                     timeout = deadline_cap
         return timeout
