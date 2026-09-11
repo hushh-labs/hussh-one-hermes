@@ -185,4 +185,20 @@ def test_the_model_half_sees_the_prompts_own_memory_files(home, monkeypatch):
     assert "Zephyr berths at slip forty." in text and "Prefers aisle seats." in text
     empty = dream.prompt_memory_sections(str(home / "nowhere"))
     assert "(no MEMORY.md in the memory tool's store yet)" in empty
-    assert "print(prompt_memory_sections())" in DREAM.read_text(encoding="utf-8")
+    assert "prompt_memory_sections()" in DREAM.read_text(encoding="utf-8")
+
+
+def test_final_prompt_budget_preserves_prompt_memory_when_logs_fill_the_budget(home):
+    dream = _load(DREAM, "auto_dream_budget_under_test")
+    prompt_memory = "--- Prompt Memory (memories/MEMORY.md) ---\nPushkin is the dachshund."
+    oversized = "<auto-dream-context>\n" + ("recent log\n" * 20_000)
+    oversized += "\n</auto-dream-context>\n<dream-seed-context>\nseeds"
+
+    bounded = dream.bound_auto_dream_output(
+        oversized, prompt_memory, budget=dream.FINAL_PROMPT_BUDGET_CHARS
+    )
+
+    assert len(bounded) <= dream.FINAL_PROMPT_BUDGET_CHARS
+    assert "AUTO-DREAM OUTPUT CLIPPED" in bounded
+    assert prompt_memory in bounded
+    assert bounded.endswith("</dream-seed-context>\n")

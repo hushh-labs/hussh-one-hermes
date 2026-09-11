@@ -63,12 +63,12 @@ def defang_threat_terms(text):
 def collect_recent_logs(days=7):
     if not os.path.exists(DB_PATH):
         return "No state.db found."
-    
+
     since_epoch = time.time() - (days * 24 * 3600)
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    cursor.execute("SELECT id, title, started_at, source FROM sessions WHERE started_at >= ? AND source != 'cron' AND id NOT LIKE 'cron_%'", (since_epoch,))
+
+    cursor.execute("SELECT id, title, started_at, source FROM sessions WHERE started_at >= ? AND source != 'cron' AND id NOT LIKE 'cron_%' ORDER BY started_at DESC", (since_epoch,))
     sessions = cursor.fetchall()
     
     session_map = {}
@@ -79,10 +79,9 @@ def collect_recent_logs(days=7):
             "source": s[3] or "unknown",
             "messages": []
         }
-        
+
     # Newest first, so when the budget runs out it is the OLDEST turns that
-    # drop, not the most recent ones. The previous ascending walk kept the
-    # oldest 400K characters and cut tonight's conversations.
+    # drop, not the most recent ones.
     cursor.execute(
         "SELECT session_id, role, content, timestamp FROM messages WHERE timestamp >= ? AND role IN ('user', 'assistant') ORDER BY timestamp DESC",
         (since_epoch,)
@@ -97,11 +96,9 @@ def collect_recent_logs(days=7):
             content = defang_threat_terms(content)
             if len(content) > 4000:
                 content = content[:4000] + "\n... [message truncated for dream consolidation]"
-
             if accumulated_chars + len(content) > LOG_BUDGET_CHARS:
                 capped = True
                 break
-
             session_map[sid]["messages"].append({
                 "role": m[1],
                 "content": content,
@@ -109,7 +106,7 @@ def collect_recent_logs(days=7):
             })
             accumulated_chars += len(content)
     for sdata in session_map.values():
-        sdata["messages"].reverse()  # back to chronological order for reading
+        sdata["messages"].reverse()
 
     conn.close()
 
@@ -117,15 +114,24 @@ def collect_recent_logs(days=7):
     output.append(f"=== RECENT CONVERSATIONS (LAST {days} DAYS) ===")
     if capped:
         output.append(f"\n⚠️ [LOG COLLECTION CAPPED AT {LOG_BUDGET_CHARS // 1000}K CHARACTERS, NEWEST TURNS KEPT, TO FIT THE ON-DEVICE MODEL'S CONTEXT] ⚠️\n")
+
+    # Bounded per-session summarization/chunking
     for sid, sdata in session_map.items():
         if not sdata["messages"]:
             continue
         local_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(sdata["started_at"]))
-        output.append(f"\nSession ID: {sid} | Title: {sdata['title']} | Source: {sdata['source']} | Date: {local_time}")
-        output.append("-" * 60)
+        # Build a compact per-session summary bounded by PER_SESSION_SUMMARY_CHARS
+        session_text_parts = []
         for msg in sdata["messages"]:
             role_label = "User" if msg["role"] == "user" else "Agent"
-            output.append(f"[{role_label}]: {msg['content'].strip()}")
+            session_text_parts.append(f"[{role_label}]: {msg['content'].strip()}")
+        session_body = "\n".join(session_text_parts)
+        # Hard per-session cap
+        if len(session_body) > PER_SESSION_SUMMARY_CHARS:
+            session_body = session_body[:PER_SESSION_SUMMARY_CHARS] + "\n... [session truncated to per-session budget]"
+        output.append(f"\nSession ID: {sid} | Title: {sdata['title']} | Source: {sdata['source']} | Date: {local_time}")
+        output.append("-" * 60)
+        output.append(session_body)
     return "\n".join(output)
 
 def read_file_if_exists(path, default_content=""):
@@ -141,11 +147,51 @@ def read_file_if_exists(path, default_content=""):
 # compress, so it has to fit on its own beside the system prompt and the
 # tool schemas. Measured 2026-09-02: an uncapped dump was 572K characters
 # (~188K real tokens) and, with 232 tool schemas, the request was rejected
-# by LM Studio nine nights running. Budget below: ~290K characters, ~95K
-# real tokens at the measured 3.05 chars/token for mixed prose and JSON.
+# by LM Studio nine nights running. Intermediate collection budgets can exceed
+# the request size, but the final assembled prompt is hard-capped below.
 LOG_BUDGET_CHARS = 140_000
 MEMORY_FILE_BUDGET_CHARS = 40_000
 INDEX_FULL_BUDGET_CHARS = 40_000
+# Hard final prompt budget for the whole auto-dream output.
+# Keeps the assembled <auto-dream-context> + <dream-seed-context> under
+# ~120k chars (~39k tokens) to avoid context-length errors on meta/muse-glimmer.
+FINAL_PROMPT_BUDGET_CHARS = 120_000
+# Per-session summary budget to bound pre-summarization/chunking.
+PER_SESSION_SUMMARY_CHARS = 2_500
+
+
+def bound_auto_dream_output(full_output, prompt_memory, budget=FINAL_PROMPT_BUDGET_CHARS):
+    """Keep the one-shot prompt bounded while retaining prompt-visible memory.
+
+    Recent logs are intentionally assembled first because they are the largest,
+    most disposable part of the consolidation context.  If the hard budget is
+    reached before the memory-tool section, append that section explicitly so
+    the model never consolidates against a prompt that silently omits the
+    memory it is expected to maintain.
+    """
+    if len(full_output) <= budget:
+        return full_output
+
+    clip_note = (
+        f"\n\n... [AUTO-DREAM OUTPUT CLIPPED at {budget // 1000}K characters "
+        f"to enforce the on-device context budget for meta/muse-glimmer; "
+        f"total was {len(full_output) // 1000}K characters]"
+    )
+    closing = "\n</dream-seed-context>\n"
+    prompt_block = ""
+    initial_head_limit = max(0, budget - len(clip_note) - len(closing))
+    if prompt_memory.strip() and prompt_memory not in full_output[:initial_head_limit]:
+        prompt_block = "\n\n--- PROMPT MEMORY PRESERVED AFTER CLIPPING ---\n" + prompt_memory
+
+    head_limit = max(0, budget - len(clip_note) - len(closing) - len(prompt_block))
+    head = full_output[:head_limit]
+    if prompt_block and prompt_memory in head:
+        prompt_block = ""
+        head_limit = max(0, budget - len(clip_note) - len(closing))
+        head = full_output[:head_limit]
+
+    bounded = head + prompt_block + clip_note + closing
+    return bounded[:budget]
 
 
 def clip(text, limit, what, path):
@@ -254,7 +300,7 @@ def run_self_checks():
         alerts.append("⚠️ Long-Term Memory (MEMORY.md) is missing.")
     if os.path.exists(INDEX_PATH):
         try:
-            with open(INDEX_PATH, "r") as f:
+            with open(INDEX_PATH, "r", encoding="utf-8") as f:
                 json.load(f)
         except Exception as je:
             alerts.append(f"⚠️ memory/index.json is malformed or corrupted: {je}")
@@ -339,54 +385,63 @@ def main():
                 first_few_lines = "\n".join(content.splitlines()[:5])
                 episodes_summary.append(f"File: episodes/{f}\n{first_few_lines}\n...")
     episodes_text = "\n\n".join(episodes_summary) if episodes_summary else "No episodic narratives recorded yet."
-    
-    # ── SLOW-WAVE COGNITIVE CONSOLIDATION BLOCKS ────────────────────
-    print("<auto-dream-context>")
-    print(recent_logs)
-    print("\n" + "="*50 + "\n")
-    print("=== CURRENT MEMORY STATE ===")
-    print("\n--- Main Long-Term Memory (MEMORY.md) ---")
-    print(main_memory)
-    print("\n--- Procedures Memory (procedures.md) ---")
-    print(procedures)
-    print(prompt_memory_sections())
-    print("\n--- Episodic Memory Summary ---")
-    print(episodes_text)
-    print("\n--- Memory Index JSON ---")
-    print(index_json)
-    print("</auto-dream-context>\n")
 
-    # ── ASSOCIATIVE REM SEED BLOCKS ─────────────────────────────────
+    # Assemble auto-dream context blocks
+    auto_context_parts = []
+    auto_context_parts.append("<auto-dream-context>")
+    auto_context_parts.append(recent_logs)
+    auto_context_parts.append("\n" + "="*50 + "\n")
+    auto_context_parts.append("=== CURRENT MEMORY STATE ===")
+    auto_context_parts.append("\n--- Main Long-Term Memory (MEMORY.md) ---")
+    auto_context_parts.append(main_memory)
+    auto_context_parts.append("\n--- Procedures Memory (procedures.md) ---")
+    auto_context_parts.append(procedures)
+    prompt_memory = prompt_memory_sections()
+    auto_context_parts.append(prompt_memory)
+    auto_context_parts.append("\n--- Episodic Memory Summary ---")
+    auto_context_parts.append(episodes_text)
+    auto_context_parts.append("\n--- Memory Index JSON ---")
+    auto_context_parts.append(index_json)
+    auto_context_parts.append("</auto-dream-context>\n")
+
+    # Assemble dream-seed context
     entries, by_id = load_entries()
     pairs = pick_distant_pairs(entries, by_id, n_pairs=3)
-
-    print("<dream-seed-context>")
-    print("=== TONIGHT'S DREAM SEEDS (distant memory collisions) ===")
-    print("These concept pairs are far apart in your memory graph. The further")
-    print("apart, the stranger and potentially more original the connection.\n")
-
+    dream_parts = []
+    dream_parts.append("<dream-seed-context>")
+    dream_parts.append("=== TONIGHT'S DREAM SEEDS (distant memory collisions) ===")
+    dream_parts.append("These concept pairs are far apart in your memory graph. The further")
+    dream_parts.append("apart, the stranger and potentially more original the connection.\n")
     if not pairs:
-        print("(Not enough memory nodes yet to generate collisions.)")
+        dream_parts.append("(Not enough memory nodes yet to generate collisions.)")
     else:
         for i, (dist, a, b) in enumerate(pairs, 1):
             dlabel = "DISCONNECTED" if dist >= 999 else f"distance {dist}"
-            print(f"--- Seed {i} ({dlabel}) ---")
-            print("  A: " + text_of(by_id, a))
-            print("  B: " + text_of(by_id, b))
-            print()
-
+            dream_parts.append(f"--- Seed {i} ({dlabel}) ---")
+            dream_parts.append("  A: " + text_of(by_id, a))
+            dream_parts.append("  B: " + text_of(by_id, b))
+            dream_parts.append("")
     ids = [e.get("id") for e in entries if e.get("id")]
     if len(ids) >= 3:
         triple = random.sample(ids, 3)
-        print("--- Wildcard triple (fuse all three into one impossible object) ---")
+        dream_parts.append("--- Wildcard triple (fuse all three into one impossible object) ---")
         for t in triple:
-            print("  * " + text_of(by_id, t))
-        print()
-
+            dream_parts.append("  * " + text_of(by_id, t))
+        dream_parts.append("")
     prev = last_dream_excerpt()
-    print("=== LAST NIGHT'S DREAM (for continuity / deepening) ===")
-    print(prev if prev else "(No prior dream recorded -- this is the first night.)")
-    print("</dream-seed-context>\n")
+    dream_parts.append("=== LAST NIGHT'S DREAM (for continuity / deepening) ===")
+    dream_parts.append(prev if prev else "(No prior dream recorded -- this is the first night.)")
+    dream_parts.append("</dream-seed-context>\n")
+
+    # Hard final prompt budget with clipping note.  The prompt-memory section
+    # is preserved explicitly if the recent-log block consumes the budget.
+    full_output = "\n".join(auto_context_parts + dream_parts)
+    full_output = bound_auto_dream_output(
+        full_output, prompt_memory, FINAL_PROMPT_BUDGET_CHARS
+    )
+
+    # Print final output
+    print(full_output)
 
     # ── SYSTEM HEALTH & SELF-CHECKS ─────────────────────────────────
     alerts = run_self_checks()
