@@ -119,9 +119,11 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     except Exception:
         return True  # fail safe: inability to prove death must not rewrite state
     if started_at is None:
-        return pid == os.getpid()
+        return True  # A live legacy owner without a fingerprint is not proven dead.
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    # A missing fingerprint can mean permissions, a transient probe failure,
+    # or an older platform implementation. It is not evidence of PID reuse.
+    return current is None or current == started_at
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:

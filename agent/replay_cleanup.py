@@ -36,6 +36,25 @@ _MISSING_FINAL_RESPONSE_CLOSURE = (
 )
 
 
+def strip_completed_recovery_placeholders(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Omit bookkeeping-only assistant closures on local OpenAI replay.
+
+    Gemini requires these synthetic closures, but local tool replay does not.
+    Retain actual tool receipts and UNKNOWN-effect warnings; remove only an
+    assistant message made entirely of the exact completed-sequence marker.
+    Persisted history is untouched.
+    """
+    cleaned = []
+    for message in history:
+        content = message.get("content")
+        if (message.get("role") == "assistant" and not message.get("tool_calls")
+                and isinstance(content, str) and _MISSING_FINAL_RESPONSE_CLOSURE in content
+                and not content.replace(_MISSING_FINAL_RESPONSE_CLOSURE, "").strip()):
+            continue
+        cleaned.append(message)
+    return cleaned
+
+
 def is_interrupted_tool_result(content: Any) -> bool:
     """Return True if a tool result indicates the tool was interrupted."""
     if not isinstance(content, str):

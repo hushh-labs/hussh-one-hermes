@@ -7,7 +7,6 @@ the product — each maps to a test or guard check. The dense source remains in
 | Contract | Invariant | Verification |
 |----------|-----------|--------------|
 | **A — Group routing safeguard** | Bridge never forwards non-allowed JIDs in self-chat mode | `bridge.js` review + gating tests |
-| **B — Zero-width unicode leakage** | Assembled cron prompts contain zero `U+200B/C/D/FEFF` | `auto_dream.py` output scan |
 | **C — Upstream update guard** | Merges never erase brand/skin/theme/prefix/provider overlay | `scripts/hussh-one-guard.sh` |
 | **D — Dashboard chat surface** | Dashboard uses embedded real TUI, not a forked React chat | guard + doctor (`--require-services`) |
 | **E — NL model switching** | Deterministic, injection-safe, Vertex-safe model switches | `test_natural_model_switch.py` (cli+gateway) |

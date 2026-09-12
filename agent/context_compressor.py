@@ -4537,17 +4537,36 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             segment = text[ci * chunk_size:(ci + 1) * chunk_size]
             if not segment.strip():
                 continue
+            import hashlib
+            local = str(self.provider or "").lower() in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}
+            session_db = getattr(self, "_session_db", None)
+            session_id = getattr(self, "_session_id", "")
+            chunk_key = hashlib.sha256(json.dumps(
+                ["digest-v1", self.model, self.base_url, _LEAN_DIGEST_PROMPT, segment],
+                ensure_ascii=False,
+            ).encode()).hexdigest()
+            cached = session_db.get_compression_chunk(session_id, chunk_key) if local and session_db is not None and session_id else None
+            if isinstance(cached, str) and cached.strip():
+                digests.append(f"### Segment {ci + 1}/{n_chunks}\n{cached}")
+                continue
             try:
                 from agent.auxiliary_client import call_llm
 
-                resp = call_llm(
-                    messages=[{
-                        "role": "user",
-                        "content": _LEAN_DIGEST_PROMPT.format(segment=segment),
-                    }],
-                    task="compression",
-                    max_tokens=_LEAN_DIGEST_MAX_TOKENS,
-                )
+                request = {
+                    "messages": [{"role": "user", "content": _LEAN_DIGEST_PROMPT.format(segment=segment)}],
+                    "task": "compression",
+                    "max_tokens": _LEAN_DIGEST_MAX_TOKENS,
+                }
+                if local:
+                    from types import SimpleNamespace
+                    from agent.chat_completion_helpers import _fit_local_output_cap
+                    request.pop("max_tokens")
+                    request.update(provider=self.provider, model=self.model,
+                                   base_url=self.base_url, api_key=self.api_key,
+                                   reasoning_config={"enabled": True, "effort": "high"})
+                    _fit_local_output_cap(SimpleNamespace(provider=self.provider,
+                        base_url=self.base_url, context_compressor=self), request)
+                resp = call_llm(**request)
                 body = (
                     resp.choices[0].message.content
                     if hasattr(resp, "choices") else str(resp)
@@ -4555,7 +4574,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 from agent.agent_runtime_helpers import strip_think_blocks
 
                 body = strip_think_blocks(None, body).strip()
+                if local and not body:
+                    raise ValueError("Local chunk digest returned no summary")
+                if local and session_db is not None and session_id:
+                    session_db.save_compression_chunk(session_id, chunk_key, body)
             except Exception as exc:
+                if local:
+                    raise RuntimeError("Local compaction chunk incomplete; prior checkpoints preserved") from exc
                 logger.warning("lean chunk digest %d/%d failed: %s", ci + 1, n_chunks, exc)
                 body = f"[digest unavailable for segment {ci + 1}/{n_chunks} — recover via session_search]"
             digests.append(f"### Segment {ci + 1}/{n_chunks}\n{body}")
@@ -4718,6 +4743,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if _name not in _pruned_skill_names:
                 _pruned_skill_names.append(_name)
         del _pruned_skill_names[_MAX_PRUNED_SKILL_MARKERS:]
+        if (str(self.provider or "").lower() in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}
+                and len(content_to_summarize) > _LEAN_DIGEST_CHUNK_CHARS):
+            try:
+                content_to_summarize = self._build_chunk_digests(turns_to_summarize)
+            except RuntimeError:
+                logger.warning("Local compaction paused with chunk checkpoints intact")
+                return None
         content_to_summarize = self._bound_summary_input(content_to_summarize)
         _sanitized_memory_context = sanitize_memory_context(memory_context)
         _serialized_memory_context = json.dumps(
@@ -4997,7 +5029,21 @@ This compaction should PRIORITISE preserving all information related to the focu
             if _local_summary_provider in {
                 "lmstudio", "lm-studio", "lm_studio", "ollama", "local",
             } or is_local_endpoint(self.base_url):
-                call_kwargs["max_tokens"] = summary_budget
+                # The summary target is prose guidance, not a combined
+                # reasoning + answer limit. A thinking model can consume that
+                # entire target before emitting any summary. Fit the wire
+                # reservation to the context instead, as for main requests.
+                from types import SimpleNamespace
+                from agent.chat_completion_helpers import _fit_local_output_cap
+
+                _fit_local_output_cap(
+                    SimpleNamespace(
+                        provider=self.provider,
+                        base_url=self.base_url,
+                        context_compressor=self,
+                    ),
+                    call_kwargs,
+                )
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             _aux_provider = ""

@@ -50,7 +50,7 @@ class _Store:
 class TestTheManifestIsComplete:
     def test_every_manifest_script_and_prompt_exists_in_the_repo(self, sync):
         jobs = sync.load_manifest(MANIFEST)
-        assert len(jobs) >= 10
+        assert jobs
         for job in jobs:
             assert (SYNC.parent / job["script"]).exists(), job["script"]
             if not job.get("no_agent"):
@@ -101,6 +101,14 @@ class TestReconcile:
         assert updates == {"schedule": "40 5 * * *", "enabled_toolsets": ["terminal", "file", "no_mcp"]}
         assert "deliver" not in updates and "model" not in updates and "provider" not in updates
 
+    def test_reasoning_effort_is_reconciled_when_manifest_pins_it(self, sync):
+        store = _Store([self._existing(reasoning_effort="xhigh")])
+        entry = self._entry(reasoning_effort="high")
+        report = sync.reconcile([entry], load=store.load, create=store.create,
+                                update=store.update, apply=True)
+        assert "reasoning_effort" in report["updated"]["Hushh Core Board Sync"]
+        assert store.updates[0][1]["reasoning_effort"] == "high"
+
     def test_a_missing_job_is_created_with_the_default_delivery(self, sync):
         store = _Store([])
         report = sync.reconcile([self._entry()], load=store.load, create=store.create,
@@ -148,3 +156,43 @@ class TestScriptInstall:
         assert (target / "lib" / "helper.py").exists()
         assert not (target / "notes.md").exists()
         assert sync.install_scripts(source, target, apply=False) == []
+
+
+def test_removed_jobs_preserve_history_and_do_not_return(sync, tmp_path, monkeypatch):
+    from cron import jobs
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    removed = []
+    for name, script in sync.REMOVED_JOBS.items():
+        (scripts / script).write_text('# removed feature\n')
+        job = jobs.create_job(prompt=None, name=name, script=script, no_agent=True, schedule='0 3 * * *')
+        removed.append(job['id'])
+        jobs.save_job_output(job['id'], 'Historical evidence must remain')
+    other = jobs.create_job(name='Owner job', prompt='Read only', schedule='0 5 * * *', deliver='local')
+    before = jobs.get_job(other['id'])
+    report = sync.remove_auto_dream(home=tmp_path, store=jobs, active=lambda _: False, apply=False)
+    assert len(report['jobs']) == 2
+    assert len(jobs.load_jobs()) == 3
+    report = sync.remove_auto_dream(home=tmp_path, store=jobs, active=lambda _: False, apply=True)
+    assert not report['errors']
+    assert jobs.get_job(other['id']) == before
+    assert all(jobs.get_job(j) is None for j in removed)
+    assert all(list((tmp_path / 'cron' / 'output' / j).glob('*.md')) for j in removed)
+    assert all(not (scripts / f).exists() for f in sync.REMOVED_JOBS.values())
+    assert not sync.remove_auto_dream(home=tmp_path, store=jobs, active=lambda _: False, apply=True)['jobs']
+    manifest = sync.load_manifest()
+    sync.reconcile(manifest, load=jobs.load_jobs, create=jobs.create_job, update=jobs.update_job, apply=True)
+    assert not any(j['name'] in sync.REMOVED_JOBS for j in jobs.load_jobs())
+
+
+def test_active_removed_job_is_paused_without_removing_scripts(sync, tmp_path, monkeypatch):
+    from cron import jobs
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    name, script = next(iter(sync.REMOVED_JOBS.items()))
+    path = tmp_path / 'scripts' / script
+    path.parent.mkdir(); path.write_text('# running\n')
+    job = jobs.create_job(prompt=None, name=name, script=script, no_agent=True, schedule='0 3 * * *')
+    report = sync.remove_auto_dream(home=tmp_path, store=jobs, active=lambda _: True, apply=True)
+    assert report['errors'] and path.exists()
+    assert jobs.get_job(job['id'])['enabled'] is False

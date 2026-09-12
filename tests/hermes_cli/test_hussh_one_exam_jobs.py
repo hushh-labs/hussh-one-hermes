@@ -24,7 +24,7 @@ from hermes_cli.hussh_one_pkm.integrity import rules_for
 from hermes_cli.hussh_one_routing.exam import jobs as J
 from hermes_cli.hussh_one_routing.exam.model import FAIL, PASS, SKIP
 
-HEADER = "*🤫 Hussh One* · *Board Sync*\n======================================\n\n"
+HEADER = "*🤫 Hussh One · Board Sync*\n======================================\n\n"
 
 
 def _run(name="Hushh Core Board Sync", text=HEADER + "• Synced 3 tickets\n\n• No blockers",
@@ -143,27 +143,9 @@ class TestContractChecks:
             "commits_36h": "3", "wiki_pages": "551",
         }
 
-    def test_auto_dream_model_half_is_json_without_tools(self):
-        good = _run(name="Auto-Dream Consolidated Suite",
-                    text='```json\n{"long_term": ["a"], "procedures": [], "index_entries": [], '
-                         '"archive": [], "dream": "d", "vision": "v", "brief": "b"}\n```')
-        assert _fails(J.grade(good)) == {}
-        prose = _run(name="Auto-Dream Consolidated Suite", text=HEADER + "• Consolidated things")
-        assert 'has:"brief"' in _fails(J.grade(prose))
-        touched = _run(name="Auto-Dream Consolidated Suite", text=good.final_text,
-                       tool_calls=[("patch", {"path": "/x/MEMORY.md"})])
-        assert _fails(J.grade(touched))["no_forbidden_tool"] == "called patch"
 
-    def test_auto_dream_apply_brief_states_what_it_applied(self):
-        text = ("*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n"
-                "• Consolidated x\n\n• Memory: +3 facts, +1 procedures, +2 index entries, 0 archived, dream recorded"
-                "\n• Prompt memory: +3 promoted, 0 deferred, 0 refused")
-        assert _fails(J.grade(_run(name="Auto-Dream Apply", text=text))) == {}
-        assert "has:• Memory:" in _fails(J.grade(_run(name="Auto-Dream Apply", text=HEADER + "• x")))
-        # A brief that journals the facts but never says whether they reached the
-        # prompt is the exact 2026-08-25 to 2026-09-10 silence; it fails the contract.
-        journal_only = text.rsplit("\n• Prompt memory:", 1)[0]
-        assert "has:Prompt memory:" in _fails(J.grade(_run(name="Auto-Dream Apply", text=journal_only)))
+
+
 
     def test_usage_report_requires_every_key(self):
         text = "🤫 Hussh One\nUsage Daemon [S]\n════════════════════\n\n*Today:*\n\n*Cost:*\n$0"
@@ -244,8 +226,8 @@ def _databases(tmp_path):
     output.mkdir(parents=True)
     saved = output / "2026-09-02_05-30-03.md"
     # The scheduler's saved output carries a preamble the owner never sees.
-    saved.write_text("# Cron Job: Auto-Dream Apply\n\n**Job ID:** j4\n**Mode:** no_agent (script)\n\n---\n\n"
-                     "*🤫 Hussh One* · *Auto-Dream Daemon*\n======================================\n\n• Memory: +2 facts"
+    saved.write_text("# Cron Job: Fixture Report\n\n**Job ID:** j4\n**Mode:** no_agent (script)\n\n---\n\n"
+                     "*Fixture Report*\n======================================\n\n• Memory: +2 facts"
                      "\n• Prompt memory: +2 promoted, 0 deferred, 0 refused",
                      encoding="utf-8")
     import os
@@ -256,23 +238,25 @@ def _databases(tmp_path):
         {"id": "j1", "name": "Hushh Core Board Sync", "prompt": "Start exactly with this 3-line header", "deliver": "local"},
         {"id": "j2", "name": "Hushh Wiki Maintenance Follow-on", "prompt": "wiki", "deliver": "local"},
         {"id": "j3", "name": "Hussh One Self-Healing Doctor", "prompt": "", "no_agent": True},
-        {"id": "j4", "name": "Auto-Dream Apply", "prompt": "", "no_agent": True, "deliver": "local,whatsapp:x"},
+        {"id": "j4", "name": "Fixture Report", "prompt": "", "no_agent": True, "deliver": "local,whatsapp:x"},
     ]}), encoding="utf-8")
     return jobs, ex, st
 
 
 class TestCollection:
-    def test_executions_join_their_sessions_and_scripts_are_skipped(self, tmp_path):
+    def test_executions_join_their_sessions_and_scripts_are_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(J, "CONTRACTS", J.CONTRACTS + (J.JobContract(name_contains="Fixture Report", header=("*Fixture Report*", "======================================")),))
         jobs, ex, st = _databases(tmp_path)
         runs = J.collect_runs(0, jobs_path=jobs, executions_db=ex, state_db=st,
                               output_dir=tmp_path / "output")
         # j3 (the doctor) is a script job with no message contract: skipped.
-        # j4 (Auto-Dream Apply) is a script job WITH a contract: its delivered
+        # j4 (Fixture Report) is a script job WITH a contract: its delivered
         # stdout is the scheduler's saved output file.
         assert [r.job_id for r in runs] == ["j1", "j2", "j4"]
+        assert runs[0].prompt == "prompt...\nDISCOVERY: commits_36h=4\n"
         apply = runs[2]
         assert apply.model == "script" and apply.tool_calls == []
-        assert apply.final_text.startswith("*🤫 Hussh One* · *Auto-Dream Daemon*")
+        assert apply.final_text.startswith("*Fixture Report*")
         assert _fails(J.grade(apply)) == {}  # the preamble is not the message
         board = runs[0]
         assert board.session_id == "cron_j1_20260902_031002"
@@ -354,3 +338,11 @@ class TestQueueAndReport:
             top.parse_args(["puppy", "jobs", "report", "--out", "d", "--seal", "s", "--identity", "i"])
         assert PC._parse_since("2026-09-02T03:00:00-07:00") == datetime.fromisoformat("2026-09-02T03:00:00-07:00").timestamp()
         assert PC._parse_since("24h") < PC._parse_since("1h")
+
+
+def test_daily_digest_requires_whatsapp_sections_and_human_labels():
+    text = "*🤫 Hussh One · Daily Digest*\n_Sep 11, 2026 · 3:30 PM PDT_\n\n*⚠️ Needs attention*\n\n*🏗️ Engineering board*\n• Last run failed.\n\n*📚 Wiki maintenance*\n• Last run failed.\n\n*💰 Usage*\n• Usage unavailable.\n\n*Next:* Investigate failed runs."
+    run = _run(name="Daily System Digest Aggregator", text=text)
+    assert _fails(J.grade(run)) == {}
+    run.final_text += "\njob_status: error; last_run_at: 2026-09-11T15:30:00"
+    assert "friendly_presentation" in _fails(J.grade(run))

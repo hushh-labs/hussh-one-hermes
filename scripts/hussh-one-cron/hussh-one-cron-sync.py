@@ -13,8 +13,8 @@ line, by name.
 
 What it never does: touch ``deliver`` on an existing job (that is the owner's
 own chat, per device), touch ``model`` or ``provider`` (the device default
-applies), or remove or re-enable a job the manifest does not name (the founder
-disables jobs on purpose).
+applies), or re-enable an unlisted job. The only removal exception is the explicit
+Auto-Dream deletion migration, which retains historical outputs.
 
     hussh-one-cron-sync.py --check    # print drift, change nothing (default)
     hussh-one-cron-sync.py --apply    # install scripts, create/update jobs
@@ -35,8 +35,65 @@ REPO_ROOT = HERE.parent.parent
 MANIFEST = HERE / "jobs.manifest.json"
 
 # Fields the manifest owns on an existing job. Everything else is the device's.
-MANAGED_FIELDS = ("schedule", "script", "no_agent", "enabled_toolsets", "skills", "prompt")
+MANAGED_FIELDS = (
+    "schedule", "script", "no_agent", "enabled_toolsets", "skills", "prompt",
+    "reasoning_effort",
+)
 SCRIPT_SUFFIXES = (".py", ".sh")
+
+
+# Explicit removed product features only; never delete arbitrary unlisted jobs.
+REMOVED_JOBS = {
+    "Auto-Dream Consolidated Suite": "auto_dream.py",
+    "Auto-Dream Apply": "auto_dream_apply.py",
+}
+
+
+def remove_auto_dream(*, home: Path, store, active, apply: bool) -> dict:
+    """Delete the removed feature without deleting its historical information."""
+    report = {"jobs": [], "scripts": [], "errors": []}
+    jobs = store.load_jobs()
+    candidates = [j for j in jobs if j.get("name") in REMOVED_JOBS
+                  and Path(str(j.get("script") or "")).name == REMOVED_JOBS[j["name"]]]
+    if apply:
+        for job in candidates:
+            store.pause_job(job["id"], reason="Auto-Dream feature deleted")
+    for job in candidates:
+        if active(job["id"]):
+            report["errors"].append(f"{job['id']}: execution still active; left paused")
+    # Both halves must be idle before either executable is removed.
+    if report["errors"]:
+        return report
+    for job in candidates:
+        report["jobs"].append(job["id"])
+        if apply and not store.remove_job(job["id"], preserve_history=True):
+            report["errors"].append(f"{job['id']}: removal failed")
+    if report["errors"]:
+        return report
+    remaining = store.load_jobs() if apply else [j for j in jobs if j not in candidates]
+    for script in REMOVED_JOBS.values():
+        if any(Path(str(j.get("script") or "")).name == script for j in remaining):
+            report["errors"].append(f"{script}: still referenced by another job")
+            continue
+        path = home / "scripts" / script
+        if path.exists() or path.is_symlink():
+            report["scripts"].append(script)
+            if apply:
+                path.unlink()
+    return report
+
+
+def _active_execution(job_id: str) -> bool:
+    from cron import executions
+    conn = executions._connect()
+    try:
+        executions._initialize_schema(conn)
+        rows = conn.execute(
+            "SELECT pid, process_started_at FROM executions WHERE job_id=? "
+            "AND status IN ('claimed','running')", (job_id,)).fetchall()
+        return any(executions._owner_is_live(row[0], row[1]) for row in rows)
+    finally:
+        conn.close()
 
 
 def hermes_home() -> Path:
@@ -60,7 +117,8 @@ def load_manifest(path: Path = MANIFEST) -> list[dict]:
 def install_scripts(source: Path, target: Path, *, apply: bool) -> list[str]:
     """Copy every job script (and helper package) whose content differs."""
     changed: list[str] = []
-    target.mkdir(parents=True, exist_ok=True)
+    if apply:
+        target.mkdir(parents=True, exist_ok=True)
     for entry in sorted(source.iterdir()):
         if entry.name in ("prompts", "__pycache__") or entry.name.startswith("."):
             continue
@@ -111,6 +169,8 @@ def desired_fields(entry: dict) -> dict:
         fields["enabled_toolsets"] = list(entry.get("enabled_toolsets") or [])
         fields["skills"] = list(entry.get("skills") or [])
         fields["prompt"] = entry.get("prompt") or ""
+    if entry.get("reasoning_effort"):
+        fields["reasoning_effort"] = entry["reasoning_effort"]
     return fields
 
 
@@ -194,6 +254,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     sys.path.insert(0, str(REPO_ROOT))
     from cron import jobs as store  # noqa: E402 - the repo's own cron store
+
+    cleanup = remove_auto_dream(home=hermes_home(), store=store, active=_active_execution, apply=apply)
+    print("Auto-Dream cleanup: " + json.dumps(cleanup))
+    if cleanup["errors"]:
+        return 1
 
     report = reconcile(
         manifest_jobs,

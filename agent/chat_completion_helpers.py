@@ -72,26 +72,7 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # Leave a small estimator margin because the rough estimator intentionally
 # trades tokenizer fidelity for speed.
 _LOCAL_OUTPUT_CONTEXT_MARGIN_TOKENS = 1024
-_LOCAL_DEFAULT_OUTPUT_CAP_TOKENS = 8_192
-
-
-def _local_default_output_cap() -> int:
-    """Return the bounded local output budget, with an explicit escape hatch."""
-    raw = os.environ.get("HERMES_LOCAL_MAX_OUTPUT_TOKENS", "")
-    if raw:
-        try:
-            configured = int(raw)
-        except (TypeError, ValueError):
-            configured = 0
-        if configured > 0:
-            # Keep the override bounded as well; a local model can still make
-            # progress across turns instead of reserving the whole context for
-            # one unbounded reasoning response.
-            return min(configured, 65_536)
-    return _LOCAL_DEFAULT_OUTPUT_CAP_TOKENS
-
-
-def _fit_local_output_cap(agent, api_kwargs: dict) -> dict:
+def _fit_local_output_cap(agent, api_kwargs: dict, *, context_length=None) -> dict:
     """Keep local prompt + completion within the live model context window.
 
     LM Studio/Ollama-compatible endpoints commonly apply a large server-side
@@ -111,8 +92,9 @@ def _fit_local_output_cap(agent, api_kwargs: dict) -> dict:
     ):
         return api_kwargs
 
-    compressor = getattr(agent, "context_compressor", None)
-    context_length = getattr(compressor, "context_length", None)
+    if context_length is None:
+        compressor = getattr(agent, "context_compressor", None)
+        context_length = getattr(compressor, "context_length", None)
     try:
         context_length = int(context_length)
     except (TypeError, ValueError):
@@ -138,7 +120,7 @@ def _fit_local_output_cap(agent, api_kwargs: dict) -> dict:
         # the real compression problem.
         return api_kwargs
 
-    cap = min(_local_default_output_cap(), available)
+    cap = available
     output_key = next(
         (
             key
@@ -972,20 +954,23 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
 
 
 def _cap_local_stream_stale_timeout(agent, timeout: float) -> float:
-    """Apply an active run budget to a local stream's stale deadline."""
-    _run_budget = getattr(agent, "run_budget_seconds", None)
-    _run_started = getattr(agent, "_run_budget_started_at", None)
-    base_url = getattr(agent, "base_url", None)
-    if not (_run_budget and _run_started and base_url and is_local_endpoint(base_url)):
-        return timeout
-    _remaining = float(_run_budget) - (time.time() - float(_run_started))
-    _deadline_cap = max(5.0, _remaining * 0.5)
-    if timeout != float("inf"):
-        timeout = min(timeout, _deadline_cap)
-    else:
-        timeout = _deadline_cap
-    logger.debug("Local stream stale timeout capped by run budget: %.0fs", timeout)
+    """Inactivity and attempt duration are independent clocks."""
     return timeout
+
+
+class LocalAttemptDeadlineExceeded(InterruptedError):
+    """The current local attempt ended; preserve state before another attempt."""
+
+
+def _check_local_attempt_deadline(agent) -> None:
+    if not is_local_endpoint(getattr(agent, "base_url", "") or ""):
+        return
+    budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if budget and started and time.time() - float(started) >= float(budget):
+        raise LocalAttemptDeadlineExceeded(
+            "Local attempt deadline reached; checkpoint before resuming"
+        )
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
@@ -1209,6 +1194,10 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     ledger = None
     attempt_id = None
     try:
+        ready = runtime.resolver.require_ready(model)
+        api_kwargs = _fit_local_output_cap(
+            agent, api_kwargs, context_length=ready.loaded_context_length
+        )
         metadata = _local_attempt_metadata(agent, api_kwargs, model)
         try:
             from agent.local_recovery import LocalAttemptLedger
@@ -1851,6 +1840,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     t.start()
     _poll_count = 0
     while t.is_alive():
+        try:
+            _check_local_attempt_deadline(agent)
+        except LocalAttemptDeadlineExceeded:
+            _cancel_current_stream_attempt("local_attempt_deadline")
+            _close_request_client_once("local_attempt_deadline")
+            raise
         t.join(timeout=0.3)
         _poll_count += 1
 
@@ -3159,6 +3154,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     def _managed_summary_call(request, callback, *, retry_count: int):
         from agent import relay_llm
 
+        # A forced summary is still part of the current attempt. Empty-summary
+        # retries must not bypass the deadline or the local context budget.
+        _check_local_attempt_deadline(agent)
+        request = _fit_local_output_cap(agent, request)
         return relay_llm.execute_current(
             request,
             callback,
@@ -4247,6 +4246,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if ledger is not None and attempt_id is not None:
                     ledger.finish(attempt_id, success=success, error=error)
             try:
+                if runtime is not None:
+                    ready = runtime.resolver.require_ready(model)
+                    stream_kwargs = _fit_local_output_cap(
+                        agent, stream_kwargs, context_length=ready.loaded_context_length
+                    )
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
                         reason="chat_completion_stream_request",
@@ -5042,6 +5046,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):
+                _check_local_attempt_deadline(agent)
                 stream_attempt_id = _start_stream_attempt()
                 # Check for interrupt before each retry attempt.  Without
                 # this, /stop closes the HTTP connection (outer poll loop),
@@ -5448,6 +5453,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
     while t.is_alive():
+        try:
+            _check_local_attempt_deadline(agent)
+        except LocalAttemptDeadlineExceeded:
+            _cancel_current_stream_attempt("local_attempt_deadline")
+            _close_request_client_once("local_attempt_deadline")
+            raise
         t.join(timeout=0.3)
 
         # Periodic heartbeat: touch the agent's activity tracker so the

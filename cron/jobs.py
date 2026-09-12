@@ -2517,8 +2517,8 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def remove_job(job_id: str) -> bool:
-    """Remove a job by ID or name."""
+def remove_job(job_id: str, *, preserve_history: bool = False) -> bool:
+    """Remove a job; optionally retain outputs and notepad for audit/recovery."""
     job = resolve_job_ref(job_id)
     if not job:
         return False
@@ -2534,14 +2534,15 @@ def remove_job(job_id: str) -> bool:
             job_output_dir = _job_output_dir(canonical_id)
             save_jobs(jobs, removed_ids={canonical_id})
             # Clean up output directory to prevent orphaned dirs accumulating
-            if job_output_dir.exists():
+            if job_output_dir.exists() and not preserve_history:
                 shutil.rmtree(job_output_dir)
             # Clean up the job's durable notepad (cron/notepad.db) — without
             # this, removed jobs orphan their KV rows forever. Best effort:
             # a notepad failure must never block the removal itself.
             try:
                 from cron.notepad import clear_notepad
-                clear_notepad(canonical_id)
+                if not preserve_history:
+                    clear_notepad(canonical_id)
             except Exception:
                 logger.debug(
                     "Failed to clear notepad for removed job %s",

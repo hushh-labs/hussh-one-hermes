@@ -3384,7 +3384,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # (#22773).
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
-                timed_out = False
                 delivered_message_id = None
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
@@ -3414,50 +3413,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         target_errors.append("live adapter event loop scheduling failed")
                     else:
                         send_result = None
-                        timeout_handled = False
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
-                            # #38922: a slow confirmation does NOT necessarily
-                            # mean the send failed — but we must distinguish two
-                            # cases via future.cancel()'s return value:
-                            #
-                            #   cancel() == False -> the coroutine was already
-                            #     running on the gateway loop when the timeout
-                            #     fired; the request is in flight on the wire and
-                            #     cannot be un-sent.  Re-sending via standalone
-                            #     would be a guaranteed DUPLICATE, so treat it as
-                            #     delivered (assume-delivered).
-                            #
-                            #   cancel() == True -> the scheduled callback never
-                            #     started executing (loop wedged/backlogged for
-                            #     the full 60s), so nothing was sent.  We MUST
-                            #     fall through to the standalone path or the
-                            #     message is silently dropped (worse than a
-                            #     duplicate).
-                            cancelled = future.cancel()
-                            if cancelled:
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    "timed out before the coroutine was dispatched"
+                            # A run_coroutine_threadsafe Future can be cancelled
+                            # even after its coroutine has sent the request.
+                            # Neither cancellation result proves delivery or
+                            # proves that retrying cannot duplicate a write.
+                            future.cancel()
+                            msg = (
+                                f"delivery outcome unknown for {platform_name}:{chat_id}: "
+                                "live adapter confirmation timed out; reconcile the "
+                                "message receipt before retrying"
+                            )
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
+                            if media_files:
+                                delivery_errors.append(
+                                    f"{len(media_files)} media attachment(s) not sent "
+                                    "because text delivery is unconfirmed"
                                 )
-                                logger.warning(
-                                    "Job '%s': %s, falling back to standalone",
-                                    job["id"], msg,
-                                )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
-                                timeout_handled = True
-                            else:
-                                timed_out = True
-                                timeout_handled = True
-                                logger.warning(
-                                    "Job '%s': live adapter send to %s:%s timed out "
-                                    "after 60s; already dispatched (in flight), "
-                                    "assuming delivered (skipping standalone fallback "
-                                    "to avoid duplicate)",
-                                    job["id"], platform_name, chat_id,
-                                )
+                            # Preserve the output, don't seed a delivered
+                            # conversation or attempt a standalone second send.
+                            continue
                         except Exception as ex:
                             # A real send error (not a slow confirmation) — fall
                             # through to the standalone path so the message is
@@ -3465,76 +3443,64 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             target_errors.append(f"live adapter send failed: {ex}")
                             raise
 
-                        if timeout_handled:
-                            # The timeout branch above already decided the
-                            # outcome (assume-delivered if in flight, or
-                            # adapter_ok=False to fall through if never
-                            # dispatched).  send_result is None, so skip the
-                            # confirmation/thread-fallback inspection below.
-                            pass
+                        # _deliver_to_platform returns either a SendResult
+                        # (.success attr) or, when the silence-narration
+                        # filter drops the message, a plain dict
+                        # {"success": True, "delivered": False, ...}.
+                        # Normalize both shapes so a getattr default doesn't
+                        # misread a dict, and so a None / success-less object
+                        # is NOT counted as delivered (#47056).
+                        if isinstance(send_result, dict):
+                            send_success = bool(send_result.get("success", False))
+                            send_raw_response = send_result.get("raw_response")
+                            delivered_message_id = send_result.get("message_id")
                         else:
-                            # _deliver_to_platform returns either a SendResult
-                            # (.success attr) or, when the silence-narration
-                            # filter drops the message, a plain dict
-                            # {"success": True, "delivered": False, ...}.
-                            # Normalize both shapes so a getattr default doesn't
-                            # misread a dict, and so a None / success-less object
-                            # is NOT counted as delivered (#47056).
-                            if isinstance(send_result, dict):
-                                send_success = bool(send_result.get("success", False))
-                                send_raw_response = send_result.get("raw_response")
-                                delivered_message_id = send_result.get("message_id")
-                            else:
-                                send_success = _confirm_adapter_delivery(send_result)
-                                send_raw_response = getattr(send_result, "raw_response", None)
-                                delivered_message_id = getattr(send_result, "message_id", None)
+                            send_success = _confirm_adapter_delivery(send_result)
+                            send_raw_response = getattr(send_result, "raw_response", None)
+                            delivered_message_id = getattr(send_result, "message_id", None)
 
-                            if not send_success:
-                                if isinstance(send_result, dict):
-                                    err = send_result.get("error", "unknown")
-                                    shape = "dict"
-                                elif send_result is not None:
-                                    err = getattr(send_result, "error", None)
-                                    shape = type(send_result).__name__
-                                else:
-                                    err = "no response from adapter"
-                                    shape = "None"
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    f"returned unconfirmed result ({shape}, error={err})"
-                                )
-                                if transport is not None and transport.is_relay:
-                                    logger.warning("Job '%s': %s", job["id"], msg)
-                                else:
-                                    logger.warning(
-                                        "Job '%s': %s, falling back to standalone",
-                                        job["id"], msg,
-                                    )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
-                            elif (
-                                send_raw_response
-                                and thread_id
-                                and send_raw_response.get("thread_fallback")
-                            ):
-                                requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
-                                msg = (
-                                    f"configured thread_id {requested_thread_id} for "
-                                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
-                                )
+                        if not send_success:
+                            if isinstance(send_result, dict):
+                                err = send_result.get("error", "unknown")
+                                shape = "dict"
+                            elif send_result is not None:
+                                err = getattr(send_result, "error", None)
+                                shape = type(send_result).__name__
+                            else:
+                                err = "no response from adapter"
+                                shape = "None"
+                            msg = (
+                                f"live adapter send to {platform_name}:{chat_id} "
+                                f"returned unconfirmed result ({shape}, error={err})"
+                            )
+                            if transport is not None and transport.is_relay:
                                 logger.warning("Job '%s': %s", job["id"], msg)
-                                delivery_errors.append(msg)
+                            else:
+                                logger.warning(
+                                    "Job '%s': %s, falling back to standalone",
+                                    job["id"], msg,
+                                )
+                            target_errors.append(msg)
+                            adapter_ok = False  # fall through to standalone path
+                        elif (
+                            send_raw_response
+                            and thread_id
+                            and send_raw_response.get("thread_fallback")
+                        ):
+                            requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
+                            msg = (
+                                f"configured thread_id {requested_thread_id} for "
+                                f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                            )
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live
                 # adapter, using the same DM-topic-aware routing as the text send
                 # (#22773 — media previously used a bare thread_id and landed in
-                # the General lane for private DM topics).  Skip on an in-flight
-                # confirmation timeout: the gateway loop is contended, so each
-                # media send would also block its 30s budget, and the text
-                # payload is already assumed delivered (#38922).  Record the
-                # skipped attachments so the drop is visible rather than silently
-                # lost.
-                if adapter_ok and not timed_out and media_files:
+                # the General lane for private DM topics). A text confirmation
+                # timeout exits the target above without sending attachments.
+                if adapter_ok and media_files:
                     routed_media_metadata = dict(media_metadata or {})
                     if transport is not None and transport.is_relay:
                         routed_media_metadata["_relay_logical_platform"] = platform.value
@@ -3559,13 +3525,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     for _me in _media_errors:
                         _msg = f"{_me} (target {platform_name}:{chat_id})"
                         delivery_errors.append(_msg)
-                elif timed_out and media_files:
-                    msg = (
-                        f"{len(media_files)} media attachment(s) not delivered to "
-                        f"{platform_name}:{chat_id} (live adapter confirmation timed out)"
-                    )
-                    logger.warning("Job '%s': %s", job["id"], msg)
-                    delivery_errors.append(msg)
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
@@ -6306,7 +6265,11 @@ def run_job(
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
                         break
-        except Exception:
+        except BaseException:
+            # Cancelling the monitor Future cannot stop a running worker.
+            # Interrupt the owned agent before teardown, including SIGINT,
+            # so it cannot recreate a client and start another inference.
+            request_hard_interrupt(agent, "Cron execution monitor interrupted")
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:

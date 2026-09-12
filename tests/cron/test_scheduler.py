@@ -535,6 +535,55 @@ class TestDeliverResultErrorReturns:
         assert "not configured" in result
 
 
+class TestRunJobMonitorCancellation:
+    def test_keyboard_interrupt_stops_owned_worker(self, tmp_path):
+        import concurrent.futures
+        import threading
+
+        started, stop, finished = threading.Event(), threading.Event(), threading.Event()
+        agent = MagicMock()
+
+        def work(_prompt):
+            started.set()
+            try:
+                assert stop.wait(5), "monitor left its agent running"
+                return {"final_response": "interrupted", "failed": True}
+            finally:
+                finished.set()
+
+        agent.run_conversation.side_effect = work
+        agent.interrupt.side_effect = lambda *args, **kwargs: stop.set()
+        real_wait = concurrent.futures.wait
+        first_wait = True
+
+        def interrupt_monitor(*args, **kwargs):
+            nonlocal first_wait
+            if first_wait:
+                first_wait = False
+                assert started.wait(3)
+                raise KeyboardInterrupt()
+            return real_wait(*args, **kwargs)
+
+        try:
+            with patch("cron.scheduler._hermes_home", tmp_path), \
+                 patch("cron.scheduler._resolve_origin", return_value=None), \
+                 patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+                 patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+                 patch("hermes_state.SessionDB", return_value=MagicMock()), \
+                 patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                     "api_key": "fixture", "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter", "api_mode": "chat_completions",
+                 }), \
+                 patch("run_agent.AIAgent", return_value=agent), \
+                 patch("concurrent.futures.wait", side_effect=interrupt_monitor):
+                with pytest.raises(KeyboardInterrupt):
+                    run_job({"id": "interrupt-worker", "name": "fixture", "prompt": "hi"})
+            agent.interrupt.assert_called()
+            assert finished.wait(3)
+        finally:
+            stop.set()
+
+
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {
@@ -1935,20 +1984,10 @@ class TestParallelTick:
 
 
 class TestDeliverResultTimeoutCancelsFuture:
-    """When future.result(timeout=60) raises TimeoutError in the live adapter
-    delivery path, the outcome depends on whether the coroutine was already
-    running.  future.cancel() returning False means it is in flight on the wire
-    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
-    avoid a duplicate (#38922).  future.cancel() returning True means it never
-    started (wedged loop) → nothing was sent, so fall through to standalone or
-    the message is silently dropped.  Regression for #38922.
-    """
+    """A cancellation result is not a delivery receipt."""
 
-    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
-        """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+    @pytest.mark.parametrize("cancel_result", [True, False])
+    def test_live_adapter_timeout_is_unknown_without_duplicate(self, cancel_result):
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -1964,17 +2003,14 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop = MagicMock()
         loop.is_running.return_value = True
 
-        # A real concurrent.futures.Future, but we override .result() to raise
-        # TimeoutError exactly like the 60s wait firing in production.  We make
-        # .cancel() return False to simulate the coroutine being ALREADY RUNNING
-        # on the gateway loop (in flight on the wire) — the case where the send
-        # cannot be un-sent and a standalone resend would be a duplicate.
+        # Exercise both cancellation outcomes: the bridge Future's state is
+        # not evidence of whether the remote service committed the message.
         captured_future = Future()
         cancel_calls = []
 
         def in_flight_cancel():
             cancel_calls.append(True)
-            return False  # already running — cannot be cancelled
+            return cancel_result  # neither value establishes the remote outcome
 
         captured_future.cancel = in_flight_cancel
         captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
@@ -2002,12 +2038,10 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        # 1. cancel() was attempted (returned False = in flight).
-        assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
-        # 2. Delivery is reported successful (no error string returned).
-        assert result is None, f"expected successful delivery, got error: {result!r}"
-        # 3. The standalone fallback must NOT run — that is the #38922 fix:
-        #    an in-flight confirmation timeout is assume-delivered, not a resend.
+        assert cancel_calls == [True]
+        assert "delivery outcome unknown" in result
+        assert "reconcile the message receipt" in result
+        # Unknown is neither delivered nor permission to duplicate a send.
         standalone_send.assert_not_awaited()
 
 

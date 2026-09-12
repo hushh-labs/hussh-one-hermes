@@ -4438,7 +4438,7 @@ def run_conversation(
                 agent._touch_activity(f"API call #{api_call_count} completed")
                 break  # Success, exit retry loop
 
-            except InterruptedError:
+            except InterruptedError as interruption:
                 if thinking_spinner:
                     thinking_spinner.stop("")
                     thinking_spinner = None
@@ -4468,7 +4468,14 @@ def run_conversation(
                     append_message(messages, {"role": "assistant", "content": _partial})
                     final_response = _partial
                 else:
-                    final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
+                    from agent.chat_completion_helpers import LocalAttemptDeadlineExceeded
+                    if isinstance(interruption, LocalAttemptDeadlineExceeded):
+                        final_response = (
+                            "Local attempt deadline reached. Session progress was saved; "
+                            "resume after the previous inference request has stopped."
+                        )
+                    else:
+                        final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
                 agent._persist_session(messages, conversation_history)
                 break
 

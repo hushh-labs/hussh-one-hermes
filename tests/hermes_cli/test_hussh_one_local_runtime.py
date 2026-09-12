@@ -257,3 +257,17 @@ def test_interactive_waiter_preempts_queued_background_work():
         interactive_thread.join(timeout=1.0)
         background_thread.join(timeout=1.0)
     assert background_acquired.is_set()
+
+
+def test_loaded_instance_capacity_wins_over_catalog_maximum():
+    from hermes_cli.hussh_one_routing.local_runtime import _entry_context
+    assert _entry_context({"max_context_length": 131072, "loaded_instances": [{"config": {"context_length": 32768}}]}) == 32768
+
+
+def test_changing_limit_does_not_replace_active_pool():
+    lease = LocalInferenceAdmission.acquire("stable-pool", max_concurrency=1)
+    try:
+        with pytest.raises(LocalModelOverloaded):
+            LocalInferenceAdmission.acquire("stable-pool", max_concurrency=2, wait=0)
+    finally:
+        lease.release()

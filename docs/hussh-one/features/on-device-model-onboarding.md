@@ -1,5 +1,7 @@
 # Onboarding an on-device model
 
+> 2026-09-11: Auto-Dream was deleted from the product and scheduled jobs. References below describe historical investigations, not installation or operating instructions. Core Hermes memory and context compaction remain supported.
+
 The durable deliverable is this procedure, not any one model comparison.
 Sovereign and local models improve monthly; picking today's winner is worth
 little if answering the same question in three months means rebuilding the

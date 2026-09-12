@@ -147,7 +147,7 @@ def test_local_stale_timeout_can_be_raised_explicitly(monkeypatch, tmp_path):
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1200.0
 
 
-def test_local_stale_timeout_respects_short_run_budget(monkeypatch, tmp_path):
+def test_local_stale_timeout_is_independent_of_run_budget(monkeypatch, tmp_path):
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
@@ -162,7 +162,7 @@ def test_local_stale_timeout_respects_short_run_budget(monkeypatch, tmp_path):
 
     timeout = agent._compute_non_stream_stale_timeout({"input": "hi"})
 
-    assert 24.0 <= timeout <= 25.0
+    assert timeout == 900.0
 
 
 def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):

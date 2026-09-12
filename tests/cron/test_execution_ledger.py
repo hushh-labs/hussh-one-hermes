@@ -415,3 +415,27 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_recovery_preserves_live_foreign_owner_when_fingerprint_unavailable(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("unverifiable-live", source="direct")
+    executions.mark_execution_running(record["id"])
+    monkeypatch.setattr(executions, "_PROCESS_ID", "different-reader")
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr(executions, "_process_start_time", lambda pid: None)
+    assert executions.recover_interrupted_executions() == 0
+    assert executions.latest_execution("unverifiable-live")["status"] == "running"
+
+
+def test_live_legacy_owner_without_fingerprint_is_not_declared_dead(monkeypatch):
+    from cron import executions
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    assert executions._owner_is_live(999999, None)
+
+
+def test_confirmed_pid_reuse_is_not_live_owner(monkeypatch):
+    from cron import executions
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr(executions, "_process_start_time", lambda pid: 200)
+    assert not executions._owner_is_live(999999, 100)

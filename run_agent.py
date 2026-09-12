@@ -1528,7 +1528,7 @@ class AIAgent:
         # otherwise be, and an explicit user-configured stale_timeout_seconds
         # (or env var) still wins untouched.
         run_budget = getattr(self, "run_budget_seconds", None)
-        if run_budget and not self._stale_timeout_is_explicit():
+        if run_budget and not local_endpoint and not self._stale_timeout_is_explicit():
             started = getattr(self, "_run_budget_started_at", None)
             if started:
                 remaining = float(run_budget) - (time.time() - started)

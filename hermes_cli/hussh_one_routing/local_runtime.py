@@ -125,7 +125,7 @@ def _entry_id(entry: dict[str, Any]) -> str:
 
 
 def _entry_context(entry: dict[str, Any]) -> Optional[int]:
-    for key in ("loaded_context_length", "context_length", "max_context_length"):
+    for key in ("loaded_context_length", "context_length"):
         value = entry.get(key)
         if isinstance(value, int) and value > 0:
             return value
@@ -139,10 +139,13 @@ def _entry_context(entry: dict[str, Any]) -> Optional[int]:
                 value = config.get("context_length")
                 if isinstance(value, int) and value > 0:
                     return value
-    return None
+    value = entry.get("max_context_length")
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def _entry_state(entry: dict[str, Any]) -> str:
+    if entry.get("loaded_instances") == []:
+        return "unloaded"
     for key in ("state", "status", "loading_state"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():
@@ -337,12 +340,15 @@ class AdmissionLease:
         self._pool = pool
         self.key = key
         self._released = False
+        self._process_permit = None
         self._lock = threading.Lock()
 
     def release(self) -> None:
         with self._lock:
             if self._released:
                 return
+            if self._process_permit is not None:
+                self._process_permit.release()
             self._released = True
         with self._pool.condition:
             self._pool.active = max(0, self._pool.active - 1)
@@ -370,12 +376,33 @@ class LocalInferenceAdmission:
         wait: float = DEFAULT_ADMISSION_WAIT_S,
         priority: str = "interactive",
     ) -> AdmissionLease:
+        from agent.local_admission import acquire_process_permit
+
+        lease = cls._acquire_thread_permit(
+            key, max_concurrency=max_concurrency, wait=wait, priority=priority
+        )
+        try:
+            lease._process_permit = acquire_process_permit(
+                key, max_concurrency, wait, priority
+            )
+            return lease
+        except TimeoutError as exc:
+            lease.release()
+            raise LocalModelOverloaded(str(exc)) from exc
+        except BaseException:
+            lease.release()
+            raise
+
+    @classmethod
+    def _acquire_thread_permit(
+        cls, key: str, *, max_concurrency: int, wait: float, priority: str,
+    ) -> AdmissionLease:
         key = str(key or "local").strip()
         limit = max(1, int(max_concurrency))
         priority = "background" if str(priority).strip().lower() == "background" else "interactive"
         with cls._lock:
             pool = cls._pools.get(key)
-            if pool is None or pool.limit != limit:
+            if pool is None:
                 pool = _AdmissionPool(limit)
                 cls._pools[key] = pool
         timeout = max(0.0, float(wait))

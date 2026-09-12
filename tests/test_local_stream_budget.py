@@ -20,8 +20,7 @@ def test_local_stream_stale_timeout_is_capped_by_run_budget():
     agent = _local_agent(budget=60, started=time.time() - 10)
     timeout = _cap_local_stream_stale_timeout(agent, 1_800.0)
 
-    # About 50 seconds remain; the local stream cap uses half of that budget.
-    assert 24.0 <= timeout <= 25.0
+    assert timeout == 1_800.0
 
 
 def test_local_stream_timeout_remains_generous_without_budget():
@@ -42,3 +41,15 @@ def test_remote_stream_timeout_is_not_rewritten():
     )
 
     assert _cap_local_stream_stale_timeout(agent, 180.0) == 180.0
+
+
+def test_expired_local_attempt_fails_before_retry():
+    import pytest
+    from agent.chat_completion_helpers import _check_local_attempt_deadline, LocalAttemptDeadlineExceeded
+    with pytest.raises(LocalAttemptDeadlineExceeded):
+        _check_local_attempt_deadline(_local_agent(budget=60, started=time.time() - 61))
+
+
+def test_unbudgeted_local_attempt_can_continue():
+    from agent.chat_completion_helpers import _check_local_attempt_deadline
+    _check_local_attempt_deadline(_local_agent())

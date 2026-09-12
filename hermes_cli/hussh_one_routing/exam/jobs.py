@@ -30,6 +30,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -93,46 +94,17 @@ class JobContract:
 
 
 CONTRACTS: tuple = (
-    # The model half of Auto-Dream: it reasons and emits ONE JSON object; a
-    # separate script applies it. Three runs on 2026-09-02 showed the model
-    # cannot be trusted to drive file edits itself (nothing written, memory
-    # replaced with write_file, two-line reads then "Consolidation Complete").
     JobContract(
-        name_contains="Auto-Dream Consolidated",
-        required_substrings=('"brief"', '"dream"', '"long_term"', '"vision"'),
-        forbidden_tools=("send_message", "write_file", "patch", "terminal"),
-        max_chars=12000,
-        judge_hint=(
-            "The final response must be exactly one JSON object with long_term, "
-            "procedures, index_entries, archive, dream, vision and brief. The "
-            "facts must come from the conversations in the dump (specific, "
-            "dated, nothing invented), relations may only cite ids from the "
-            "compact index, the dream is one surreal 120-200 word narrative, "
-            "the vision is honest about noise, and the brief follows its "
-            "header and brevity rules. No tool calls at all."
-        ),
-    ),
-    # The script half: what actually reaches the owner. Judged as a message.
-    JobContract(
-        name_contains="Auto-Dream Apply",
-        header=("*🤫 Hussh One* · *Auto-Dream Daemon*",
-                "======================================"),
-        # "Prompt memory:" is the line that proves the night's facts reached the
-        # file the prompt actually reads (memories/MEMORY.md through the memory
-        # tool's own store), not only the root journal nothing reads. Measured
-        # 2026-09-10: zero facts had reached the prompt since 2026-08-25.
-        required_substrings=("• Memory:", "Prompt memory:"),
-        judge_hint=(
-            "The delivered brief must match the applied counts it states, "
-            "carry one dream teaser and one vision bullet, state how many facts "
-            "were promoted into prompt memory (and how many were deferred or "
-            "refused, with the reason), and say plainly if anything could not "
-            "be applied."
-        ),
+        name_contains="Daily System Digest",
+        header=("*🤫 Hussh One · Daily Digest*",),
+        required_substrings=("*🏗️ Engineering board*", "*📚 Wiki maintenance*", "*💰 Usage*", "*Next:*"),
+        forbidden_tools=("send_message", "terminal", "write_file", "patch"),
+        max_chars=1100,
+        judge_hint="Friendly WhatsApp report, source-grounded statuses and usage; never label a failed or stale upstream run healthy.",
     ),
     JobContract(
         name_contains="Board Sync",
-        header=("*🤫 Hussh One* · *Board Sync*",
+        header=("*🤫 Hussh One · Board Sync*",
                 "======================================"),
         forbidden_tools=("send_message",),
         judge_hint=(
@@ -170,14 +142,16 @@ CONTRACTS: tuple = (
         required_substrings=(
             "*Today:*", "*Weekly:*", "*Monthly:*", "*Cost:*", "*I/O tokens:*",
             "*Cache read:*", "*Sessions:*", "*Model split (monthly):*",
-            "*AI budget (Gemini project only):*", "*Basis:*",
+            "*Billing budget:*", "*Basis:*",
         ),
         forbidden_tools=("send_message",),
         judge_hint=(
             "Every number must come from the injected JSON, humanised as the "
             "prompt says; the model split must list models (by tokens when "
             "cost is $0), and an unavailable data source must be stated plainly, "
-            "never as a pasted Python error."
+            "never as a pasted Python error. Budget scope must match scoped_projects; "
+            "an unscoped budget must not be labelled Gemini-only, and cap minus "
+            "local usage is not remaining credits or remaining billed budget."
         ),
     ),
     JobContract(
@@ -437,6 +411,8 @@ def collect_runs(
                 (f"cron_{job_id}_%", claimed - 5, (finished or claimed) + 120),
             ).fetchone()
             session_id, model, tool_calls, final_text = "", "", [], ""
+            source_prompt = str(job.get("prompt") or "")
+            captured_source_prompt = False
             results: dict = {}
             discovery: dict = {}
             if session:
@@ -453,6 +429,11 @@ def collect_runs(
                         results[call_id] = content
                         continue
                     if role == "user":
+                        if not captured_source_prompt:
+                            # Judge the input actually supplied (including script
+                            # evidence), not today's edited job configuration.
+                            source_prompt = content
+                            captured_source_prompt = True
                         discovery.update(_discovery_lines(content))
                         continue
                     if role != "assistant":
@@ -476,7 +457,7 @@ def collect_runs(
                     claimed_at=str(claimed_at),
                     finished_at=str(finished_at),
                     error=str(error),
-                    prompt=str(job.get("prompt") or ""),
+                    prompt=source_prompt,
                     final_text=final_text,
                     tool_calls=tool_calls,
                     files_written=files,
@@ -541,6 +522,12 @@ def grade(run: JobRun, *, now: Optional[datetime] = None) -> Verdict:
     if contract is None:
         verdict.outcomes.append(Outcome("contract_known", SKIP, "no contract for this job"))
         return verdict
+
+    if contract.name_contains == "Daily System Digest":
+        friendly = not any(key in text for key in ("job_status", "execution_status", "last_run_at", "healthy:"))
+        friendly = friendly and not re.search(r"\d{4}-\d{2}-\d{2}T", text)
+        verdict.outcomes.append(Outcome("friendly_presentation", PASS if friendly else FAIL,
+                                        "" if friendly else "raw metadata in owner-facing report"))
 
     silent = bool(contract.silent_token) and text == contract.silent_token
     if contract.header:
