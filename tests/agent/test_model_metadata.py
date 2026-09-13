@@ -11,10 +11,10 @@ Coverage levels:
 """
 
 import time
+from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
-from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,

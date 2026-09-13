@@ -71,7 +71,10 @@ def python_bin(repo_root: Path) -> str:
 
 def run(command: list[str], *, timeout: int = 120) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            command, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
         return result.returncode, result.stdout or "", result.stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"

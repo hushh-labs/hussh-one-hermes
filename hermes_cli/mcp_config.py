@@ -52,6 +52,19 @@ HUSSH_ONE_MCP_TOOLS = [
     "hussh_vault_lock",
 ]
 
+#: Xtreme Burst Compute — placement judgement plus one approval-gated action.
+#: The first four are read-only and answer from measured resource numbers; only
+#: ``hussh_burst_run`` spends money, and it elicits approval before it does.
+HUSSH_ONE_BURST_MCP_TOOLS = [
+    "hussh_burst_device_status",
+    "hussh_burst_list_presets",
+    "hussh_burst_decide",
+    "hussh_burst_plan",
+    "hussh_burst_run",
+]
+
+HUSSH_ONE_BURST_MCP_NAME = "hussh-one-burst"
+
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
@@ -114,6 +127,26 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
     return True
+
+
+def burst_mcp_server_entry(python: str | None = None) -> dict:
+    """The config entry that makes Xtreme Burst reachable as a local MCP server.
+
+    Same shape as the Hussh One PKM bridge: a stdio server run out of this same
+    interpreter, so it inherits the profile's environment and needs no separate
+    install step.
+    """
+    return {
+        "command": python or sys.executable,
+        "args": ["-m", "hermes_cli.hussh_one_burst.mcp_server"],
+        "enabled": True,
+        "tools": list(HUSSH_ONE_BURST_MCP_TOOLS),
+    }
+
+
+def register_hussh_one_burst_mcp(python: str | None = None) -> bool:
+    """Register the burst bridge in ``config.yaml``.  Idempotent."""
+    return _save_mcp_server(HUSSH_ONE_BURST_MCP_NAME, burst_mcp_server_entry(python))
 
 
 def _is_first_party_hussh_one_mcp(entry: object) -> bool:
