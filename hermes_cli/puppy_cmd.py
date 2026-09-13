@@ -875,11 +875,26 @@ def _cmd_quest(args) -> int:
     its whole sweep, because a swap costs a cold load (~128s measured) and this
     host also serves the founder's live gateway off the same LM Studio.
 
-    Pinning is deliberate and self-healing. ``ensure_context`` is idempotent --
-    it never evicts a model that already holds the requested context -- and it
-    wraps exactly one LM Studio restart around a mismatch, which is the only
-    known cure for that server's session-stickiness. ``--no-pin`` opts out
-    entirely for a host somebody else owns.
+    **The context is read, never chosen.** Whatever LM Studio has loaded IS the
+    operating window -- it is what bounds a request and what the compactor has
+    to fire against -- so the harness asks the server and records the answer.
+    That number is routinely one no config file would have guessed: measured
+    2026-09-06, the same gemma-4-12b-qat weights loaded at 128,000 by default,
+    while its ceiling is 262,144 and the old pin default was 131,072. Three
+    different numbers for one model, and only the loaded one is true.
+
+    Pinning is therefore opt-in (``--pin``), not the default. It used to be the
+    default, and it silently produced a run that was not the model as it
+    actually runs on this host: the MLX loader ignores ``-c`` and loaded at its
+    262,144 ceiling anyway, while the GGUF build obeyed and got forced to a
+    window it would never have chosen. Comparing models at a common invented
+    number is the distortion; comparing them at the windows they really run at
+    is the measurement.
+
+    When ``--pin`` is given, ``ensure_context`` is idempotent -- it never evicts
+    a model that already holds the requested context -- and wraps exactly one
+    LM Studio restart around a mismatch, the only known cure for that server's
+    session-stickiness.
     """
     from hermes_cli.hussh_one_routing import host as H
     from hermes_cli.hussh_one_routing import quest as Q
@@ -914,7 +929,7 @@ def _cmd_quest(args) -> int:
 
     runs = []
     for model in args.models:
-        if not args.no_pin:
+        if args.pin:
             loaded = H.ensure_context(
                 model, context,
                 unload=H.unload, resident=H.resident, restart=H.restart_app,
@@ -1200,8 +1215,10 @@ def build_puppy_parser(subparsers) -> None:
                        help="Workspace root (default: "
                             "$HERMES_HOME/puppy-quests/<timestamp>)")
     quest.add_argument("--context", type=int,
-                       help="Pinned context (default: 131072, so the real "
-                            "compactor fires during the run)")
+                       help="Declare the window the server was started with, "
+                            "when it cannot be probed (a bare llama-server "
+                            "has no /api/v0/models). With --pin, the window "
+                            "to load. Default: read it from LM Studio")
     quest.add_argument("--timeout", type=float,
                        help="Per-quest wall budget in seconds")
     quest.add_argument("--provider", default="lmstudio")
@@ -1209,10 +1226,14 @@ def build_puppy_parser(subparsers) -> None:
     quest.add_argument("--artifacts",
                        help="Write one JSON line per run here (feeds the "
                             "blinded judge queue)")
-    quest.add_argument("--no-pin", action="store_true",
-                       help="Trust whatever context is loaded; never load, "
-                            "evict or restart. Use when another agent owns "
-                            "the LM Studio host")
+    quest.add_argument("--pin", action="store_true",
+                       help="Load each model at --context (default 131072) "
+                            "instead of reading what LM Studio already holds. "
+                            "Off by default: the loaded window is the real "
+                            "one, and forcing a number measures a "
+                            "configuration nobody runs. Evicts and may restart "
+                            "the server, so never use it on a host another "
+                            "agent owns")
     quest.add_argument("--loop", type=int, default=1, metavar="N",
                        help="Goal loop: on a missed goal, tell the agent "
                             "which conditions are still unmet (never how to "

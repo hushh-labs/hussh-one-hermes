@@ -301,7 +301,7 @@ describe("ChatPage", () => {
         const socket =
           FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
         await act(async () => {
-          socket.onopen?.({});
+          socket.onopen?.();
           socket.onclose?.({ code: 4401, reason: "auth", wasClean: true });
         });
         await act(async () => {

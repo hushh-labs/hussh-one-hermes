@@ -1158,7 +1158,7 @@ def classify_api_error(
         is_large = approx_tokens > context_length * 0.6 or (
             context_length <= 256000 and (approx_tokens > 120000 or num_messages > 200)
         )
-        if is_large:
+        if is_large and provider.strip().lower() not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}:
             return _result(
                 FailoverReason.context_overflow,
                 retryable=True,
@@ -1774,7 +1774,7 @@ def _classify_400(
         context_length <= 256000 and (approx_tokens > 80000 or num_messages > 80)
     )
 
-    if is_generic and is_large:
+    if is_generic and is_large and provider.strip().lower() not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}:
         return result_fn(
             FailoverReason.context_overflow,
             retryable=True,

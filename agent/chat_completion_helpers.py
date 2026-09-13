@@ -36,7 +36,7 @@ from agent.error_classifier import (
 from agent.errors import EmptyStreamError
 from agent.turn_context import substitute_api_content
 from agent.gemini_native_adapter import is_native_gemini_base_url
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import estimate_request_tokens_rough, is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
@@ -64,6 +64,101 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 # billing reasons keep their own 60s cooldown (set above); this is the
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+# Local OpenAI-compatible servers often reserve their maximum completion size
+# when ``max_tokens`` is omitted.  That reservation counts against the same
+# context window as the prompt, so an otherwise fitting ~70K-token prompt can
+# fail against a 131K window when the server reserves 65K output tokens.
+# Leave a small estimator margin because the rough estimator intentionally
+# trades tokenizer fidelity for speed.
+_LOCAL_OUTPUT_CONTEXT_MARGIN_TOKENS = 1024
+def _fit_local_output_cap(agent, api_kwargs: dict, *, context_length=None) -> dict:
+    """Keep local prompt + completion within the live model context window.
+
+    LM Studio/Ollama-compatible endpoints commonly apply a large server-side
+    output default when the request omits ``max_tokens``.  Hermes knows the
+    loaded context window and can compute a safer per-request cap.  This is
+    deliberately limited to local/private endpoints; hosted providers retain
+    their native output-cap semantics.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    base_url = getattr(agent, "base_url", "") or ""
+    if (
+        provider
+        not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}
+        and not is_local_endpoint(base_url)
+    ):
+        return api_kwargs
+
+    if context_length is None:
+        compressor = getattr(agent, "context_compressor", None)
+        context_length = getattr(compressor, "context_length", None)
+    try:
+        context_length = int(context_length)
+    except (TypeError, ValueError):
+        return api_kwargs
+    if context_length <= 0:
+        return api_kwargs
+
+    messages = api_kwargs.get("messages") or []
+    tools = api_kwargs.get("tools") or None
+    try:
+        prompt_tokens = estimate_request_tokens_rough(messages, tools=tools)
+    except Exception:
+        logger.debug(
+            "Unable to estimate local request size for output-cap fitting",
+            exc_info=True,
+        )
+        return api_kwargs
+
+    available = context_length - prompt_tokens - _LOCAL_OUTPUT_CONTEXT_MARGIN_TOKENS
+    if available <= 0:
+        # The normal preflight compressor owns an input-only overflow. Do not
+        # invent a one-token request here: it would still fail and could hide
+        # the real compression problem.
+        return api_kwargs
+
+    cap = available
+    output_key = next(
+        (
+            key
+            for key in ("max_output_tokens", "max_completion_tokens", "max_tokens")
+            if key in api_kwargs
+        ),
+        None,
+    )
+    current = None
+    if output_key is not None:
+        try:
+            current = int(api_kwargs[output_key])
+        except (TypeError, ValueError):
+            current = None
+    if current is not None and current > 0:
+        cap = min(cap, current)
+    if cap <= 0:
+        return api_kwargs
+
+    # Preserve an explicitly selected wire key. For an omitted cap, use the
+    # agent's provider-aware selector so GPT-family models still receive
+    # ``max_completion_tokens`` when their endpoint requires it.
+    if output_key is None:
+        try:
+            selected = agent._max_tokens_param(cap)
+        except Exception:
+            selected = {"max_tokens": cap}
+        api_kwargs.update(selected)
+        output_key = next(iter(selected), "max_tokens")
+    elif current is None or current != cap:
+        api_kwargs[output_key] = cap
+
+    if current is None or current != cap:
+        logger.info(
+            "Fitting local output cap to context window: prompt~%s, context=%s, %s=%s",
+            f"{prompt_tokens:,}", f"{context_length:,}", output_key, f"{cap:,}",
+        )
+    return api_kwargs
 
 
 def _context_thread_target(callback):
@@ -858,6 +953,26 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     return _timeout
 
 
+def _cap_local_stream_stale_timeout(agent, timeout: float) -> float:
+    """Inactivity and attempt duration are independent clocks."""
+    return timeout
+
+
+class LocalAttemptDeadlineExceeded(InterruptedError):
+    """The current local attempt ended; preserve state before another attempt."""
+
+
+def _check_local_attempt_deadline(agent) -> None:
+    if not is_local_endpoint(getattr(agent, "base_url", "") or ""):
+        return
+    budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if budget and started and time.time() - float(started) >= float(budget):
+        raise LocalAttemptDeadlineExceeded(
+            "Local attempt deadline reached; checkpoint before resuming"
+        )
+
+
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     """Map a Bedrock inference-profile id to its reasoning stale-timeout floor.
 
@@ -923,7 +1038,73 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
     return None
 
 
-def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+def _local_runtime_for_agent(agent, api_kwargs: dict):
+    """Return the shared local runtime for loopback model calls only."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider == "moa":
+        return None
+    base_url = getattr(agent, "base_url", None)
+    # A loopback URL is also used by test doubles and local ACP shims. Only
+    # Hermes' explicitly local providers own the LM Studio admission contract;
+    # a remote provider pointed at a local compatibility proxy keeps its own
+    # transport semantics.
+    if provider not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}:
+        return None
+    try:
+        from hermes_cli.hussh_one_routing.local_runtime import runtime_for
+
+        api_key = getattr(agent, "api_key", None)
+        return runtime_for(
+            base_url,
+            api_key=api_key if isinstance(api_key, str) else None,
+        )
+    except (TypeError, ValueError):
+        # A provider may advertise a loopback-looking URL while using a custom
+        # transport. Preserve that provider's existing behavior rather than
+        # turning a malformed optional guard into a routing failure.
+        return None
+
+
+def _local_inference_priority(agent) -> str:
+    """Classify local work so interactive turns can pass queued cron work."""
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    session_id = str(getattr(agent, "session_id", "") or "").strip().lower()
+    origin = str(getattr(agent, "_memory_write_origin", "") or "").strip().lower()
+    if (
+        platform in {"cron", "scheduler", "watchdog"}
+        or session_id.startswith("cron_")
+        or origin == "background_review"
+    ):
+        return "background"
+    return "interactive"
+
+
+def _local_attempt_metadata(agent, api_kwargs: dict, model: str) -> dict[str, Any]:
+    """Build bounded, non-sensitive coordinates for the local attempt ledger."""
+    messages = api_kwargs.get("messages") or []
+    tools = api_kwargs.get("tools") or None
+    try:
+        context_tokens = estimate_request_tokens_rough(messages, tools=tools)
+    except Exception:
+        context_tokens = 0
+    generation = str(
+        getattr(agent, "model_generation", "")
+        or getattr(agent, "_model_generation", "")
+        or model
+    )[:128]
+    timeout = api_kwargs.get("timeout")
+    deadline = None
+    if isinstance(timeout, (int, float)) and timeout > 0:
+        deadline = time.time() + float(timeout)
+    return {
+        "context_tokens": max(0, int(context_tokens)),
+        "message_cursor": len(messages) if isinstance(messages, list) else 0,
+        "model_generation": generation,
+        "deadline": deadline,
+    }
+
+
+def _dispatch_nonstreaming_api_request_unchecked(agent, api_kwargs: dict, *, make_client):
     """Run one non-streaming LLM request for the active api_mode and return it.
 
     Shared by the interrupt-worker path (``interruptible_api_call``) and the
@@ -997,6 +1178,61 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
     return request_client.chat.completions.create(**api_kwargs)
+
+
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+    """Dispatch one request under local readiness and admission guards."""
+    runtime = _local_runtime_for_agent(agent, api_kwargs)
+    if runtime is None:
+        return _dispatch_nonstreaming_api_request_unchecked(
+            agent, api_kwargs, make_client=make_client
+        )
+
+    model = str(api_kwargs.get("model") or getattr(agent, "model", "") or "")
+    request_id = str(getattr(agent, "_current_api_request_id", "") or "")
+    lease = runtime.acquire(model, priority=_local_inference_priority(agent))
+    ledger = None
+    attempt_id = None
+    try:
+        ready = runtime.resolver.require_ready(model)
+        api_kwargs = _fit_local_output_cap(
+            agent, api_kwargs, context_length=ready.loaded_context_length
+        )
+        metadata = _local_attempt_metadata(agent, api_kwargs, model)
+        try:
+            from agent.local_recovery import LocalAttemptLedger
+
+            ledger = LocalAttemptLedger.for_agent(agent)
+            if ledger is not None:
+                attempt_id = ledger.begin(
+                    request_id=request_id,
+                    model=model,
+                    base_url=runtime.resolver.base_url,
+                    **metadata,
+                )
+        except Exception:
+            logger.debug("local attempt ledger begin failed", exc_info=True)
+        response = _dispatch_nonstreaming_api_request_unchecked(
+            agent, api_kwargs, make_client=make_client
+        )
+    except BaseException as exc:
+        runtime.record_failure(model, exc)
+        if ledger is not None and attempt_id is not None:
+            try:
+                ledger.finish(attempt_id, success=False, error=exc)
+            except Exception:
+                logger.debug("local attempt ledger failure finish failed", exc_info=True)
+        raise
+    else:
+        runtime.record_success(model)
+        if ledger is not None and attempt_id is not None:
+            try:
+                ledger.finish(attempt_id, success=True)
+            except Exception:
+                logger.debug("local attempt ledger success finish failed", exc_info=True)
+        return response
+    finally:
+        lease.release()
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -1604,6 +1840,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     t.start()
     _poll_count = 0
     while t.is_alive():
+        try:
+            _check_local_attempt_deadline(agent)
+        except LocalAttemptDeadlineExceeded:
+            _cancel_current_stream_attempt("local_attempt_deadline")
+            _close_request_client_once("local_attempt_deadline")
+            raise
         t.join(timeout=0.3)
         _poll_count += 1
 
@@ -2039,7 +2281,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
+        return _fit_local_output_cap(agent, _ct.build_kwargs(
             model=agent.model,
             messages=api_messages,
             tools=tools_for_api,
@@ -2060,7 +2302,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
-        )
+        ))
 
     # ── Legacy flag path ────────────────────────────────────────────
     # Reached only when get_provider_profile() returns None — i.e. a
@@ -2072,7 +2314,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
+    return _fit_local_output_cap(agent, _ct.build_kwargs(
         model=agent.model,
         messages=_msgs_for_chat,
         tools=tools_for_api,
@@ -2108,7 +2350,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
-    )
+    ))
 
 
 
@@ -2912,6 +3154,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     def _managed_summary_call(request, callback, *, retry_count: int):
         from agent import relay_llm
 
+        # A forced summary is still part of the current attempt. Empty-summary
+        # retries must not bypass the deadline or the local context budget.
+        _check_local_attempt_deadline(agent)
+        request = _fit_local_output_cap(agent, request)
         return relay_llm.execute_current(
             request,
             callback,
@@ -3972,16 +4218,68 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Native Gemini rejects OpenAI's usage-streaming extension.
             if not is_native_gemini_base_url(agent.base_url):
                 stream_kwargs["stream_options"] = {"include_usage": True}
-            request_client = _set_request_client(
-                agent._create_request_openai_client(
-                    reason="chat_completion_stream_request",
-                    api_kwargs=stream_kwargs,
+            runtime = _local_runtime_for_agent(agent, stream_kwargs)
+            lease = None
+            ledger = None
+            attempt_id = None
+            model = str(stream_kwargs.get("model") or getattr(agent, "model", "") or "")
+            if runtime is not None:
+                lease = runtime.acquire(
+                    model, priority=_local_inference_priority(agent)
                 )
-            )
-            attempt_request_client["value"] = request_client
-            last_chunk_time["t"] = time.time()
-            agent._touch_activity("waiting for provider response (streaming)")
-            return request_client.chat.completions.create(**stream_kwargs)
+                metadata = _local_attempt_metadata(agent, stream_kwargs, model)
+                try:
+                    from agent.local_recovery import LocalAttemptLedger
+
+                    ledger = LocalAttemptLedger.for_agent(agent)
+                    if ledger is not None:
+                        attempt_id = ledger.begin(
+                            request_id=str(getattr(agent, "_current_api_request_id", "") or "turn"),
+                            model=model,
+                            base_url=runtime.resolver.base_url,
+                            **metadata,
+                        )
+                except Exception:
+                    logger.debug("local stream attempt ledger begin failed", exc_info=True)
+
+            def _finish_local_attempt(success: bool, error: BaseException | None) -> None:
+                if ledger is not None and attempt_id is not None:
+                    ledger.finish(attempt_id, success=success, error=error)
+            try:
+                if runtime is not None:
+                    ready = runtime.resolver.require_ready(model)
+                    stream_kwargs = _fit_local_output_cap(
+                        agent, stream_kwargs, context_length=ready.loaded_context_length
+                    )
+                request_client = _set_request_client(
+                    agent._create_request_openai_client(
+                        reason="chat_completion_stream_request",
+                        api_kwargs=stream_kwargs,
+                    )
+                )
+                attempt_request_client["value"] = request_client
+                last_chunk_time["t"] = time.time()
+                agent._touch_activity("waiting for provider response (streaming)")
+                raw_stream = request_client.chat.completions.create(**stream_kwargs)
+                if runtime is not None and lease is not None:
+                    from hermes_cli.hussh_one_routing.local_runtime import LeasedStream
+
+                    return LeasedStream(
+                        raw_stream,
+                        lease,
+                        runtime,
+                        model,
+                        on_finish=_finish_local_attempt,
+                    )
+                return raw_stream
+            except BaseException as exc:
+                if runtime is not None:
+                    runtime.record_failure(model, exc)
+                if ledger is not None and attempt_id is not None:
+                    ledger.finish(attempt_id, success=False, error=exc)
+                if lease is not None:
+                    lease.release()
+                raise
 
         def _stream_created(raw_stream: Any) -> None:
             response = getattr(raw_stream, "response", None)
@@ -4748,6 +5046,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):
+                _check_local_attempt_deadline(agent)
                 stream_attempt_id = _start_stream_attempt()
                 # Check for interrupt before each retry attempt.  Without
                 # this, /stop closes the HTTP connection (outer poll loop),
@@ -5140,11 +5439,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _reasoning_floor is not None:
             _stream_stale_timeout = max(_stream_stale_timeout, _reasoning_floor)
 
+    # A per-run deadline must also govern local streams. The local patience
+    # setting is intentionally generous for slow prefill, but allowing it to
+    # outrun an explicit ``--run-budget`` leaves a one-shot session parked on
+    # an established socket forever. This cap applies only to local providers;
+    # hosted providers retain their explicit stale-timeout contract.
+    _stream_stale_timeout = _cap_local_stream_stale_timeout(
+        agent, _stream_stale_timeout
+    )
+
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
     t.start()
     _last_heartbeat = time.time()
     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
     while t.is_alive():
+        try:
+            _check_local_attempt_deadline(agent)
+        except LocalAttemptDeadlineExceeded:
+            _cancel_current_stream_attempt("local_attempt_deadline")
+            _close_request_client_once("local_attempt_deadline")
+            raise
         t.join(timeout=0.3)
 
         # Periodic heartbeat: touch the agent's activity tracker so the

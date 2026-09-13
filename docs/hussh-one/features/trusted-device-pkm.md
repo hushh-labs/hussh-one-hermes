@@ -149,13 +149,15 @@ Disconnect revokes the server-side device, disables the native connector,
 deletes local identity, envelope, and ciphertext-replica state, and removes
 related Keychain items.
 
-A device links to one of two immutable environment bundles. Both are
-deployments of the same Firebase project behind different hosts, so they share
-the checked-in public Firebase client identifier and differ only in their two
-bases:
+A device links to one of three immutable environment bundles. UAT and
+production are the long-lived lanes; dev is an isolated disposable lane for
+owner-bound verification. The bundles are deployments of the same Firebase
+project behind different hosts, so they share the checked-in public Firebase
+client identifier and differ only in their two bases:
 
 | Environment | One web | Account/PKM API |
 | --- | --- | --- |
+| `dev` | `https://dev.one.hushh.ai` | `https://consent-protocol-aqahj4iyha-uc.a.run.app` |
 | `uat` (default) | `https://uat.one.hushh.ai` | `https://api.uat.hushh.ai` |
 | `production` | `https://one.hushh.ai` | `https://api.hushh.ai` |
 
@@ -169,14 +171,14 @@ the approval page belongs to, and the resulting identity records
 status, heartbeat, vault, replica sync) reads back. Three ways to choose, in
 order of precedence:
 
-1. `/hussh-one connect production` (or `connect prod`, `connect uat`) names it
+1. `/hussh-one connect dev` (or `connect production`, `connect prod`, `connect uat`) names it
    for that connect. The dashboard's `POST /api/hussh-one/connect` takes the
    same value in its `environment` field.
 2. `hussh_one.environment: production` in `config.yaml` sets the default for a
    bare `/hussh-one connect`.
 3. Neither set means `uat`.
 
-Names are case-insensitive. Anything other than `uat` and `production` is
+Names are case-insensitive. Anything other than `dev`, `uat` and `production` is
 refused by name; custom origins are not accepted, and vault material is never
 used to select an environment. `/hussh-one reconnect` repairs the identity in
 the environment it was enrolled in and ignores any argument, because the
@@ -265,7 +267,7 @@ send a passphrase or recovery key to the model.
 
 | Command | Meaning |
 | --- | --- |
-| `/hussh-one connect [uat\|production]` | Choose and approve a One account in the browser on that environment (default: `hussh_one.environment`, else `uat`); never accepts an email typed in chat |
+| `/hussh-one connect [dev\|uat\|production]` | Choose and approve a One account in the browser on that environment (default: `hussh_one.environment`, else `uat`); never accepts an email typed in chat |
 | `/hussh-one enroll` | Resume local custody setup; passkey first when available, protected passphrase otherwise |
 | `/hussh-one status` | Show the verified email, environment, device, enrollment, lock, and sync state |
 | `/hussh-one unlock` | Open the existing Keychain-bound envelope |

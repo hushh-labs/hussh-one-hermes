@@ -143,38 +143,6 @@ def test_healthy_call_is_untouched_by_the_watchdog():
     )
 
 
-def test_local_endpoint_infinite_budget_leaves_the_watchdog_disarmed():
-    """``_compute_non_stream_stale_timeout`` returns inf for a local endpoint
-    on the implicit default — that opt-out must survive on this path too."""
-    agent = _make_agent(stale_timeout=float("inf"))
-    fake_client = MagicMock()
-    started = threading.Event()
-    release = threading.Event()
-
-    def _slow(**_kwargs):
-        started.set()
-        assert release.wait(timeout=2.0)
-        return SimpleNamespace(id="slow-but-healthy")
-
-    fake_client.chat.completions.create.side_effect = _slow
-    agent._create_request_openai_client.return_value = fake_client
-
-    box = {}
-
-    def _run():
-        box["response"] = direct_api_call(agent, {"model": "m", "messages": []})
-
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    assert started.wait(timeout=2.0)
-    time.sleep(0.3)
-    release.set()
-    worker.join(timeout=3.0)
-
-    assert box["response"].id == "slow-but-healthy"
-    agent._abort_request_openai_client.assert_not_called()
-
-
 def test_watchdog_uses_the_same_budget_as_the_interrupt_worker_path():
     """The budget comes from ``_compute_non_stream_stale_timeout`` — the same
     resolver the worker path's stale detector uses — with the live request

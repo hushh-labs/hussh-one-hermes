@@ -66,45 +66,17 @@ configuration_schema_mutations:
 
 ---
 
-## 1. COGNITIVE FLOW & DUAL-PROCESS CONVERGENCE
+## 1. Core memory and session continuity
 
-Future AI agents and automated scripts running this system must adhere to the **Dual-Process Cognitive Memory Pipeline**. This pipeline guarantees semantic continuity during waking cycles (System 1) while running offline mathematical consolidation during sleep cycles (System 2) without data cross-contamination.
+Hermes retains conversation history in the active profile's session database,
+uses its existing memory tool for prompt memory, and compacts long conversations
+through the core context compressor. Auto-Dream's custom nightly consolidation
+and apply jobs were deleted on 2026-09-11; they are not required for these core
+features. Historical memories and execution evidence are retained.
 
-```
-+-----------------------------------------------------------------------------------+
-|                            SYSTEM 1 (WAKING PROCESS)                              |
-|                                                                                   |
-|  [User Message] --> [WhatsApp / TUI Gateway] --> [Active Profile: state.db]       |
-|                                                          │                        |
-|                                                          ▼                        |
-|                                                 [Lightweight Memory]              |
-|                                               ~/.hermes/profiles/X/               |
-+-----------------------------------------------------------------------------------+
-                                                           │
-                                                           ▼ Raw SQL Logs
-+-----------------------------------------------------------------------------------+
-|                            SYSTEM 2 (DREAM CYCLE)                                 |
-|                                                                                   |
-|  [Cron: 17:00 PM] --> [auto_dream.py] --(Filters out Cron logs)--> [Assembled]    |
-|                                                                    [Dream Context]|
-|                                                                          │        |
-|  [WhatsApp Summary] <-- (Conconcatenated) <-- [Consolidator Agent] <─────┘        |
-|                                                       │                           |
-|                                                       ▼                           |
-|                                            [Long-Term Memory Update]              |
-|                                            - MEMORY.md, procedures.md             |
-+-----------------------------------------------------------------------------------+
-```
-
-### A. System 1: Real-Time Contextual Buffer (Working Memory)
+### A. Real-Time Contextual Buffer (Working Memory)
 *   Active conversations are routed based on the environmental flag `HERMES_PROFILE`. 
 *   **Machine Sync Action:** When executing tool or chat operations, the agent **MUST** check `os.environ.get("HERMES_PROFILE")`. All persistent writes, session states, and SQLite locks must resolve strictly under `~/.hermes/profiles/$HERMES_PROFILE/` to keep Kushal and MSainani's universes separated.
-
-### B. System 2: Nightly Cognitive Consolidation (Auto-Dream)
-*   **Cron Job ID:** `2e5aee0849fb`
-*   **Trigger Schedule:** `0 17 * * *` (Daily at 5:00 PM) with a custom `grace_seconds: 18000` (5-hour grace catchup period on sleep wakeup).
-*   **Workspace Constraint:** `workdir` must be locked to `/Users/kushaltrivedi/.hermes` to keep path resolutions clean and prevent catastrophic home directory traversals.
-*   **Threat-Phrase Defang (False-Positive Guard):** `auto_dream.py` ingests the owner's own recent conversations. When those chats *discuss* security topics (prompt-injection hardening, exfiltration, jailbreaks), the literal phrases land in the compiled cron prompt and the Tirith scanner blocks the job with `Blocked: prompt matches threat pattern 'prompt_injection'`. The script runs `defang_threat_terms()` over every ingested string (message bodies, titles, and `MEMORY.md`/`procedures.md`/`index.json` reads) to insert a `U+00B7` middle-dot inside each trigger word (`prompt injection` → `p·rompt injection`), neutralizing the regex match while staying human-readable. Patterns use `[\s\-_]*` between words so the hyphenated variant is also caught. Never apply the defang to the daemon's own instruction prompt — only to ingested history. Verify with the live scanner, not grep: `cd ~/.hermes/hermes-agent && python3 -c "import sys; sys.path.insert(0,'.'); import subprocess, tools.cronjob_tools as ct; print(ct._scan_cron_prompt(subprocess.run(['python3','$HOME/.hermes/scripts/auto_dream.py'],capture_output=True,text=True).stdout) or 'PASS')"`.
 
 ### C. WhatsApp Group Capsules (Sandboxed Social Brains)
 Group chats the owner opts in are run as **capsules** — isolated, read-only sandboxes that let non-owners interact with `@One` without ever touching the owner's private world. Config lives under `whatsapp.capsules.<group_jid>` in `~/.hermes/config.yaml`.
@@ -152,16 +124,6 @@ Any agent updating or modifying this codebase must preserve these three critical
                 emitted_arguments = args_str[len(last_arguments):]
         slot["last_arguments"] = args_str
     ```
-
-### C. Infinite Memory Feedback Loops (Auto-Dream Context Ballooning)
-*   **The Bug:** The pre-run script `auto_dream.py` queries `state.db` for recent sessions. Because it queried all sessions, it would collect previous `Auto-Dream` sessions (which are extremely large). In successive runs, the input token size grew exponentially (800k -> 1.4M), crashing the context window limits.
-*   **The Invariant Patch (`~/.hermes/scripts/auto_dream.py`):**
-    We modified the SQLite query in `collect_recent_logs` to explicitly ignore any cron or scheduler-owned sessions:
-    ```python
-    cursor.execute("SELECT id, title, started_at, source FROM sessions WHERE started_at >= ? AND source != 'cron' AND id NOT LIKE 'cron_%'")
-    ```
-
----
 
 ## 3. COMPONENT INTERACTION SPECIFICATIONS
 
@@ -391,10 +353,6 @@ Future machines must run these tests to verify the integrity of the abstraction 
 ### Contract A: Group Routing & Decryption Safeguard
 *   **Invariant:** Messages from non-allowed groups must return an `ignored` event structure.
 *   **Verification:** Verify that `bridge.js` does not emit payloads to Python for any JID not in `ALLOWED_GROUPS` when `WHATSAPP_MODE=self-chat`.
-
-### Contract B: Zero-Width Unicode Leakage
-*   **Invariant:** Database dumps injected into the assembled cron prompt must contain exactly `0` instances of zero-width unicode characters (`U+200B`, `U+200C`, `U+200D`, `U+FEFF`).
-*   **Verification:** Run `auto_dream.py` and inspect standard output for any hidden sequences that would trigger the prompt-injection scanner gates.
 
 ### Contract C: Upstream Update Guard
 *   **Invariant:** Official Hermes and plugin updates must not erase the Hussh One brand profile, skin, dashboard theme, WhatsApp prefix default, or Vertex Claude provider abstraction.

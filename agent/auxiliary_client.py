@@ -181,6 +181,7 @@ from agent.credential_pool import load_pool
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
+    is_local_endpoint,
     strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
 )
 from hermes_cli.config import get_hermes_home
@@ -3424,6 +3425,52 @@ def _relay_auxiliary_metadata(
     }
 
 
+def _local_auxiliary_lease(client: Any, kwargs: dict[str, Any]) -> Any:
+    """Admit local auxiliary work through the shared inference governor.
+
+    Main chat, relay, and cron already share ``LocalInferenceAdmission``.  The
+    auxiliary router is another path into the same LM Studio process (notably
+    context compression), so letting it bypass that governor can still starve
+    an interactive turn.  Keep this wrapper admission-only: main calls own
+    readiness probing and circuit bookkeeping, while auxiliary resolution may
+    intentionally use mocked or non-standard clients in tests.
+    """
+    base_url = str(getattr(client, "base_url", "") or "")
+    if not is_local_endpoint(base_url):
+        return None
+    model = str(kwargs.get("model") or "").strip()
+    if not model:
+        return None
+    try:
+        from hermes_cli.hussh_one_routing.local_runtime import (
+            LocalInferenceAdmission,
+            normalize_front_url,
+        )
+
+        key = f"{normalize_front_url(base_url)}|{model}"
+    except (ImportError, ValueError):
+        # A private or container-local endpoint may be considered local by the
+        # legacy provider detector but is not an allowed Hermes front route.
+        return None
+    context = _RELAY_AUX_CALL_CONTEXT.get() or {}
+    task = str(context.get("task") or "")
+    priority = "interactive" if task in {"vision", "browser_vision"} else "background"
+    return LocalInferenceAdmission.acquire(key, wait=0.25, priority=priority)
+
+
+def _release_local_lease_after_stream(stream: Any, lease: Any):
+    """Release a local auxiliary permit after a sync stream is consumed."""
+    try:
+        yield from stream
+    finally:
+        try:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+        finally:
+            lease.release()
+
+
 def _relay_sync_completion(
     client: Any,
     kwargs: dict[str, Any],
@@ -3433,23 +3480,28 @@ def _relay_sync_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    # Protected compression calls isolate only the provider callback and stream
-    # aggregation.  The owning thread remains free to unwind its lease/DB
-    # transaction on hard cancel without touching the process-shared client.
-    if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
+    lease = _local_auxiliary_lease(client, kwargs)
+    try:
+        route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+        # Protected compression calls isolate only the provider callback and
+        # stream aggregation. The owning thread remains free to unwind its
+        # lease/DB transaction on hard cancel without touching the client.
+        if route is None:
+            return _run_protected_sync_provider_call(callback, kwargs)
+        provider_name, fallback_model, metadata = route
+        from agent import relay_llm
 
-    return relay_llm.execute_current(
-        kwargs,
-        lambda request: _run_protected_sync_provider_call(callback, request),
-        name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata,
-        defer_logical_completion=True,
-    )
+        return relay_llm.execute_current(
+            kwargs,
+            lambda request: _run_protected_sync_provider_call(callback, request),
+            name=provider_name,
+            model_name=str(kwargs.get("model") or fallback_model),
+            metadata=metadata,
+            defer_logical_completion=True,
+        )
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 async def _relay_async_completion(
@@ -3461,20 +3513,30 @@ async def _relay_async_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return await callback(kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
+    import asyncio
+    lease = None
+    try:
+        # Admission is synchronous but bounded to a short wait; moving it off
+        # the event loop keeps async gateway workers responsive under load.
+        if is_local_endpoint(str(getattr(client, "base_url", "") or "")):
+            lease = await asyncio.to_thread(_local_auxiliary_lease, client, kwargs)
+        route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+        if route is None:
+            return await callback(kwargs)
+        provider_name, fallback_model, metadata = route
+        from agent import relay_llm
 
-    return await relay_llm.execute_current_async(
-        kwargs,
-        callback,
-        name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata,
-        defer_logical_completion=True,
-    )
+        return await relay_llm.execute_current_async(
+            kwargs,
+            callback,
+            name=provider_name,
+            model_name=str(kwargs.get("model") or fallback_model),
+            metadata=metadata,
+            defer_logical_completion=True,
+        )
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def _relay_sync_stream(
@@ -3484,21 +3546,33 @@ def _relay_sync_stream(
     provider: str | None = None,
     api_mode: str | None = None,
 ) -> Any:
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return client.chat.completions.create(**kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
+    lease = _local_auxiliary_lease(client, kwargs)
+    try:
+        route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+        if route is None:
+            stream = client.chat.completions.create(**kwargs)
+        else:
+            provider_name, fallback_model, metadata = route
+            from agent import relay_llm
 
-    return relay_llm.stream_current(
-        kwargs,
-        lambda request: client.chat.completions.create(**request),
-        name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model),
-        finalizer=dict,
-        metadata=metadata,
-        completed_response_predicate=lambda value: hasattr(value, "choices"),
-    )
+            stream = relay_llm.stream_current(
+                kwargs,
+                lambda request: client.chat.completions.create(**request),
+                name=provider_name,
+                model_name=str(kwargs.get("model") or fallback_model),
+                finalizer=dict,
+                metadata=metadata,
+                completed_response_predicate=lambda value: hasattr(value, "choices"),
+            )
+    except BaseException:
+        if lease is not None:
+            lease.release()
+        raise
+    if lease is None or hasattr(stream, "choices"):
+        if lease is not None:
+            lease.release()
+        return stream
+    return _release_local_lease_after_stream(stream, lease)
 _RUNTIME_MAIN_COMPAT_SNAPSHOT: Tuple[Any, ...] = ("", "", "", "", "", "")
 _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
 
@@ -8673,7 +8747,8 @@ def _build_call_kwargs(
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
-        # We do NOT cap output by default. Most chat-completions providers treat
+        # We do NOT cap output by default on hosted providers. Most
+        # chat-completions providers treat
         # an omitted max_tokens as "use the model's max output", which is what we
         # want for auxiliary tasks (compression summaries, titles, vision, etc.) —
         # an explicit cap only risks truncating a summary or 400-ing on providers
@@ -8686,6 +8761,10 @@ def _build_call_kwargs(
         # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
         # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
         # there.
+        #
+        # Local OpenAI-compatible servers are a third exception: their server
+        # default can reserve the full output window, so callers may pass an
+        # explicit, context-fitted cap for compression and long sessions.
         #
         # NVIDIA NIM (integrate.api.nvidia.com and local NIM endpoints) is a
         # second exception: some models—notably minimaxai/minimax-m3—return HTTP
@@ -8716,6 +8795,9 @@ def _build_call_kwargs(
                 _is_gemini_native = is_native_gemini_base_url(_effective_base)
             except Exception:
                 pass
+        _is_local = _is_local_aux_provider(_provider_norm) or is_local_endpoint(
+            _effective_base
+        )
         _nous_on_messages = False
         if _provider_norm in {"nous", "nous-portal", "nousresearch"}:
             from hermes_cli.providers import nous_api_mode
@@ -8727,6 +8809,7 @@ def _build_call_kwargs(
             or _is_nvidia_nim
             or _is_moa
             or _is_gemini_native
+            or _is_local
         ):
             # Use auxiliary_max_tokens_param() so models that require
             # max_completion_tokens (GPT-5 family, Copilot) get the right

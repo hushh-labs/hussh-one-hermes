@@ -305,6 +305,21 @@ launchd_domain() {
   printf 'gui/%s\n' "$(id -u)"
 }
 
+retire_legacy_heartbeat() {
+  # The old per-machine heartbeat restarts BOTH services when WhatsApp is
+  # disconnected (including terminal auth failures). That tears down healthy
+  # dashboard chats every two minutes and fights the service owners. launchd
+  # already restarts the gateway, and the dashboard has its own watchdog.
+  # Disable persistently so the old plist cannot revive this loop at login;
+  # retain its files for inspection. Never disable Hermes' in-agent heartbeat.
+  local target="$(launchd_domain)/ai.hussh-one.heartbeat"
+  log "Retiring legacy cross-service heartbeat; keeping service-owned recovery"
+  run_cmd launchctl disable "$target"
+  if [[ "$DRY_RUN" == "1" ]] || launchctl print "$target" >/dev/null 2>&1; then
+    run_cmd launchctl bootout "$target"
+  fi
+}
+
 launchd_target() {
   printf '%s/%s\n' "$(launchd_domain)" "$DASHBOARD_LABEL"
 }
@@ -872,6 +887,12 @@ port_status() {
 
 manager="$(detect_manager)"
 log "Hussh One supervisor manager: $manager"
+
+if [[ "$manager" == "launchd" ]]; then
+  case "$ACTION" in
+    install|start|restart) retire_legacy_heartbeat ;;
+  esac
+fi
 
 case "$ACTION" in
   install)

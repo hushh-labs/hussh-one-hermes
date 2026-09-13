@@ -9,10 +9,14 @@ under `scripts/hussh-one-*`.
 | `hussh-one-bootstrap.sh` | Fresh-clone setup; detects + optionally starts a supervisor |
 | `hussh-one-supervisor.sh` | Owns lifecycle (launchd/systemd/s6/screen); install/restart/status |
 | `hussh-one-doctor.sh` | Health check; `--require-services` for strict mode |
+| `lmstudio_health_watchdog.py` | Low-power LM Studio reachability check; metadata-only and no-agent by default |
 | `hussh-one-guard.sh` | Post-merge invariant guard (branding, header, capsule, dashboard) |
 | `hussh-one-restart.sh` | Convenience restart wrapper |
 | `hussh-one-copilot-setup.sh` | VS Code Copilot BYOK: LiteLLM proxy (:8643) + auth shim (:8644) + `chatLanguageModels.json` with live-probed context windows (see `scripts/copilot-byok/README.md`) |
 | `hussh-one-license-audit.py` | Verifies SPDX metadata, notices, attribution coverage, and release-file inclusion |
+
+For long local-model sessions, use [Local Context Budget and Resumable Compaction](./local-context-resilience.md)
+for the prompt/output budget, checkpoint ownership, restart, and verification runbook.
 
 ## Bootstrapping a new machine
 ```bash
@@ -122,8 +126,27 @@ python3 scripts/hussh-one-changelog-check.py
 Bootstrap installs the deterministic no-agent doctor at
 `~/.hermes/scripts/hussh_one_doctor_heal.py` and updates the existing
 **Hussh One Self-Healing Doctor** cron job in place; its ID, schedule, and
-self-chat delivery target are preserved. The script is deliberately silent
+self-chat delivery target are preserved. The versioned schedule is hourly. The
+script is deliberately silent
 when health is unchanged, because cron delivers script stdout verbatim.
+
+## Low-power LM Studio watchdog
+
+The **LM Studio Health Watchdog** is a versioned no-agent cron job scheduled
+every 60 minutes. Its normal path performs one bounded GET of LM Studio's
+`/v1/models` inventory and emits nothing when the server responds with a
+loaded model. It never calls `/chat/completions`, loads a model, or wakes the
+agent, so an idle device does not spend inference power on health polling.
+Failures emit one concise local alert. Run
+`~/.hermes/scripts/lmstudio_health_watchdog.py --deep` manually when an
+intentional one-token inference probe is needed; the scheduled job never
+passes `--deep`.
+
+The **Hermes Performance Maintenance** reaper is also versioned as a
+no-agent, hourly job. It only removes stale local processes when its bounded
+criteria match and does not invoke an on-device model.
+
+### Doctor alert behavior
 
 - A new failure sends one self-chat alert; a resolved failure sends one
   recovery notice; an unresolved failure is reminded at most once every six
@@ -182,6 +205,7 @@ resuming work on one after a gap:
 - [Changelog — dated index of every Hussh-One capability](../CHANGELOG.md)
 - [Gateway resilience — launchd + doctor cron, incident SOP](./gateway-resilience.md)
 - [Crash resilience — dashboard OOM & session-model persistence](./crash-resilience.md)
+- [Local context budget and resumable compaction](./local-context-resilience.md)
 - [Upgrading from upstream](./upgrading.md)
 - [`docs/hussh-one-deployment.md`](../../hussh-one-deployment.md)
 - [`docs/hussh-one-upstream-maintenance.md`](../../hussh-one-upstream-maintenance.md)

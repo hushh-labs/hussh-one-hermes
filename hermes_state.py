@@ -7087,6 +7087,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
+    def get_compression_chunk(self, session_id: str, chunk_key: str) -> Optional[str]:
+        """Read a validated intermediate digest; never a transcript replacement."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT summary FROM compression_chunk_checkpoints WHERE session_id=? AND chunk_key=?",
+                (session_id, chunk_key),
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def save_compression_chunk(self, session_id: str, chunk_key: str, summary: str) -> None:
+        if not summary.strip():
+            raise ValueError("Cannot checkpoint an empty summary")
+        def _do(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO compression_chunk_checkpoints VALUES (?, ?, ?, ?)",
+                (session_id, chunk_key, summary, time.time()),
+            )
+        self._execute_write(_do)
+
     def record_compression_failure_cooldown(
         self,
         session_id: str,

@@ -2726,6 +2726,19 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_expired_local_attempt_does_not_start_summary(self, agent):
+        import time
+
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        agent.run_budget_seconds = 1
+        agent._run_budget_started_at = time.time() - 10
+        agent._cached_system_prompt = "You are helpful."
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "Summarize completed work"}], 60
+        )
+        agent.client.chat.completions.create.assert_not_called()
+        assert "deadline" in result.lower()
+
     def test_summary_notice_uses_safe_print(self, agent):
         agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")

@@ -319,6 +319,20 @@ When credentials are available, also run the live smoke:
 
 ## Restart After Passing
 
+On macOS, supervisor install/start/restart disables and unloads the legacy
+`ai.hussh-one.heartbeat` LaunchAgent. That per-machine script treated a
+disconnected WhatsApp session as a reason to restart both the gateway and the
+dashboard every two minutes, interrupting healthy local chats. Its plist and
+logs are retained for diagnosis. Do not re-enable it: launchd owns gateway
+recovery, the dashboard watchdog owns its child, and the deterministic doctor
+only restarts non-running services. Hermes' in-agent heartbeat is separate.
+
+If WhatsApp reports a terminal 401/403/405 rejection, repair its authentication
+through WhatsApp setup; do not repeatedly restart the dashboard or delete
+session credentials as a health check. Check free disk space and the linked
+SQLite runtime as well. After a runtime repair, rerun the guard with the new
+interpreter before restarting services.
+
 Only restart the dashboard and gateway after the guard passes. For local Hussh One operation, use:
 
 ```bash

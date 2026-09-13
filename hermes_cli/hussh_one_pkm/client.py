@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
 
-"""UAT identity and first-party Hussh API client for the local bridge."""
+"""Hussh One identity and first-party API client for the local bridge."""
 
 from __future__ import annotations
 
@@ -32,14 +32,20 @@ UAT_WEB_BASE = "https://uat.one.hushh.ai"
 PRODUCTION_API_BASE = "https://api.hushh.ai"
 PRODUCTION_WEB_BASE = "https://one.hushh.ai"
 # The environments a device may enroll against. UAT and production are two
-# deployments of the same Firebase project behind different hosts, so only the
-# API and web bases differ and the one identity-provider key below serves both.
+# deployments of the same Firebase project behind different hosts. Dev is an
+# isolated, disposable deployment for owner-bound verification; it uses the
+# same identity provider but a separate API and web origin. Keeping the bundles
+# explicit prevents a typo or a signed-in device from silently crossing lanes.
 # The names are the ones the One web binds into the passkey vault-handoff AAD
-# ("production" on one.hushh.ai, "uat" elsewhere); a different spelling here
-# would make every handoff fail to decrypt.
+# ("production" on one.hushh.ai, "uat" or "dev" on their respective hosts);
+# a different spelling here would make every handoff fail to decrypt.
 ENVIRONMENTS: dict[str, tuple[str, str]] = {
     "uat": (UAT_API_BASE, UAT_WEB_BASE),
     "production": (PRODUCTION_API_BASE, PRODUCTION_WEB_BASE),
+    "dev": (
+        "https://consent-protocol-aqahj4iyha-uc.a.run.app",
+        "https://dev.one.hushh.ai",
+    ),
 }
 DEFAULT_ENVIRONMENT = "uat"
 _ENVIRONMENT_ALIASES = {"prod": "production"}
@@ -245,8 +251,8 @@ class HusshIdentityClient:
         a machine that still holds one account's vault envelope and encrypted
         replica to a different account's identity.
 
-        ``environment`` names which One this device links to (``"uat"`` or
-        ``"production"``); blank means ``hussh_one.environment`` from config,
+        ``environment`` names which One this device links to (``"dev"``,
+        ``"uat"`` or ``"production"``); blank means ``hussh_one.environment`` from config,
         then UAT. It is resolved exactly once, here, and carried on the
         pending authorization so the code exchange goes to the same API the
         approval page belongs to. A code minted by one host and handed to the

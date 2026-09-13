@@ -9,7 +9,7 @@ link Puppy One at all, although the identity state already recorded
 read them back. Only the choice at enrollment time was missing.
 
 These pin the three halves of that choice: the name resolves to exactly one
-of two immutable bundles (config default, alias, refusal by name), the choice
+of three immutable bundles (config default, alias, refusal by name), the choice
 made when an approval starts is the one the exchange is posted to, and a
 repair stays in the environment the identity already lives in.
 """
@@ -118,10 +118,14 @@ def _client(tmp_path: Path, *, http: FakeHttp | None = None) -> HusshIdentityCli
 
 
 class TestResolveEnvironment:
-    def test_the_two_bundles_are_the_only_environments(self) -> None:
+    def test_the_explicit_bundles_are_the_only_environments(self) -> None:
         assert ENVIRONMENTS == {
             "uat": (UAT_API_BASE, UAT_WEB_BASE),
             "production": (PRODUCTION_API_BASE, PRODUCTION_WEB_BASE),
+            "dev": (
+                "https://consent-protocol-aqahj4iyha-uc.a.run.app",
+                "https://dev.one.hushh.ai",
+            ),
         }
         assert PRODUCTION_API_BASE == "https://api.hushh.ai"
         assert PRODUCTION_WEB_BASE == "https://one.hushh.ai"
@@ -155,6 +159,7 @@ class TestResolveEnvironment:
         assert resolve_environment("PROD") == "production"
         assert resolve_environment(" Production ") == "production"
         assert resolve_environment("UAT") == "uat"
+        assert resolve_environment("DEV") == "dev"
 
     def test_anything_else_is_refused_naming_both_accepted_values(self) -> None:
         with pytest.raises(HusshIdentityError) as refused:
@@ -163,6 +168,7 @@ class TestResolveEnvironment:
         assert "mars" in message
         assert '"uat"' in message
         assert '"production"' in message
+        assert '"dev"' in message
 
     def test_a_misspelt_config_default_is_refused_rather_than_becoming_uat(
         self, monkeypatch: pytest.MonkeyPatch

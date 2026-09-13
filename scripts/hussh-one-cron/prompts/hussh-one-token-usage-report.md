@@ -41,7 +41,12 @@ Never leave this section empty.
 
 ════════════════════
 
-*AI budget (Gemini project only):*
+*Billing budget:*
+
+If credits.available is false or budgets is empty, write Unavailable and omit Cap and Remaining. Otherwise use the first supplied budget and identify its actual scope:
+
+*Scope:*
+If scoped_projects is null or empty: Billing account budget; no project restriction reported. Otherwise list the supplied scoped_projects. Preserve any scope_note. Do not infer scope from the budget name.
 
 *Cap:*
 $<credits.budgets[0].cap_usd>
@@ -63,7 +68,8 @@ List-price estimate, real token counts, incl. cache. Not GCP-billed.
 RULES:
 - Numbers ONLY from the JSON. Never quote per-1M rates from memory.
 - Humanize tokens (1234567 -> 1.23M). Percentages to 1 decimal.
-- The credits.budgets entry is scoped to the Gemini API project, NOT the whole GCP account — never present it as total GCP credits.
+- Budget scope comes ONLY from scoped_projects. Never label an account-wide budget Gemini-only. Cap minus this local usage estimate is NOT remaining credits or remaining billed budget; it does not account for other services. State this limitation beneath Remaining vs estimate.
+- A missing price is unknown, not evidence of free usage. Report the cost-incomplete warning even when the estimate is zero.
 - If any period has cost_complete=false, add a warning listing unpriced_models.
 - Bold keys only, no markdown headers, no lists.
 - Deliver ONLY to the user's own chat. Never any group.

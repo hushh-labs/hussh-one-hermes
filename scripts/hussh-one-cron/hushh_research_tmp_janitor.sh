@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 # Cron wrapper: invoke the version-controlled hushh-research tmp/ janitor.
 # Real logic lives in the repo so it stays reviewed/versioned; this wrapper
 # only exists because cron scripts must reside under ~/.hermes/scripts/.

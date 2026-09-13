@@ -662,6 +662,9 @@ def build_turn_context(
         from agent.replay_cleanup import sanitize_replay_history
 
         messages = sanitize_replay_history(messages)
+        if str(getattr(agent, "provider", "") or "").lower() in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}:
+            from agent.replay_cleanup import strip_completed_recovery_placeholders
+            messages = strip_completed_recovery_placeholders(messages)
 
     # The CLI may already have staged this input outside the history passed to
     # ``run_conversation``. Reuse it only when its clean transcript text matches

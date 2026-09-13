@@ -17,7 +17,7 @@ GUARDRAIL (non-negotiable): Deliver ONLY to the operator's own direct chat. Neve
 
 CONTEXT: The injected upstream context (from the board sync job) contains today's engineering board / GitHub change summary. Use it as the primary signal for what changed. The mandatory discovery above tells you what shipped.
 
-WIKI ACCESS: The `hushh-wiki-mcp` skill is loaded — follow it exactly. Use the client at ~/.hermes/skills/note-taking/hushh-wiki-mcp/scripts/hw.py (token in /tmp/htok). Read before you write; prefer wiki_patch (section_replacements) over full rewrites; default visibility private when unsure; keep secrets/tokens/local paths out of pages.
+WIKI ACCESS: Use the `hushh-wiki` toolset. Read before you write; prefer wiki_patch (section_replacements) over full rewrites; default visibility private when unsure; keep secrets/tokens/local paths out of pages.
 STRICT PUBLIC LINKS RULE: Public pages must ONLY link/relate to other public pages or external URLs. Never link a public page to a private page or a raw markdown file path — doing so results in a 404 for users. Preserve privacy by omission: if a target relation is private, simply omit the link/relation bullet entirely instead of leaving a plain-text placeholder.
 
 PROCESS:
@@ -25,6 +25,11 @@ PROCESS:
 2. DETECT NEW CONCEPTS: Smartly analyze the codebase changes to detect when a completely new distinct product, concept, or system is being introduced (e.g. `consent-protocol`, `auto-dream`, `kanban`, etc.). When you identify a worthy new concept, propose or create a brand-new page with a clean public concept / private operational split, rather than piling it onto existing pages.
 3. FACTUAL ALIGNMENT: Map codebase modifications to the discovered pages. Update status_as_of lines, add new-integration details, or correct drift. Do NOT double-escape strings (avoid appending JSON-escaped newlines like `\\n`, backslashes like `\\/`, or `\\uXXXX` sequences to the markdown).
 4. VALIDATION: After any writes/patches, run `wiki_lint '{}'` and confirm errors:0, warnings:0.
+
+EFFICIENCY AND REPORT BOUNDARY:
+- Use at most 4 wiki tool calls total: one broad discovery, at most one page read, at most one warranted patch, and one lint after a patch. If discovery is enough to show no update is warranted, stop without a write.
+- Never enumerate the whole wiki, read multiple full pages, or reproduce injected repository logs in the report.
+- Finish with a short report under 900 characters. The report must describe only actions actually confirmed by tool results; a timeout or unavailable tool is a failed or unverified run.
 
 REPORT (warm, concise, clean — no markdown headers, no JSON dumps, with good spacing & pointers): 
 If genuinely nothing changed, respond with exactly "[SILENT]". Otherwise, output a very short report using clean pointers (bullet points with emoji or characters) and plenty of vertical spacing (double newlines/blank lines between every single item/bullet). 

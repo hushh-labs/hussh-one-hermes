@@ -16,6 +16,66 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-09 — Hourly low-power health cadence
+
+Commit: `5eb822b637`
+
+The service doctor, stale-process maintenance, and LM Studio metadata
+watchdog now run hourly as `no_agent` scripts. The scheduled watchdog still
+only reads `/v1/models`; an inference probe remains an explicit manual
+`--deep` operation, so routine health work does not spend on-device model
+tokens or wake the agent.
+
+### 2026-09-09 — Local context resilience runbook
+
+Commit: `dc50c29140`
+
+The local context recovery contract now has an operator runbook covering
+checkpoint boundaries, bounded compaction, resumable sessions, and the evidence
+needed to distinguish a recoverable context limit from a runtime failure.
+
+### 2026-09-09 — Low-power LM Studio health watchdog
+
+Commit: `6249920b36`
+
+The LM Studio watchdog is now a versioned `no_agent` cron job that runs every
+30 minutes and checks only the lightweight `/v1/models` inventory. It no longer
+wakes Hermes or sends a completion request on every tick. A one-token
+inference probe remains available only through the explicit manual `--deep`
+flag. Existing failure alerts remain local and silent on success.
+
+### 2026-09-09 — Local context budget and resumable compaction
+
+Commit: `948bc4c8bb`
+
+Local LM Studio/Ollama requests now account for prompt messages, system
+instructions, and tool schemas before choosing the response budget. When a
+server would otherwise reserve a full completion window, Hermes fits the
+output cap to the loaded context and leaves a small estimator margin. Local
+compression summaries use their computed summary budget as well, so the
+compaction call does not reproduce the same overflow. The durable conversation
+checkpoint remains SessionDB; filesystem checkpoints continue to cover file
+mutations only. See [Local Context Budget and Resumable Compaction](./operations/local-context-resilience.md).
+
+### 2026-09-08 — Update service validation
+
+Update checks report fork and official upstream revisions separately. Fork
+advances install dependencies through uv when available, rebuild both UIs, and
+pass the guard before restarting both services. Failed validation leaves a
+pending marker so the next run retries even after the source fast-forward.
+Native merge conflicts are previewed without changing live main. Launchd has
+an explicit tool PATH, and apply dry runs cannot mutate source or services.
+Seven executable tests cover real temporary Git remotes and installer failures.
+
+### 2026-09-08 — Local runtime recovery
+
+Supervisor setup and restart retire the legacy macOS cross-service heartbeat,
+which restarted healthy dashboard chats whenever WhatsApp rejected its session.
+Service-owned recovery remains active. Six executable supervisor regressions
+cover the migration and its manager boundaries. The dashboard reconnect test
+now typechecks, and missing Hussh-owned SPDX headers are restored so the latest
+trunk passes its required deployment guard.
+
 | Date | Commit | What shipped |
 |------|--------|---------------|
 | 2026-08-28 | `679803f1` | **Fail-closed on-device gate.** Pinning the provider only ever covered the main turn; auxiliary tasks defaulted to `provider: auto` and fell through OpenRouter, Nous and Codex to a paid Gemini. With `hussh_one.on_device_only` set, any non-local provider resolution now refuses instead of reaching for the network. |

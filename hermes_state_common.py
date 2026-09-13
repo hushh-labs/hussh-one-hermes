@@ -494,6 +494,14 @@ CREATE TABLE IF NOT EXISTS gateway_hygiene_state (
     failure_streak INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS compression_chunk_checkpoints (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    chunk_key TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, chunk_key)
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,

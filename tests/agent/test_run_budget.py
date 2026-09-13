@@ -119,6 +119,52 @@ def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 90.0
 
 
+def test_local_default_stale_timeout_is_finite(monkeypatch, tmp_path):
+    """Local inference gets a generous recovery deadline, never infinity."""
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        model="meta/muse-glimmer",
+        provider="lmstudio",
+        base_url="http://127.0.0.1:1234/v1",
+    )
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 900.0
+
+
+def test_local_stale_timeout_can_be_raised_explicitly(monkeypatch, tmp_path):
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    monkeypatch.setenv("HERMES_LOCAL_NONSTREAM_STALE_TIMEOUT", "1200")
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        model="meta/muse-glimmer",
+        provider="lmstudio",
+        base_url="http://127.0.0.1:1234/v1",
+    )
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1200.0
+
+
+def test_local_stale_timeout_is_independent_of_run_budget(monkeypatch, tmp_path):
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        model="meta/muse-glimmer",
+        provider="lmstudio",
+        base_url="http://127.0.0.1:1234/v1",
+        run_budget_seconds=60,
+    )
+    agent._run_budget_started_at = time.time() - 10
+
+    timeout = agent._compute_non_stream_stale_timeout({"input": "hi"})
+
+    assert timeout == 900.0
+
+
 def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
     """deepseek-v4-pro's 600s implicit floor yields to a tighter deadline cap.
 

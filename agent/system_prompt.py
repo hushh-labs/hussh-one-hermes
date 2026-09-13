@@ -596,18 +596,40 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     else:
         skills_prompt = ""
 
-    # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-    # of the requested model. Inject explicit model identity into the system prompt
-    # so the agent can correctly report which model it is (workaround for API bug).
-    # Stable for the lifetime of an agent instance — model and provider are fixed
-    # at construction time.
-    if agent.provider == "alibaba":
+    # Model identity, stated for EVERY provider rather than as one vendor's
+    # workaround. It began as one: the Alibaba Coding Plan API returns
+    # "glm-4.7" whatever you request, so the identity had to be asserted in the
+    # prompt. Gating it there left every other model with only the bare
+    # "Model: <id>" line further down, which is weaker than it looks -- it
+    # states the fact but does not say to prefer it over what the environment
+    # seems to show.
+    #
+    # Measured 2026-09-06 on this repo's quest harness: google/gemma-4-12b and
+    # google/gemma-4-12b-qat, different quantizations and different context
+    # windows, both answered "gemini-3.5-flash" in byte-identical files when
+    # asked what model they were. One narrated its reasoning: the environment
+    # variable AGENT_GEMINI_MODEL "confirms" it. That variable is legitimate
+    # live config -- the PKM KYC engine reads it to choose an extraction model
+    # -- so it cannot simply be removed, and any deployment may hold similar
+    # names for entirely good reasons. The 31B of the same family got it right,
+    # so this is a capability floor, not a universal failure, which is exactly
+    # why the prompt has to carry the guard rather than assume the model will.
+    #
+    # An agent that misreports which model it is corrupts every downstream
+    # record that attributes work to a model: evolution ledgers, judged review
+    # queues, cost accounting. Cheap to state, expensive to omit.
+    #
+    # Stable for the lifetime of an agent instance -- model and provider are
+    # fixed at construction time.
+    if agent.model:
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
         stable_parts.append(
             f"You are powered by the model named {_model_short}. "
             f"The exact model ID is {agent.model}. "
-            f"When asked what model you are, always answer based on this information, "
-            f"not on any model name returned by the API."
+            f"When asked what model you are, always answer based on this "
+            f"information, not on any model name returned by the API, found in "
+            f"an environment variable, or present in a config file. Those name "
+            f"other models this system talks to; they are not you."
         )
 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
