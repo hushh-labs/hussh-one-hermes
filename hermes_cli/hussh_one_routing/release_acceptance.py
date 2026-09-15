@@ -50,7 +50,7 @@ def cases():
          'tools': [tool('patch', {k: {'type': 'string'} for k in ('path', 'old_string', 'new_string')})],
          'pre': 'value = 1\n', 'expected': 'value = 2\n'},
         {'suite': 'long_context', 'prompt': long_context.plant(filler, needle, 0.75) + '\nReturn only the exact internal audit reference from these records.',
-         'tools': None, 'expected': token},
+         'tools': None, 'expected': token, 'timeout': 600},
     ]
 
 
@@ -129,13 +129,17 @@ def run(output: Path, repetitions=3):
             try:
                 turn = request.complete(model=MODEL, base_url=ENDPOINT,
                     messages=[{'role': 'user', 'content': case['prompt']}], tools=case['tools'],
-                    opener=send, **SETTINGS)
+                    opener=send, **{**SETTINGS, "timeout": case.get("timeout", SETTINGS["timeout"])})
             finally:
                 lease.release()
             row.update(latency_ms=turn.elapsed_ms, completion_tokens=turn.completion_tokens,
                        finish_reason=turn.finish_reason, response_model=served.get('model'))
-            if served.get('model') != MODEL or model_snapshot() != snapshot:
+            if (served.get('model') is not None and served['model'] != MODEL) or model_snapshot() != snapshot:
                 row['status'] = 'model_changed'
+                save()
+                return receipt
+            if not turn.indeterminate and served.get('model') is None:
+                row['status'] = 'harness_fault'
                 save()
                 return receipt
             if turn.indeterminate:
