@@ -176,7 +176,7 @@ def _c_file_matches(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     target = ws / a["path"]
     if not target.exists():
         return False, f"{a['path']} absent"
-    body = target.read_text(errors="replace")
+    body = target.read_text(encoding="utf-8", errors="replace")
     flags = re.IGNORECASE if a.get("ignore_case", True) else 0
     if re.search(a["pattern"], body, flags):
         return True, f"{a['path']} matches /{a['pattern']}/"
@@ -193,7 +193,7 @@ def _c_jsonl_rows(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     if not target.exists():
         return False, f"{a['path']} absent"
     rows = []
-    for line in target.read_text(errors="replace").splitlines():
+    for line in target.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -251,7 +251,7 @@ def _c_python(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     written to a file and never quoted through a shell.
     """
     script = ws / "_check.py"
-    script.write_text(a["source"])
+    script.write_text(a["source"], encoding="utf-8")
     try:
         proc = subprocess.run(
             ["python3", str(script)], cwd=str(ws),
@@ -299,7 +299,7 @@ def _c_absent_or_declares(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str
     target = ws / a["path"]
     if not target.exists():
         return True, f"{a['path']} correctly not written"
-    body = target.read_text(errors="replace")
+    body = target.read_text(encoding="utf-8", errors="replace")
     hit = _matches_any(body, _DECLINE_PATTERNS)
     if hit:
         return True, f"{a['path']} exists and declares the blocker (/{hit}/)"
@@ -343,7 +343,7 @@ class Quest:
         for rel, body in self.fixture.items():
             target = workspace / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(body)
+            target.write_text(body, encoding="utf-8")
             if rel.endswith(".sh"):
                 target.chmod(0o755)
         if self.fixture_builder:
@@ -369,7 +369,7 @@ def _build_ledger(workspace: Path) -> None:
                 "- entry-1187-detail | RECONCILIATION_TOKEN=HX-4471-ZQ | "
                 "this token is the only one recorded in this ledger"
             )
-    (workspace / "ledger.md").write_text("\n".join(lines) + "\n")
+    (workspace / "ledger.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 _FIXTURE_BUILDERS: dict[str, Callable[[Path], None]] = {

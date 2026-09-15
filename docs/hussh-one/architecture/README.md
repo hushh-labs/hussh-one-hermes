@@ -78,6 +78,9 @@ opaque references, never the SQLite database or mounted paths. See
 ---
 
 ### Related
+- [Xtreme Burst Compute — architecture & migration record](./xtreme-burst.md)
+- [Xtreme Burst — production-readiness scorecard](./xtreme-burst-roadmap.md)
+- [Xtreme Burst — payload transfer design](./xtreme-burst-payload-transfer.md)
 - [Root machine-readable spec](../../../HUSSH_ONE.md)
 - [Upgrade & maintenance runbook](../operations/upgrading.md)
 - [Contracts](../contracts/README.md)

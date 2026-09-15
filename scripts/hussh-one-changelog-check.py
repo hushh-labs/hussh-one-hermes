@@ -34,6 +34,7 @@ HUSSH_ONE_PATHS = [
     "hermes_cli/hussh_one_identity.py",
     "hermes_cli/hussh_one_router.py",
     "hermes_cli/hussh_one_mcp_scan.py",
+    "hermes_cli/hussh_one_burst/",
     "hermes_cli/hussh_one_source_library/",
     "hermes_cli/hussh_one_pkm/manifest_policy.py",
     "hermes_cli/brand.py",
