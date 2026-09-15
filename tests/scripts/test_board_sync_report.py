@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Board reports are deterministic and safe to deliver without model rewriting."""
 
 import importlib.util

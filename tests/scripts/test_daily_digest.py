@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Digest truth must come from current execution evidence, not old success text."""
 import importlib.util
 import json

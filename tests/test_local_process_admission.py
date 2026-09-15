@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Real subprocess admission checks, isolated by the Hermes test home."""
 import os
 import subprocess

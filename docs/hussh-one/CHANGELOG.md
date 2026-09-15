@@ -14,6 +14,14 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ---
 
+## 2026-09-14 — Verified updates and merge checks
+
+CI rejects cancelled and unexpectedly skipped selected jobs, including queue
+candidates. Installations consume the fork's verified main without pushing;
+upstream imports are proposed centrally. Standard hosted runners replace
+unavailable large-runner labels. Existing missing first-party SPDX headers are
+repaired so the Hussh guard can enforce its declared provenance contract.
+
 ## 🐶 Puppy One — on-device edge compute
 
 ### 2026-09-09 — Hourly low-power health cadence

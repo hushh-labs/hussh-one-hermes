@@ -39,7 +39,7 @@ The rule is: keep brand content in data/config/plugin files, and keep core edits
 
 There is exactly **ONE** long-lived branch for this fork:
 
-- **`main`** on `hushh-labs/hussh-one-hermes` (a PRIVATE repo) is the single
+- **`main`** on `hushh-labs/hussh-one-hermes` (a public repo) is the single
   canonical trunk **and** the GitHub default branch. Everything ships from here:
   the Hussh One identity, the Vertex Claude capability, the WhatsApp gateway
   customizations, and every merge of official upstream Hermes.
@@ -145,57 +145,31 @@ To roll back a bad merge that was already committed but not pushed:
 
 ### Daily fleet synchronization
 
-`scripts/hussh-one-bootstrap.sh` registers
-`scripts/hussh-one-upstream-update.sh --apply --restart` as the standard
-per-machine daily upgrade. The updater verifies the remote and branch
-contract, writes a pushed safety tag, reconciles in a short-lived
-`sync/upstream-*` branch, updates the recorded attribution base, runs the
-guard, and only then pushes `origin/main` and restarts from clean `main`.
+Installations consume the verified `origin/main` through
+`scripts/hussh-one-upstream-update.sh --apply --restart`. They never merge
+upstream, create safety tags, or push branches. The updater fast-forwards,
+installs locked dependencies, builds the TUI and web assets, runs the Hussh
+guard, reconciles bundled jobs, and restarts both services. A failed validation
+leaves a pending marker for retry and does not restart services. Existing job
+provider/model overrides are preserved.
 
-It never force-pushes, never pushes upstream, and never changes `main` for a
-merge conflict, guard failure, or concurrent `origin/main` change.
+Official Hermes imports are proposed by `hussh-one-upstream-pr.yml` on the
+single `sync/upstream-central` branch. Conflicts require maintainer resolution;
+no code from the import runs with the workflow's write token. A successful
+proposal is still unverified until its PR and merge-group checks pass.
 
-On macOS the launchd job runs through the repo's own `.venv/bin/python`,
-which changes into the checkout and runs the script, rather than through
-`/bin/bash` directly: macOS privacy (TCC) decides per launched binary whether
-a background job may read a protected folder such as `~/Documents`, and the
-first scheduled run on 2026-09-02 exited 126 ("Operation not permitted")
-before it could read this script, while the gateway job launched through the
-same interpreter reads the checkout fine. The job also starts from
-`HERMES_HOME`, so the shell never has to stand inside a folder it may not
-enter. Until the upstream conflict backlog has a resolver, a nightly run
-fetches, pushes a safety tag, fast-forwards the fork, attempts the upstream
-merge, aborts on the conflicts with `main` untouched, logs "Deferred" and
-exits 0 without restarting anything (a deferred merge is not a failed
-service; exit 1 is reserved for a contract or guard failure); `--restart`
-only fires after a fully successful merge.
-Its logs are `$HERMES_HOME/logs/hussh-one-upstream-update.log` and
-`.error.log`; the contract also requires a clean tree, so uncommitted work in
-the checkout at 07:00 makes the run refuse.
+`main` uses a one-entry native merge queue. Its required checks are
+`All required checks pass`, `Hussh One guard`, and `Muse Glimmer acceptance`.
+The latter is published by the maintainer only after the exact candidate SHA
+passes the isolated local harness. Never copy a status from another SHA.
+Cancelled or unexpectedly skipped required jobs are failures. Desktop Electron
+E2E remains disabled upstream and is not claimed as coverage for this release;
+the embedded dashboard TUI has its own acceptance scenarios.
 
-A deferred upstream merge still fast-forwards the fork, and until 2026-09-02
-that was where the run stopped: the checkout moved, the gateway kept running
-the old code (on the founder's machine it was thirteen fork commits behind
-the checkout it was started from), and the daily jobs that live in
-`~/.hermes` never learned about a change committed to the fork. When
-`git pull --ff-only` moves `HEAD` the updater now runs
-`scripts/hussh-one-cron/hussh-one-cron-sync.py --apply` (the Puppy One
-daily jobs as a versioned product: every job script and prompt under
-`scripts/hussh-one-cron/`, installed into `$HERMES_HOME/scripts` and
-reconciled by job name from `jobs.manifest.json`, never touching a job's
-`deliver`, `model` or `provider`, never removing or reviving a job the
-manifest does not name) and, when `--restart` was requested, asks the
-running gateway to restart gracefully (`SIGUSR1`: drain, exit, launchd
-respawns from the new checkout). Run the sync by hand with `--check` to see
-drift without changing anything.
-
-Inspect or manage it with:
-
-```bash
-scripts/hussh-one-upstream-update.sh --status
-scripts/hussh-one-upstream-update.sh --check
-scripts/hussh-one-upstream-update.sh --apply --restart
-```
+The schedule can be inspected with `--status`, checked with `--check`, and
+updated with `--apply --restart`. New workflows and protection are staged before
+activation; read the live ruleset rather than assuming this document proves
+that enforcement is active.
 
 ### Fresh remote-push verification
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Run Puppy One's bounded, inference-only outbound relay client."""
 
 from __future__ import annotations

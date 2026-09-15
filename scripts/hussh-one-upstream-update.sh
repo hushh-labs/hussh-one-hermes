@@ -27,7 +27,7 @@ Usage: scripts/hussh-one-upstream-update.sh [action] [options]
 
 Actions:
   --check                 Fetch and report whether official Hermes is newer (default)
-  --apply                 Merge a verified upstream update into Hussh One main and push origin
+  --apply                 Consume verified origin/main; never merge upstream or push
   --install-daily         Register a daily guarded --apply job for this machine
   --remove-daily          Remove this machine's registered daily updater
   --status                Show the local updater schedule and repository sync state
@@ -40,9 +40,9 @@ Options:
   --dry-run               Print scheduler actions without modifying the machine
   -h, --help              Show this help
 
-The updater never changes main unless origin/main is current, upstream/main
-merges cleanly, and scripts/hussh-one-guard.sh passes. Conflicts leave main
-untouched for a maintainer to reconcile on a normal sync/upstream-* branch.
+The updater fast-forwards origin/main and validates dependencies, builds, and
+the Hussh guard before restarting. Official upstream updates enter centrally
+through protected pull requests; installations never push repository branches.
 USAGE
 }
 
@@ -84,15 +84,16 @@ refresh_runtime_dependencies() {
     die "npm or corepack is required for an update"
   fi
 
+  export VIRTUAL_ENV="$(dirname "$(dirname "$python")")"
   log "Reconciling Python and locked Node dependencies for the verified upstream revision..."
   # uv-created/repaired environments deliberately need not contain pip.
   uv="$(command -v uv || true)"
   if [[ -z "$uv" && -x "$HOME/.local/bin/uv" ]]; then uv="$HOME/.local/bin/uv"; fi
   if [[ -z "$uv" && -x "$HERMES_HOME/bin/uv" ]]; then uv="$HERMES_HOME/bin/uv"; fi
   if [[ -n "$uv" ]]; then
-    "$uv" pip install --python "$python" -e ".[all,dev]" || return
+    "$uv" sync --locked --active --extra all --extra dev || return
   else
-    "$python" -m pip install -e ".[all,dev]" || return
+    die "uv is required to install locked Python dependencies"
   fi
   "${npm[@]}" ci || return
   "${npm[@]}" run build --workspace @hermes/ink || return
@@ -131,43 +132,6 @@ verify_repository_contract() {
   [[ "$upstream_push" == "DISABLED" ]] || die "upstream push URL must be DISABLED"
   [[ "$branch" == "main" ]] || die "run from canonical Hussh One main, not '$branch'"
   [[ -z "$(git status --porcelain)" ]] || die "working tree must be clean before an upstream update"
-}
-
-update_attribution_base() {
-  local upstream_sha="$1" python
-  python="$(python_bin)"
-  [[ -n "$python" && -x "$python" ]] || die "Python is required to update LICENSES/attribution.toml"
-  "$python" - "$REPO_ROOT/LICENSES/attribution.toml" "$upstream_sha" <<'PY'
-from pathlib import Path
-import os
-import re
-import sys
-import tempfile
-
-path = Path(sys.argv[1])
-sha = sys.argv[2]
-if not re.fullmatch(r"[0-9a-f]{40}", sha):
-    raise SystemExit("refusing invalid upstream commit")
-text = path.read_text(encoding="utf-8")
-updated, count = re.subn(
-    r'(?m)^upstream_base_commit = "[0-9a-f]{40}"$',
-    f'upstream_base_commit = "{sha}"',
-    text,
-    count=1,
-)
-if count != 1:
-    raise SystemExit("could not locate exactly one upstream_base_commit")
-fd, temporary = tempfile.mkstemp(prefix=".attribution.", dir=path.parent)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(updated)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-finally:
-    if os.path.exists(temporary):
-        os.unlink(temporary)
-PY
 }
 
 lock_dir=""
@@ -216,7 +180,7 @@ after_fork_advance() {
     if "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/hussh-one-cron/hussh-one-cron-sync.py" --apply; then
       log "Cron jobs and scripts reconciled from scripts/hussh-one-cron."
     else
-      warn "Cron job reconciliation failed; the jobs on this machine may be stale."
+      die "Cron job reconciliation failed; services were not restarted. Retry the update."
     fi
   fi
   if [[ "$RESTART" == "1" ]]; then
@@ -230,16 +194,19 @@ apply_update() {
   acquire_lock
   verify_repository_contract
   git fetch origin --tags --prune --quiet
-  git fetch upstream --tags --prune --quiet
-  local before_ff after_ff
+  local before_ff after_ff accepted_sha
   local pending="$HERMES_HOME/cache/hussh-one-update-pending"
   before_ff="$(git rev-parse HEAD)"
+  accepted_sha="$(git rev-parse origin/main)"
+  git merge-base --is-ancestor "$before_ff" "$accepted_sha" || die "local main has unpublished or divergent commits; refusing to install"
+
   if [[ "$before_ff" != "$(git rev-parse origin/main)" ]]; then
     mkdir -p "$(dirname "$pending")"
     git rev-parse origin/main >"$pending"
   fi
-  git pull --ff-only origin main
+  git merge --ff-only "$accepted_sha"
   after_ff="$(git rev-parse HEAD)"
+  [[ "$after_ff" == "$accepted_sha" ]] || die "installed revision differs from fetched origin/main"
   if [[ -f "$pending" ]]; then
     log "Validating fork runtime ${before_ff:0:10} -> ${after_ff:0:10}."
     if ! refresh_runtime_dependencies || ! scripts/hussh-one-guard.sh; then
@@ -249,85 +216,8 @@ apply_update() {
     rm -f "$pending"
   fi
 
-  # Discover conflicts without ever putting the live checkout on a conflicted
-  # branch. The native update can be deferred while fork updates still land.
-  local merge_preview
-  merge_preview="$(mktemp)"
-  if ! git merge-tree --write-tree main upstream/main >"$merge_preview" 2>&1; then
-    if grep -q 'CONFLICT' "$merge_preview"; then
-      rm -f "$merge_preview"
-      log "Deferred: fork main is current; official Hermes upstream/main has merge conflicts requiring manual reconciliation. Live main was not changed by the native merge."
-      return 0
-    fi
-    cat "$merge_preview" >&2
-    rm -f "$merge_preview"
-    die "Could not preview the official upstream merge; no native update applied."
-  fi
-  rm -f "$merge_preview"
-  if git merge-base --is-ancestor upstream/main main; then
-    log "Hussh One main already contains official Hermes upstream/main."
-    return 0
-  fi
+  log "Hussh One consumes verified origin/main; upstream reconciliation belongs to the central PR workflow."
 
-  local upstream_sha ts sync_branch safety_tag
-  upstream_sha="$(git rev-parse upstream/main)"
-  ts="$(date +%Y%m%d-%H%M%S)"
-  sync_branch="sync/upstream-$ts"
-  safety_tag="safety/main-$ts"
-  git tag "$safety_tag" main
-  git push origin "$safety_tag"
-  log "Created remote safety tag $safety_tag"
-
-  git switch -c "$sync_branch" main
-  # A failed dependency install must not strand the runtime on a sync branch.
-  trap 'if [[ "$(git branch --show-current)" == "${sync_branch:-}" ]]; then git merge --abort 2>/dev/null || true; git switch main; fi; release_lock' EXIT
-  if ! git merge --no-ff --no-edit upstream/main; then
-    warn "Official upstream requires manual conflict resolution. main was not changed."
-    git merge --abort || true
-    git switch main
-    git branch -D "$sync_branch" || true
-    # Deferred, not failed: the fork was fast-forwarded above and nothing
-    # broke; what remains is a merge no script may resolve. Exiting non-zero
-    # here made the doctor flag the updater as a failing service every night
-    # until a resolver exists, and page the founder for it.
-    log "Deferred: fork main is current; the official upstream merge waits for manual resolution (see docs/hussh-one-upstream-maintenance.md). No restart."
-    return 0
-  fi
-  update_attribution_base "$upstream_sha"
-  git add LICENSES/attribution.toml
-  if ! git diff --cached --quiet; then
-    git commit -m "chore(license): record official Hermes upstream base"
-  fi
-  # An upstream import can add Python/Node requirements. Validate the actual
-  # Hussh runtime, not the stale environment that happened to be present before
-  # this sync (for example tool_search's Snowball dependency).
-  refresh_runtime_dependencies
-  if ! scripts/hussh-one-guard.sh; then
-    warn "Hussh One guard failed. main was not changed; inspect $sync_branch."
-    git switch main
-    return 1
-  fi
-  git fetch origin --quiet
-  if [[ "$(git rev-parse origin/main)" != "$(git rev-parse main)" ]]; then
-    warn "origin/main advanced during validation. main was not changed; inspect $sync_branch."
-    git switch main
-    return 1
-  fi
-  git switch main
-  git merge --no-ff "$sync_branch" -m "merge: sync official Hermes upstream"
-  git push origin main
-  git branch -d "$sync_branch"
-  git pull --ff-only origin main
-  test "$(git branch --show-current)" = "main"
-  test -z "$(git status --porcelain)"
-  log "Hussh One main updated and pushed from official Hermes $upstream_sha"
-  if [[ "$RESTART" == "1" ]]; then
-    scripts/hussh-one-supervisor.sh restart --manager "$MANAGER" --clean-conflicts
-    # A fleet update must converge on every supported machine. WhatsApp is an
-    # optional per-device pairing, so its absence is diagnostic information,
-    # not a reason to report a clean source/runtime update as failed.
-    scripts/hussh-one-doctor.sh --manager "$MANAGER"
-  fi
 }
 
 install_launchd_schedule() {

@@ -142,23 +142,6 @@ def test_bootstrap_documents_safe_gcp_and_whatsapp_setup():
     assert "--no-daily-updater" in text
 
 
-def test_daily_updater_preserves_the_single_hussh_one_trunk_contract():
-    text = (ROOT / "scripts/hussh-one-upstream-update.sh").read_text(encoding="utf-8")
-
-    assert "sync/upstream-" in text
-    assert 'git switch -c "$sync_branch" main' in text
-    assert "scripts/hussh-one-guard.sh" in text
-    assert "git push origin main" in text
-    assert "upstream push URL must be DISABLED" in text
-    assert "Hussh One main updated and pushed" in text
-    assert "--install-daily" in text
-    assert "launchd" in text and "systemd" in text and "crontab" in text
-    assert "refresh_runtime_dependencies" in text
-    assert 'pip install -e ".[all,dev]"' in text
-    assert "npm@11.17.0" in text
-    assert 'scripts/hussh-one-doctor.sh --manager "$MANAGER"' in text
-    assert "--require-services" not in text
-
 
 def test_each_main_push_runs_the_fresh_hussh_one_sync_verification():
     workflow = (ROOT / ".github/workflows/hussh-one-fresh-sync.yml").read_text(
@@ -171,7 +154,6 @@ def test_each_main_push_runs_the_fresh_hussh_one_sync_verification():
     assert "fetch-depth: 0" in workflow
     assert "NousResearch/hermes-agent.git" in workflow
     assert "git remote set-url --push upstream DISABLED" in workflow
-    assert 'scripts/hussh-one-upstream-update.sh --check' in workflow
     assert "scripts/hussh-one-guard.sh" in workflow
     assert "npm@11.17.0" in workflow
     # The guard runs `rg` and delegates tests to scripts/run_tests.sh, which
@@ -179,7 +161,6 @@ def test_each_main_push_runs_the_fresh_hussh_one_sync_verification():
     # those prerequisites instead of relying on runner-global tools.
     assert "apt-get install --yes ripgrep" in workflow
     assert "python -m venv .venv" in workflow
-    assert '.venv/bin/python -m pip install -e ".[all,dev]"' in workflow
 
 
 def test_hussh_doctor_accepts_native_lmstudio_provider_choice():

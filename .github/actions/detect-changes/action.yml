@@ -76,15 +76,15 @@ runs:
         GH_TOKEN: ${{ inputs.github-token || github.token }}
         REPO: ${{ github.repository }}
         EVENT_NAME: ${{ github.event_name }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        BASE_SHA: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.merge_group.head_sha || github.event.pull_request.head.sha }}
       run: |
         set -euo pipefail
 
         # Only pull_request events are gated. Other events (push, release,
         # dispatch) leave CHANGED empty, so the classifier fails open and every
         # lane runs. Post-merge / on-demand validation is never weakened.
-        if [ "$EVENT_NAME" = "pull_request" ]; then
+        if [ "$EVENT_NAME" = "pull_request" ] || [ "$EVENT_NAME" = "merge_group" ]; then
           # Use the compare endpoint with the pinned base/head SHAs from the
           # event payload instead of the "current PR files" endpoint. The SHAs
           # are frozen at trigger time, so the file list is deterministic even
@@ -118,6 +118,10 @@ runs:
           done
         fi
 
+        # GitHub compare truncates the file list at 300. Run all lanes then.
+        if [ "$(printf '%s\n' "${CHANGED:-}" | wc -l)" -ge 300 ]; then
+          CHANGED=""
+        fi
         echo "Changed files:"
         printf '%s\n' "${CHANGED:-(none)}"
         printf '%s\n' "${CHANGED:-}" | python3 scripts/ci/classify_changes.py

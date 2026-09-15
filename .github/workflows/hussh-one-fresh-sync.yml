@@ -1,6 +1,9 @@
 name: Hussh One fresh sync verification
 
 on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -14,14 +17,13 @@ concurrency:
 
 jobs:
   verify:
-    name: Fresh Hussh One runtime and upstream check
+    name: Hussh One guard
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - name: Check out the canonical Hussh One trunk
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: main
           fetch-depth: 0
 
       - name: Set up Python
@@ -37,7 +39,6 @@ jobs:
 
       - name: Re-establish the Hussh One remote contract
         run: |
-          git switch main || git switch --track -c main origin/main
           # actions/checkout retains an authenticated origin URL. Normalize it
           # before asserting the product contract, so CI verifies the same
           # public Hussh One remote local installs use.
@@ -54,7 +55,8 @@ jobs:
           sudo apt-get install --yes ripgrep
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -e ".[all,dev]"
+          .venv/bin/python -m pip install uv==0.9.28
+          .venv/bin/uv sync --locked --python .venv/bin/python --extra all --extra dev
           corepack enable
           corepack npm@11.17.0 ci
           corepack npm@11.17.0 run build --workspace @hermes/ink
@@ -65,6 +67,3 @@ jobs:
         env:
           HUSSH_ONE_SKIP_DASHBOARD_HEALTH: "1"
         run: scripts/hussh-one-guard.sh
-
-      - name: Check the latest official Hermes source
-        run: scripts/hussh-one-upstream-update.sh --check

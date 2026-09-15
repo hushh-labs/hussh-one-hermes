@@ -95,7 +95,7 @@ def test_detect_apply_validate_restart_then_noop(fixture):
     applied = run(live, env, '--apply', '--restart')
     assert applied.returncode == 0, applied.stderr
     trace = (root / 'trace').read_text().splitlines()
-    assert trace[0].startswith('deps pip install --python ')
+    assert trace[0].startswith('deps sync --locked --active ')
     assert trace[-2:] == ['guard', 'restart']
     assert git(live, 'rev-parse', 'HEAD') == git(seed, 'rev-parse', 'HEAD')
     assert git(live, 'branch', '--show-current') == 'main'
@@ -127,7 +127,7 @@ def test_native_conflict_is_detected_without_switching_live_main(fixture):
     advance(seed, root, 'upstream', 'native side\n')
     result = run(live, env, '--apply')
     assert result.returncode == 0, result.stderr
-    assert 'Deferred:' in result.stdout
+    assert 'central PR workflow' in result.stdout
     assert git(live, 'branch', '--show-current') == 'main'
     assert not git(live, 'status', '--porcelain')
     assert git(live, 'branch', '--list', 'sync/*') == ''
@@ -145,19 +145,28 @@ def test_apply_dry_run_cannot_advance_or_install(fixture):
     assert not (root / 'trace').exists()
 
 
-@pytest.mark.parametrize('fail', [False, True])
-def test_clean_native_merge_is_guarded_and_always_returns_to_main(fixture, fail):
+def test_installations_never_merge_or_push_upstream(fixture):
     seed, live, root, env = fixture
     advance(seed, root, 'upstream', 'native revision\n')
     before = git(live, 'rev-parse', 'main')
-    result = run(live, dict(env, FAIL_DEPS='1' if fail else '0'), '--apply')
-    assert git(live, 'branch', '--show-current') == 'main'
-    assert not git(live, 'status', '--porcelain')
-    if fail:
-        assert result.returncode != 0
-        assert git(live, 'rev-parse', 'main') == before
-    else:
-        assert result.returncode == 0, result.stderr
-        assert git(live, 'rev-parse', 'main') == git(root / 'origin.git', 'rev-parse', 'main')
-        assert (live / 'shared.txt').read_text() == 'native revision\n'
-        assert 'guard' in (root / 'trace').read_text().splitlines()
+    origin = git(root / 'origin.git', 'rev-parse', 'main')
+    result = run(live, env, '--apply', '--restart')
+    assert result.returncode == 0, result.stderr
+    assert git(live, 'rev-parse', 'main') == before
+    assert git(root / 'origin.git', 'rev-parse', 'main') == origin
+    assert git(live, 'branch', '--list', 'sync/*') == ''
+    assert git(live, 'tag', '--list', 'safety/*') == ''
+    assert not (root / 'trace').exists()
+
+
+def test_unpublished_local_main_is_not_a_verified_update(fixture):
+    _, live, root, env = fixture
+    (live / 'local.txt').write_text('unpublished\n')
+    git(live, 'add', 'local.txt')
+    git(live, 'commit', '-qm', 'local only')
+    before = git(live, 'rev-parse', 'HEAD')
+    result = run(live, env, '--apply', '--restart')
+    assert result.returncode != 0
+    assert 'unpublished or divergent' in result.stderr
+    assert not (root / 'trace').exists()
+    assert git(live, 'rev-parse', 'HEAD') == before

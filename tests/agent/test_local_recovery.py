@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Durable local-attempt records never contain prompt or credential data."""
 
 from __future__ import annotations
