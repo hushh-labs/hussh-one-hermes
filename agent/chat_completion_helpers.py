@@ -1079,6 +1079,49 @@ def _local_inference_priority(agent) -> str:
     return "interactive"
 
 
+def _acquire_local_for_agent(agent, runtime, model, *, attempt_cancel_check=None):
+    """Wait visibly and interruptibly within the current turn's deadline."""
+    priority = _local_inference_priority(agent)
+    waiting = False
+    queued_at = time.monotonic()
+    def emit(message):
+        callback = getattr(agent, "status_callback", None)
+        if callable(callback):
+            try:
+                callback("lifecycle", message)
+            except Exception:
+                logger.debug("local admission status callback failed", exc_info=True)
+    def check_cancel():
+        if attempt_cancel_check is not None:
+            attempt_cancel_check()
+        _check_local_attempt_deadline(agent)
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Local inference wait cancelled")
+
+    def notify_wait():
+        nonlocal waiting
+        if waiting:
+            return
+        waiting = True
+        emit("Waiting for local inference to finish; your turn is queued.")
+
+    wait = 0.25
+    if priority == "interactive":
+        budget = getattr(agent, "run_budget_seconds", None)
+        started = getattr(agent, "_run_budget_started_at", None)
+        wait = max(0.0, float(budget) - (time.time() - float(started))) if budget and started else 300.0
+    try:
+        lease = runtime.acquire(model, wait=wait, priority=priority, check_cancel=check_cancel, on_wait=notify_wait)
+    except BaseException:
+        if waiting:
+            emit("Local inference wait ended without starting a request.")
+        raise
+    if waiting:
+        emit("Local inference is available; resuming your turn.")
+        logger.info("local_admission phase=resumed priority=%s queued_seconds=%.3f", priority, time.monotonic() - queued_at)
+    return lease
+
+
 def _local_attempt_metadata(agent, api_kwargs: dict, model: str) -> dict[str, Any]:
     """Build bounded, non-sensitive coordinates for the local attempt ledger."""
     messages = api_kwargs.get("messages") or []
@@ -1180,7 +1223,7 @@ def _dispatch_nonstreaming_api_request_unchecked(agent, api_kwargs: dict, *, mak
     return request_client.chat.completions.create(**api_kwargs)
 
 
-def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client, attempt_cancel_check=None):
     """Dispatch one request under local readiness and admission guards."""
     runtime = _local_runtime_for_agent(agent, api_kwargs)
     if runtime is None:
@@ -1190,7 +1233,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
     model = str(api_kwargs.get("model") or getattr(agent, "model", "") or "")
     request_id = str(getattr(agent, "_current_api_request_id", "") or "")
-    lease = runtime.acquire(model, priority=_local_inference_priority(agent))
+    lease = _acquire_local_for_agent(agent, runtime, model, attempt_cancel_check=attempt_cancel_check)
     ledger = None
     attempt_id = None
     try:
@@ -1212,8 +1255,17 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
                 )
         except Exception:
             logger.debug("local attempt ledger begin failed", exc_info=True)
+        def checked_make_client(*args, **kwargs):
+            if attempt_cancel_check is not None:
+                attempt_cancel_check()
+            client = make_client(*args, **kwargs)
+            if attempt_cancel_check is not None:
+                attempt_cancel_check()
+            return client
+        if attempt_cancel_check is not None:
+            attempt_cancel_check()
         response = _dispatch_nonstreaming_api_request_unchecked(
-            agent, api_kwargs, make_client=make_client
+            agent, api_kwargs, make_client=checked_make_client
         )
     except BaseException as exc:
         runtime.record_failure(model, exc)
@@ -1513,10 +1565,17 @@ def direct_api_call(agent, api_kwargs: dict):
     # Only a clean return may report the reuse reason (request_complete):
     # after an error or interrupt the wire client is really closed so the
     # retry builds a fresh pool (see _REQUEST_CLIENT_REUSE_REASONS).
+    def check_attempt_active():
+        with request_client_lock:
+            if request_state["cancelled"]:
+                raise InterruptedError("Direct request cancelled while queued")
+            if request_state["stale"]:
+                raise TimeoutError("Direct request expired while queued")
+
     succeeded = False
     try:
         response = _dispatch_nonstreaming_api_request(
-            agent, api_kwargs, make_client=_make_client
+            agent, api_kwargs, make_client=_make_client, attempt_cancel_check=check_attempt_active
         )
     except Exception:
         if getattr(agent, "_interrupt_requested", False):
@@ -1611,6 +1670,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # a network bug and surfaced to the caller. (PR #6600 — cascading interrupt
     # hang.)
     _request_cancelled = {"value": False}
+    attempt_cancel_reason = {"value": None}
+
+    def check_attempt_active():
+        reason = attempt_cancel_reason["value"]
+        if reason == "local_attempt_deadline":
+            raise LocalAttemptDeadlineExceeded("Local attempt deadline reached while queued")
+        if reason == "interrupt_abort":
+            raise InterruptedError("Request cancelled while queued")
+        if reason is not None:
+            raise TimeoutError("Non-streaming request expired while waiting for local inference")
 
     def _set_request_client(client, *, kind: str = "openai"):
         with request_client_lock:
@@ -1623,6 +1692,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
         return client
 
     def _close_request_client_once(reason: str) -> None:
+        if reason in {"local_attempt_deadline", "interrupt_abort", "stale_call_kill", "codex_ttfb_kill", "codex_stream_idle_kill"}:
+            attempt_cancel_reason["value"] = attempt_cancel_reason["value"] or reason
         # #29507: dispatch on the calling thread.
         #
         # When ``_call`` (the worker) reaches its ``finally`` it owns the
@@ -1678,6 +1749,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             result["response"] = _dispatch_nonstreaming_api_request(
                 agent,
                 api_kwargs,
+                attempt_cancel_check=check_attempt_active,
                 make_client=lambda reason, kind="openai": _set_request_client(
                     agent._create_request_anthropic_client(reason=reason)
                     if kind == "anthropic_messages"
@@ -1843,7 +1915,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
         try:
             _check_local_attempt_deadline(agent)
         except LocalAttemptDeadlineExceeded:
-            _cancel_current_stream_attempt("local_attempt_deadline")
             _close_request_client_once("local_attempt_deadline")
             raise
         t.join(timeout=0.3)
@@ -4204,6 +4275,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         attempt_request_client = {"value": None}
         attempt_stream_response = {"value": None}
 
+        def _check_stream_attempt_active():
+            if _stream_attempt_was_cancelled(stream_attempt_id):
+                raise InterruptedError("Local stream attempt cancelled before dispatch")
+
         def _open_stream(next_api_kwargs: dict[str, Any]):
             stream_kwargs = {
                 **next_api_kwargs,
@@ -4224,8 +4299,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             attempt_id = None
             model = str(stream_kwargs.get("model") or getattr(agent, "model", "") or "")
             if runtime is not None:
-                lease = runtime.acquire(
-                    model, priority=_local_inference_priority(agent)
+                lease = _acquire_local_for_agent(
+                    agent, runtime, model, attempt_cancel_check=_check_stream_attempt_active
                 )
                 metadata = _local_attempt_metadata(agent, stream_kwargs, model)
                 try:
@@ -4260,6 +4335,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 attempt_request_client["value"] = request_client
                 last_chunk_time["t"] = time.time()
                 agent._touch_activity("waiting for provider response (streaming)")
+                _check_stream_attempt_active()
                 raw_stream = request_client.chat.completions.create(**stream_kwargs)
                 if runtime is not None and lease is not None:
                     from hermes_cli.hussh_one_routing.local_runtime import LeasedStream

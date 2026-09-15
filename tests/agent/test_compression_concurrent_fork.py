@@ -2111,3 +2111,54 @@ def test_exact_cooldown_restore_api_propagates_sqlite_write_failure(
                 "error": "must propagate",
             },
         )
+
+
+@pytest.mark.parametrize('record_before_rollback', [True, False])
+def test_timeout_cancellation_preserves_host_cooldown(tmp_path, record_before_rollback):
+    from agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from agent.conversation_compression import CompressionCommitFence
+
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    session_id = 'SYNTHETIC_TIMEOUT'
+    db.create_session(session_id, source='cli')
+    agent = _build_agent_with_db(db, session_id, stub_compressor=False)
+    agent._compression_feasibility_checked = True
+    agent.compression_in_place = True
+    compressor = agent.context_compressor
+    fence = CompressionCommitFence()
+    started, release = threading.Event(), threading.Event()
+    messages = [{'role': 'user', 'content': f'm{i}'} for i in range(20)]
+    result = {}
+
+    def stalled(*_args, **_kwargs):
+        started.set()
+        assert release.wait(5)
+        raise AuxiliaryExplicitCancellation()
+
+    compressor.compress = stalled
+    def compress():
+        result['value'] = agent._compress_context(messages, 'sys', approx_tokens=120_000,
+                                                   force=True, commit_fence=fence)
+    worker = threading.Thread(target=compress)
+    worker.start()
+    try:
+        assert started.wait(5)
+        assert fence.try_cancel_before_commit('inactivity_timeout')
+        if record_before_rollback:
+            compressor.record_timeout_failure('synthetic host timeout')
+        release.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        if not record_before_rollback:
+            compressor.record_timeout_failure('synthetic host timeout')
+        assert result['value'][0] is messages
+        assert compressor._consecutive_timeout_failures == 1
+        assert compressor._summary_failure_cooldown_until > time.monotonic()
+        row = db.get_compression_failure_cooldown_row(session_id)
+        assert row['error'] == 'synthetic host timeout'
+        assert row['cooldown_until'] > time.time()
+        assert db.get_compression_lock_holder(session_id) is None
+    finally:
+        release.set()
+        worker.join(5)
+        db.close()
