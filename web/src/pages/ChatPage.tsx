@@ -39,7 +39,7 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
-import { ptyAttachToken } from "@/lib/pty-attach-token";
+import { chatPtyIdentity } from "@/lib/pty-attach-token";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CLOSE_ABNORMAL,
@@ -85,20 +85,6 @@ import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
-
-// Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
-function generateChannelId(scope?: string): string {
-  const prefix = scope ? "chat" : "chat-fresh";
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Math.random().toString(36).slice(2)}-${Date.now().toString(
-    36,
-  )}`;
-}
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
 // with cream foreground — we intentionally don't pick monokai or a loud
@@ -182,6 +168,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setHasActivated((prev) => latchChatActivation(prev, isActive));
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
+  const resumeParam = searchParams.get("resume");
+  const { profile: scopedProfile } = useProfileScope();
+  const identityScope = JSON.stringify([resumeParam, scopedProfile]);
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   // In gated (OAuth) mode the server intentionally omits the session token —
@@ -276,6 +265,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
   }, []);
   const startFreshPty = useCallback(() => {
+    chatPtyIdentity(identityScope, true);
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
     unopenedAttemptsRef.current = 0;
@@ -289,11 +279,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyStopReason(null);
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
-  }, [clearReconnectTimer]);
+  }, [clearReconnectTimer, identityScope]);
   const startFreshDashboardChat = useCallback(() => {
     const next = new URLSearchParams(searchParams);
 
     next.delete("resume");
+    chatPtyIdentity(JSON.stringify([null, scopedProfile]), true);
     forceFreshPtyRef.current = true;
     reconnectAttemptRef.current = 0;
     unopenedAttemptsRef.current = 0;
@@ -308,7 +299,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyStopReason(null);
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
-  }, [clearReconnectTimer, searchParams, setSearchParams]);
+  }, [clearReconnectTimer, searchParams, setSearchParams, scopedProfile]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -360,21 +351,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     [terminalBg, terminalFg],
   );
 
-  // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
-  // switches. That is great for ordinary /chat navigation, but it means query
-  // param changes do NOT remount the component. Resume-in-chat from the
-  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
-  // treat the current resume target as part of the PTY identity and rebuild the
-  // terminal session when it changes.
-  const resumeParam = searchParams.get("resume");
-  // Profile-scoped chat: spawn the PTY under the globally selected
-  // management profile. Changing it remounts the terminal (key below /
-  // effect dep) so the user explicitly starts a fresh scoped session.
-  const { profile: scopedProfile } = useProfileScope();
-  const channel = useMemo(
-    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
-    [resumeParam, scopedProfile],
+  // Reconnects reuse both identities. Explicit fresh-chat actions rotate the
+  // stored pair before incrementing reconnectNonce; profile/resume changes
+  // select a separately scoped pair.
+  const attachment = useMemo(
+    () => chatPtyIdentity(identityScope),
+    [identityScope, reconnectNonce],
   );
+  const channel = attachment.channel;
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
@@ -1214,7 +1198,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      params.attach = attachment.attach;
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -1621,6 +1605,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    attachment.attach,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
