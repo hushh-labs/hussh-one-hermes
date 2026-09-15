@@ -41,3 +41,34 @@ export function ptyAttachToken(rotate = false): string {
 
   return token;
 }
+
+export interface ChatPtyIdentity {
+  attach: string;
+  channel: string;
+}
+
+const ephemeralIdentities = new Map<string, ChatPtyIdentity>();
+
+/** Keep the PTY publisher and sidebar subscriber together across reloads. */
+export function chatPtyIdentity(scope: string, rotate = false): ChatPtyIdentity {
+  const key = `${PTY_ATTACH_TOKEN_KEY}.identity.${encodeURIComponent(scope)}`;
+  if (!rotate) {
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(key) ?? "null");
+      if (/^[a-f0-9]{32}$/.test(saved?.attach) && /^chat-[a-f0-9]{32}$/.test(saved?.channel)) {
+        return saved;
+      }
+    } catch {
+      const saved = ephemeralIdentities.get(key);
+      if (saved) return saved;
+    }
+  }
+  const identity = { attach: randomToken(), channel: `chat-${randomToken()}` };
+  ephemeralIdentities.set(key, identity);
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(identity));
+  } catch {
+    // A blocked store keeps this page's identity, but cannot survive a reload.
+  }
+  return identity;
+}

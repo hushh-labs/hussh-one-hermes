@@ -252,6 +252,20 @@ set_config_defaults() {
     warn "Hermes binary unavailable; config defaults were not written"
     return 0
   fi
+  # Inspect the authored YAML before config writes materialize fallback defaults.
+  # Existing explicit true/false preferences remain authoritative.
+  local streaming_default
+  streaming_default="$("$(python_bin)" - <<'PYCONFIG'
+import yaml
+from hermes_cli.config import get_config_path
+path = get_config_path()
+config = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+print("preserve" if "streaming" in ((config or {}).get("display") or {}) else "enable")
+PYCONFIG
+)"
+  if [[ "$streaming_default" == "enable" ]]; then
+    run_cmd "$hermes" config set display.streaming true
+  fi
   run_cmd "$hermes" config set display.skin hussh-one
   run_cmd "$hermes" config set dashboard.theme hussh-one
 
