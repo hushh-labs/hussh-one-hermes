@@ -58,12 +58,13 @@ preserved forever in the tag `safety/hussh-one-hermes-20260607-232148`.
 1. **Never create a second long-lived "trunk-like" branch.** Feature work goes
    on short-lived `feat/*` / `fix/*` branches that merge into `main` and are
    then deleted. `main` is the only place that accumulates Hussh One identity.
-2. **Always commit/push to `main`.** Before starting work, confirm you're on it:
-   `git branch --show-current` must print `main`.
+2. **Deliver changes through reviewed PRs and the protected merge queue.**
+   Keep the running installation on clean `main`; use an isolated worktree for
+   development. Never push directly to `main`.
 3. **The running gateway uses THIS checkout's venv** (`.venv`), so whatever is on
    `main` here is what actually runs after a restart. There is no separate
    "runtime" branch to keep in sync.
-4. The remotes are fixed: `origin` → `hushh-labs/hussh-one-hermes` (our private
+4. The remotes are fixed: `origin` → `hushh-labs/hussh-one-hermes` (our public
    canonical repo), `upstream` → `NousResearch/hermes-agent` (official Hermes).
    `upstream` is input only. Disable its push URL once per clone so an
    accidental `git push upstream` cannot target the official repository:
@@ -81,16 +82,16 @@ fast-forwarded `main`. Restart and final service verification must run from that
 canonical `main` checkout. A pushed branch or open PR alone is not a completed
 Hussh One deployment.
 
-Required final check:
+Required final check, after the protected queue merges the release:
 
 ```bash
-git switch main
-git pull --ff-only origin main
-test "$(git branch --show-current)" = main
-test -z "$(git status --porcelain)"
-scripts/hussh-one-supervisor.sh restart --manager auto --clean-conflicts
+scripts/hussh-one-upstream-update.sh --apply --restart
 scripts/hussh-one-doctor.sh --require-services
 ```
+
+Verify both the checkout SHA and each running service's revision. A successful
+pull, build, or health response alone does not prove that a process adopted the
+release. Preserve session stores and installation configuration during recovery.
 
 ## Remotes & Sync State (quick check)
 
@@ -106,42 +107,16 @@ git log origin/main..HEAD --oneline             # unpushed local commits (should
 
 ## Update Flow (pulling latest official Hermes)
 
-Never test a large upstream merge on the running `main` checkout. Reconcile it
-on a short-lived `sync/upstream-<date>` branch, where upstream changes win by
-default and every Hussh exception must be reapplied deliberately. Only merge
-that verified branch into `main` after the guard and live smoke pass.
+Official Hermes reconciliation belongs to the maintainer workflow
+`hussh-one-upstream-pr.yml`. It opens or updates one `sync/upstream-central`
+PR. Resolve conflicts in that isolated branch, run the guard and the selected
+local model acceptance, then submit the PR to the same protected merge queue
+as other changes. Installation schedules never reconcile upstream.
 
-```bash
-git switch main
-git status --short                              # working tree must be clean (stash if not)
-git fetch upstream --tags --quiet
-
-# 1. Safety net — immutable, survives even a botched merge. Push it offsite too.
-TS=$(date +%Y%m%d-%H%M%S)
-git tag "safety/main-$TS" main
-git push origin "safety/main-$TS"
-
-# 2. Reconcile official Hermes away from the running trunk.
-git switch -c "sync/upstream-$(date +%Y%m%d)" main
-git merge --no-ff upstream/main
-
-# 3. Resolve conflicts by taking upstream's generic behavior first, then add
-#    only documented Hussh overlays (see the playbook below).
-scripts/hussh-one-guard.sh
-
-# 4. Run the real local route smoke before changing the runtime branch.
-.venv/bin/hermes chat --provider=google-vertex-claude -m claude-opus-4-8 -q "reply with ok"
-
-# 5. Fast, reviewable handoff into the sole runtime trunk, then restart.
-git switch main
-git merge --no-ff "sync/upstream-$(date +%Y%m%d)"
-git push origin main
-scripts/hussh-one-restart.sh        # or: hermes gateway restart
-```
-
-To abort a merge that has gone wrong before committing: `git merge --abort`.
-To roll back a bad merge that was already committed but not pushed:
-`git reset --hard safety/main-<TS>`.
+If an uncommitted conflict cannot be resolved, use `git merge --abort` in the
+sync worktree. For a released regression, prepare and test a revert PR through
+the protected queue. Do not reset shared history or restart an installation
+whose dependencies, builds, or guards failed verification.
 
 ### Daily fleet synchronization
 
@@ -158,7 +133,7 @@ single `sync/upstream-central` branch. Conflicts require maintainer resolution;
 no code from the import runs with the workflow's write token. A successful
 proposal is still unverified until its PR and merge-group checks pass.
 
-`main` uses a one-entry native merge queue. Its required checks are
+The release policy requires a one-entry native merge queue on `main`. Its required checks are
 `All required checks pass`, `Hussh One guard`, and `Muse Glimmer acceptance`.
 The latter is published by the maintainer only after the exact candidate SHA
 passes the isolated local harness. Never copy a status from another SHA.
@@ -173,15 +148,13 @@ that enforcement is active.
 
 ### Fresh remote-push verification
 
-Every push to `origin/main` also runs `.github/workflows/hussh-one-fresh-sync.yml`.
-It starts from a fresh checkout, re-establishes the read-only official Hermes
-remote, rebuilds the Python and locked Node dependencies, runs the Hussh guard,
-and reports whether an official update is available. This catches a machine
-whose installed dependencies or remotes happened to mask an integration issue.
-
-The remote workflow is verification-only: it never writes to `main` or to
-official Hermes. The guarded daily updater remains the sole automated path
-that can merge a stable official update and push the verified result.
+Pull requests, merge groups, and pushes to `origin/main` run
+`.github/workflows/hussh-one-fresh-sync.yml`. It checks a fresh checkout,
+installs locked dependencies, builds assets, and runs the Hussh guard.
+The workflow is verification-only and never writes to `main` or official
+Hermes. Only the central upstream PR workflow proposes imported code; its
+proposal must pass review and the protected queue before installations consume
+it. PRs created with the workflow token may need a maintainer-triggered CI run.
 
 ## Conflict-Resolution Playbook
 
@@ -210,10 +183,8 @@ python -c "import agent.conversation_loop, gateway.run, gateway.platforms.whatsa
 node --check scripts/whatsapp-bridge/bridge.js
 ```
 
-`hermes update` knows how to fetch official Hermes through the `upstream` remote,
-but prefer the explicit flow above whenever Hussh One has carried commits,
-because it leaves merge conflicts visible and makes the guard mandatory before
-restart.
+Use the consumer updater above for Hussh One installations. The generic
+`hermes update` upstream reconciliation path is not the scheduled release path.
 
 ## WhatsApp Delivery Contract
 

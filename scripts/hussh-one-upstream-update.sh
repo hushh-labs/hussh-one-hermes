@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
-# Safely reconcile and distribute the official Hermes upstream for Hussh One.
+# Consume verified Hussh One main without per-installation upstream merging.
 
 set -Eeuo pipefail
 
@@ -166,7 +166,7 @@ check_update() {
     log "Hussh One is current with official Hermes (Hussh overlay commits: $ahead)."
   else
     log "Official Hermes update available: $behind upstream commit(s); Hussh overlay commits: $ahead."
-    log "Run scripts/hussh-one-upstream-update.sh --apply to reconcile it through the guard."
+    log "Official imports are proposed by the central upstream PR workflow."
   fi
 }
 
@@ -333,7 +333,7 @@ case "$MANAGER" in auto|launchd|systemd|s6|screen) ;; *) die "unsupported manage
 if [[ "$ACTION" == "apply" && "$DRY_RUN" == "1" ]]; then
   verify_repository_contract
   log "dry-run: no commits, dependencies, cron jobs or services will be changed."
-  log "dry-run: would fetch origin and upstream, validate fork updates, and preview native reconciliation."
+  log "dry-run: would fetch origin/main, validate locked dependencies and assets, reconcile jobs, and restart if requested."
   exit 0
 fi
 case "$ACTION" in check) check_update ;; apply) apply_update ;; install-daily) install_daily ;; remove-daily) remove_daily ;; status) schedule_status ;; esac
