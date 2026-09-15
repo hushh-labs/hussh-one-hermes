@@ -70,3 +70,35 @@ old shell. A second-install rehearsal must explicitly cover this first update;
 ordinary tests starting with the new updater do not prove migration safety.
 The old invocation must not continue into upstream reconciliation or restart
 before the new locked-dependency and guard checks have succeeded.
+
+### Safe first-upgrade procedure under review
+
+A one-time migration must quiesce the old schedule, verify no updater is
+active, pin a clean fast-forward from the canonical origin, and write the
+existing pending-validation marker before advancing the checkout. It can
+then invoke the new updater entrypoint to install locked dependencies, build,
+run guards, reconcile jobs, and restart. Restore scheduling only after success.
+This procedure has been source-reviewed but has not been rehearsed against the
+historical installation. A plain manual pull is insufficient: without the
+pending marker, the new updater treats the matching SHA as a no-op.
+
+## Separate PR 18 purpose/gap review
+
+Inspected PR 18 at `7f34a1edfadb90a838e8f1c51f7a66f834726aaf`, specifically
+`hermes_cli/hussh_one_burst/mcp_server.py` and `execution.py`, plus its changed
+file inventory. This was source inspection only, not cloud validation or a
+complete security review.
+
+The MCP run tool requests approval before calling the provisioning lifecycle.
+It calls `run_burst` without an execution callback: the current path provisions
+and releases hardware but does not execute a transferred workload. Payload
+transfer and its consent boundary remain separate work. This does not repair
+local LM Studio cancellation, admission, streaming, or sidebar continuity.
+
+The tool description's claim that teardown is guaranteed is stronger than the
+implementation: `execution.py` records teardown failures and potentially leaked
+instances. Its local deadline is checked after the callback returns; a hung
+callback cannot trigger that check. Cloud-side termination safeguards require
+independent provider verification. Review those claims and orphan recovery
+before approving the cloud capability. No resources were provisioned and PR 18
+was not modified or merged during this repair.
