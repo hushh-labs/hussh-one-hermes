@@ -303,6 +303,15 @@ The guard checks:
 
 ## Runaway local-model protection
 
+Hussh One defaults to `agent.max_turns: unlimited`, using Hermes' supported
+turn-limit setting. Bootstrap writes this explicitly when no limit is set and
+preserves an existing operator limit. Existing profiles with a numeric limit
+(including historical values such as 90) can opt in with
+`hermes config set agent.max_turns unlimited`. Resume the saved conversation
+in a newly initialized runtime to pick up the setting. Unlimited iterations
+do not disable failure/no-progress guardrails, context compaction, or request
+timeouts. The default does not depend on the selected model.
+
 Hussh One bootstrap enables Hermes' existing per-turn tool-loop guardrail. It
 halts only after repeated failures in the same turn (three identical failed
 calls or five failures from the same tool path). A successful call resets the

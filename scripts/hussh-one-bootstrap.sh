@@ -246,6 +246,7 @@ set_config_defaults() {
   local hermes
   local model_provider
   local model_default
+  local turn_limit
   hermes="$(hermes_bin)"
   if [[ "$DRY_RUN" != "1" && ! -x "$hermes" ]]; then
     warn "Hermes binary unavailable; config defaults were not written"
@@ -272,6 +273,18 @@ set_config_defaults() {
     run_cmd "$hermes" config set model.provider gemini
     run_cmd "$hermes" config set model.default gemini-3.7-flash
   fi
+  # Make the product default explicit. Existing positive operator limits
+  # remain opt-in; do not guess whether an old value (such as 90) was chosen.
+  turn_limit=""
+  if [[ "$DRY_RUN" != "1" ]]; then
+    turn_limit="$("$hermes" config get agent.max_turns 2>/dev/null || true)"
+  fi
+  case "$turn_limit" in
+    ""|None|null|"Config key not set:"*)
+      run_cmd "$hermes" config set agent.max_turns unlimited
+      ;;
+    *) log "Preserving configured turn limit: $turn_limit" ;;
+  esac
   run_cmd "$hermes" config set agent.reasoning_effort high
   run_cmd "$hermes" config set display.show_reasoning true
   # Compact sessions well before the dashboard memory ceiling so a long Hussh
