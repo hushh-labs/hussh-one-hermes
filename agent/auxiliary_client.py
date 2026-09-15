@@ -532,6 +532,7 @@ def aux_progress_hook(hook):
 def _run_protected_sync_provider_call(
     callback: Callable[[dict[str, Any]], Any],
     kwargs: dict[str, Any],
+    on_cancel: Optional[Callable[[], None]] = None,
 ) -> Any:
     """Run one protected provider callback in an attempt-isolated daemon.
 
@@ -587,10 +588,14 @@ def _run_protected_sync_provider_call(
         # wins whenever result publication and the host Event become visible in
         # the same polling interval.
         if _captured_aux_cancel_requested(cancel_check):
+            if on_cancel is not None:
+                on_cancel()
             raise AuxiliaryExplicitCancellation()
         if not done.wait(0.02):
             continue
         if _captured_aux_cancel_requested(cancel_check):
+            if on_cancel is not None:
+                on_cancel()
             raise AuxiliaryExplicitCancellation()
         exception = outcome.get("exception")
         if exception is not None:
@@ -3477,23 +3482,34 @@ def _relay_sync_completion(
     *,
     provider: str | None = None,
     api_mode: str | None = None,
-    create: Callable[[dict[str, Any]], Any] | None = None,
+    create: Callable[[Any, dict[str, Any]], Any] | None = None,
 ) -> Any:
-    callback = create or (lambda request: client.chat.completions.create(**request))
-    lease = _local_auxiliary_lease(client, kwargs)
+    import openai
+    create_request = create or (lambda request_client, request: request_client.chat.completions.create(**request))
+    callback = lambda request: create_request(client, request)
+    local_request = None
+    if isinstance(client, openai.OpenAI) and is_local_endpoint(str(client.base_url)):
+        from agent.local_auxiliary_request import LocalAuxiliaryRequest
+        local_request = LocalAuxiliaryRequest(
+            client, lambda: _local_auxiliary_lease(client, kwargs),
+            verify=_resolve_aux_verify(str(client.base_url)),
+            purpose=str((_RELAY_AUX_CALL_CONTEXT.get() or {}).get("task") or "auxiliary"),
+        )
+        callback = lambda request: local_request.run(request, create_request)
+    lease = None if local_request else _local_auxiliary_lease(client, kwargs)
     try:
         route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
         # Protected compression calls isolate only the provider callback and
         # stream aggregation. The owning thread remains free to unwind its
         # lease/DB transaction on hard cancel without touching the client.
         if route is None:
-            return _run_protected_sync_provider_call(callback, kwargs)
+            return _run_protected_sync_provider_call(callback, kwargs, on_cancel=local_request.cancel if local_request else None)
         provider_name, fallback_model, metadata = route
         from agent import relay_llm
 
         return relay_llm.execute_current(
             kwargs,
-            lambda request: _run_protected_sync_provider_call(callback, request),
+            lambda request: _run_protected_sync_provider_call(callback, request, on_cancel=local_request.cancel if local_request else None),
             name=provider_name,
             model_name=str(kwargs.get("model") or fallback_model),
             metadata=metadata,
@@ -9214,6 +9230,8 @@ def _create_with_progress(
     stream-only provider rejects the plain call by definition, so the
     original error is surfaced to the normal recovery chains instead.
     """
+    if _aux_interrupt_cancel_requested():
+        raise AuxiliaryExplicitCancellation()
     _notify_aux_progress()  # request dispatched counts as progress
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
         return client.chat.completions.create(**kwargs)
@@ -9225,6 +9243,8 @@ def _create_with_progress(
     try:
         chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
+        if _aux_interrupt_cancel_requested():
+            raise AuxiliaryExplicitCancellation()
         # Genuine provider failures (auth, credit, rate limit, network) are
         # not streaming's fault — surface them unchanged so the existing
         # recovery chains (credential refresh, pool rotation, provider
@@ -9275,6 +9295,8 @@ def _aggregate_chat_stream(
     acc = _ChatStreamAccumulator(model=model, total_ceiling=total_ceiling)
     try:
         for chunk in chunks:
+            if _aux_interrupt_cancel_requested():
+                raise AuxiliaryExplicitCancellation()
             acc.feed(chunk)
     finally:
         close_fn = getattr(chunks, "close", None)
@@ -9747,8 +9769,8 @@ def _call_llm_impl(
                     kwargs,
                     provider=request_provider,
                     api_mode=resolved_api_mode,
-                    create=lambda request: _create_with_progress(
-                        client,
+                    create=lambda request_client, request: _create_with_progress(
+                        request_client,
                         request,
                         task,
                         force_stream=_provider_requires_stream(
@@ -9794,8 +9816,8 @@ def _call_llm_impl(
                             kwargs,
                             provider=request_provider,
                             api_mode=resolved_api_mode,
-                            create=lambda request: _create_with_progress(
-                                client,
+                            create=lambda request_client, request: _create_with_progress(
+                                request_client,
                                 request,
                                 task,
                                 force_stream=_provider_requires_stream(

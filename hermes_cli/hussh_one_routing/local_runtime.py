@@ -375,15 +375,20 @@ class LocalInferenceAdmission:
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         wait: float = DEFAULT_ADMISSION_WAIT_S,
         priority: str = "interactive",
+        check_cancel: Optional[Callable[[], None]] = None,
+        on_wait: Optional[Callable[[], None]] = None,
     ) -> AdmissionLease:
         from agent.local_admission import acquire_process_permit
 
+        started = time.monotonic()
         lease = cls._acquire_thread_permit(
-            key, max_concurrency=max_concurrency, wait=wait, priority=priority
+            key, max_concurrency=max_concurrency, wait=wait, priority=priority,
+            check_cancel=check_cancel, on_wait=on_wait,
         )
         try:
             lease._process_permit = acquire_process_permit(
-                key, max_concurrency, wait, priority
+                key, max_concurrency, max(0.0, wait - (time.monotonic() - started)), priority,
+                check_cancel=check_cancel, on_wait=on_wait
             )
             return lease
         except TimeoutError as exc:
@@ -396,6 +401,8 @@ class LocalInferenceAdmission:
     @classmethod
     def _acquire_thread_permit(
         cls, key: str, *, max_concurrency: int, wait: float, priority: str,
+        check_cancel: Optional[Callable[[], None]] = None,
+        on_wait: Optional[Callable[[], None]] = None,
     ) -> AdmissionLease:
         key = str(key or "local").strip()
         limit = max(1, int(max_concurrency))
@@ -413,21 +420,27 @@ class LocalInferenceAdmission:
                 pool.interactive_waiters += 1
             else:
                 pool.background_waiters += 1
+            waiting_reported = False
             try:
                 while True:
+                    if check_cancel is not None:
+                        check_cancel()
                     interactive_priority = (
                         priority == "interactive" or pool.interactive_waiters == 0
                     )
                     if pool.active < pool.limit and interactive_priority:
                         pool.active += 1
                         return AdmissionLease(pool, key)
+                    if not waiting_reported and on_wait is not None:
+                        on_wait()
+                        waiting_reported = True
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise LocalModelOverloaded(
                             f"local inference admission is full for {key}; "
                             f"priority={priority} waited {timeout:.2f}s"
                         )
-                    pool.condition.wait(timeout=remaining)
+                    pool.condition.wait(timeout=min(remaining, 0.05))
             finally:
                 pool.waiters = max(0, pool.waiters - 1)
                 if priority == "interactive":
@@ -526,6 +539,8 @@ class LocalRuntime:
         *,
         wait: float = DEFAULT_ADMISSION_WAIT_S,
         priority: str = "interactive",
+        check_cancel: Optional[Callable[[], None]] = None,
+        on_wait: Optional[Callable[[], None]] = None,
     ) -> AdmissionLease:
         model = str(model or "").strip()
         key = self.key(model)
@@ -536,7 +551,7 @@ class LocalRuntime:
             self.resolver.invalidate(model)
             self.circuit.record_failure(key, exc)
             raise
-        return LocalInferenceAdmission.acquire(key, wait=wait, priority=priority)
+        return LocalInferenceAdmission.acquire(key, wait=wait, priority=priority, check_cancel=check_cancel, on_wait=on_wait)
 
     def record_success(self, model: str) -> None:
         self.circuit.record_success(self.key(model))
