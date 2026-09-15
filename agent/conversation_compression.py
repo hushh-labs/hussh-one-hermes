@@ -334,8 +334,12 @@ def _restore_compressor_attempt_state(
     *,
     durable_cooldown_authoritative: Optional[bool] = None,
     durable_cooldown_state: Optional[dict[str, Any]] = None,
+    preserve_cooldown: bool = False,
 ) -> None:
     """Restore the safe per-attempt snapshot after a pre-commit hard cancel."""
+    if preserve_cooldown:
+        snapshot = {key: value for key, value in snapshot.items()
+                    if key not in (*_COMPRESSOR_COOLDOWN_STATE_FIELDS, "_consecutive_timeout_failures")}
     # A successful summary clears the durable cooldown before the outer commit
     # boundary. Recreate (or clear) that row before restoring exact in-memory
     # values, otherwise the next refresh would overwrite this rollback. Unknown
@@ -481,6 +485,7 @@ class CompressionCommitFence:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._cancelled = False
+        self.cancellation_reason: Optional[str] = None
         self._commit_started = False
         # Lock-free commit-phase marker (#76354 review F1). ``begin_commit``
         # RETAINS ``self._lock`` until ``finish_commit``, so any host-side
@@ -539,12 +544,13 @@ class CompressionCommitFence:
                 if cancel_event is not None:
                     cancel_event.set()
                 return False
+            self.cancellation_reason = self.cancellation_reason or "explicit_interrupt"
             self._cancelled = True
             if cancel_event is not None:
                 cancel_event.set()
             return True
 
-    def try_cancel_before_commit(self) -> Optional[bool]:
+    def try_cancel_before_commit(self, reason: str = "commit_fence_cancelled") -> Optional[bool]:
         """Non-blocking form of :meth:`cancel_before_commit`.
 
         Returns ``None`` while an active commit owns the fence, allowing an
@@ -555,6 +561,7 @@ class CompressionCommitFence:
         try:
             if self._commit_started:
                 return False
+            self.cancellation_reason = self.cancellation_reason or reason
             self._cancelled = True
             return True
         finally:
@@ -842,6 +849,19 @@ def resolve_context_compression_timeouts(
     return idle, ceiling
 
 
+class CompressionAttemptCancellation:
+    """One attempt observes both host stop and timeout commit revocation."""
+    def __init__(self, fence, hard_interrupt=None):
+        self.fence = fence
+        self.hard_interrupt = hard_interrupt
+
+    def is_set(self):
+        return bool(
+            (self.hard_interrupt is not None and self.hard_interrupt.is_set())
+            or (self.fence is not None and self.fence.is_cancelled)
+        )
+
+
 def run_compress_context_with_progress_timeout(
     *,
     worker: Callable[[CompressionCommitFence], Tuple[list, str]],
@@ -1009,7 +1029,9 @@ def run_compress_context_with_progress_timeout(
             if fence.commit_in_flight:
                 cancelled = False
                 break
-            cancelled = fence.try_cancel_before_commit()
+            cancelled = fence.try_cancel_before_commit(
+                "total_deadline" if time.monotonic() - wait_started >= ceiling else "inactivity_timeout"
+            )
             if cancelled is None:
                 # Round-2 #5: the fence is only held transiently here (lock
                 # setup / cancel admission — an in-flight commit is caught by
@@ -3150,7 +3172,7 @@ def compress_context(
                 compressed = messages
             else:
                 with aux_progress_hook(_progress_hook), aux_interrupt_protection(
-                    cancel_event=_hard_cancel_event
+                    cancel_event=CompressionAttemptCancellation(commit_fence, _hard_cancel_event)
                 ):
                     compressed = compress_fn(messages, **compress_kwargs)
                     # Freeze a hard stop that arrived after the final provider
@@ -3174,6 +3196,7 @@ def compress_context(
                 _compressor_attempt_snapshot,
                 durable_cooldown_authoritative=_durable_cooldown_authoritative,
                 durable_cooldown_state=_durable_cooldown_state,
+                preserve_cooldown=(commit_fence is not None and commit_fence.cancellation_reason in {"inactivity_timeout", "total_deadline"}),
             )
         except BaseException as _rollback_exc:
             # Compensation failure must surface, but it must not strand the
@@ -3209,7 +3232,7 @@ def compress_context(
             started_at=_attempt_started_at,
             commit_status="aborted",
             split_status="aborted",
-            failure_class="explicit_interrupt",
+            failure_class=((commit_fence.cancellation_reason if commit_fence is not None else None) or "explicit_interrupt"),
         )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
@@ -3341,6 +3364,7 @@ def compress_context(
                     _compressor_attempt_snapshot,
                     durable_cooldown_authoritative=_durable_cooldown_authoritative,
                     durable_cooldown_state=_durable_cooldown_state,
+                    preserve_cooldown=(commit_fence is not None and commit_fence.cancellation_reason in {"inactivity_timeout", "total_deadline"}),
                 )
                 if (
                     messages_before_compression is not None

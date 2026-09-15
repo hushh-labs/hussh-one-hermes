@@ -156,8 +156,8 @@ def _invoke_generic(client: Any) -> Any:
     return aux._relay_sync_completion(
         client,
         {"model": "test", "messages": [], "timeout": 30},
-        create=lambda request: aux._create_with_progress(
-            client, request, "compression", force_stream=True
+        create=lambda request_client, request: aux._create_with_progress(
+            request_client, request, "compression", force_stream=True
         ),
     )
 

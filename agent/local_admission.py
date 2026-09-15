@@ -77,7 +77,7 @@ class ProcessPermit:
                 logger.info("local_inference_idle_sleep_prevention active=false")
 
 
-def acquire_process_permit(key: str, capacity: int, wait: float, priority: str) -> ProcessPermit:
+def acquire_process_permit(key: str, capacity: int, wait: float, priority: str, check_cancel=None, on_wait=None) -> ProcessPermit:
     """Claim a permit atomically; never expire a live process's active claim.
 
     Capacity is pinned by the first claimant for a key. Changing per-call
@@ -94,7 +94,10 @@ def acquire_process_permit(key: str, capacity: int, wait: float, priority: str) 
             conn.execute("INSERT INTO inference_queue VALUES (?, ?, ?, ?, ?, ?, 0)",
                          (ticket, key, os.getpid(), psutil.Process().create_time(),
                           0 if priority == "interactive" else 1, time.time()))
+        waiting_reported = False
         while True:
+            if check_cancel is not None:
+                check_cancel()
             conn.execute("BEGIN IMMEDIATE")
             try:
                 rows = conn.execute("SELECT ticket,pid,birth FROM inference_queue WHERE key=?", (key,)).fetchall()
@@ -114,6 +117,9 @@ def acquire_process_permit(key: str, capacity: int, wait: float, priority: str) 
             if granted:
                 permit.prevent_idle_sleep()
                 return permit
+            if not waiting_reported and on_wait is not None:
+                on_wait()
+                waiting_reported = True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Local inference capacity is occupied")
