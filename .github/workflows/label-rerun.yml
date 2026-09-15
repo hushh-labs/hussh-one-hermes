@@ -37,6 +37,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
 
@@ -80,6 +81,15 @@ jobs:
               echo "Run is still $STATUS after wait — giving up."
               exit 0
             fi
+          fi
+
+          # A push may have superseded this label event while we waited.
+          # Never let an old rerun cancel the current PR checks.
+          CURRENT_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid') || exit 1
+          CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO" --json conclusion --jq '.conclusion') || exit 1
+          if [ "$CURRENT_HEAD" != "$HEAD_SHA" ] || [ "$CONCLUSION" = "cancelled" ]; then
+            echo "The selected run was superseded or cancelled; leaving current CI untouched."
+            exit 0
           fi
 
           echo "Run completed. Rerunning all failed jobs..."

@@ -40,20 +40,16 @@ scripts/hussh-one-doctor.sh --require-services
 scripts/hussh-one-guard.sh
 ```
 
-Before merging official Hermes updates:
+Install reviewed releases through the consumer updater:
 
 ```bash
-git fetch upstream main --tags
-git switch main
-git branch "backup/hussh-one-before-upstream-$(date +%Y%m%d-%H%M%S)"
-git switch -c "sync/upstream-$(date +%Y%m%d)"
-git merge --no-ff upstream/main
-scripts/hussh-one-guard.sh
+scripts/hussh-one-upstream-update.sh --apply --restart
 ```
 
-Do not restart from this branch. Run the Vertex smoke, merge the verified sync
-branch into `main`, then restart. The complete conflict and rollback procedure
-is in [Upstream maintenance](./hussh-one-upstream-maintenance.md).
+Official Hermes imports are proposed centrally and pass the protected merge
+queue before installation. Verify the running dashboard and gateway revisions,
+not just the checkout. The conflict and revert procedure is in
+[Upstream maintenance](./hussh-one-upstream-maintenance.md).
 
 Keep secrets in `$HERMES_HOME/.env` or your shell. `.env.example` only documents non-secret Vertex selectors such as `GOOGLE_CLOUD_PROJECT`, `GCP_PROJECT`, and `GOOGLE_CLOUD_LOCATION`.
 

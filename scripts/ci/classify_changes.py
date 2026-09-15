@@ -92,6 +92,8 @@ _PY_RELEVANT_SITE = (
 # apply-patch job. The two-job split means a malicious package.json script
 # can't get push access — it runs on an ephemeral runner with zero write perms.
 _CI_REVIEW_FILES = {
+    "scripts/ci/evaluate_required_checks.py",
+    "scripts/ci/propose_upstream.py",
     ".prettierrc",
 }
 _CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")

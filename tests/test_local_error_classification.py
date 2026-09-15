@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Local transport errors must not discard context through compression."""
 import pytest
 from agent.error_classifier import classify_api_error, FailoverReason

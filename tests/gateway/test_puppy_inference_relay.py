@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Contract tests for Puppy One's inference-only relay adapter."""
 
 from __future__ import annotations

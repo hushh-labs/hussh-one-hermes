@@ -1,0 +1,28 @@
+name: Propose official Hermes update
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 9 * * *'
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: hussh-one-upstream-proposal
+  cancel-in-progress: false
+jobs:
+  propose:
+    if: github.repository == 'hushh-labs/hussh-one-hermes' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Propose without executing imported code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp scripts/ci/propose_upstream.py "$RUNNER_TEMP/propose_upstream.py"
+          python3 "$RUNNER_TEMP/propose_upstream.py"

@@ -300,3 +300,8 @@ def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
         ".github/workflows/ci.yml",
         "apps/desktop/eslint.config.mjs",
     ]
+
+
+@pytest.mark.parametrize("path", ["scripts/ci/evaluate_required_checks.py", "scripts/ci/propose_upstream.py"])
+def test_release_authority_scripts_require_review(path):
+    assert classify([path])["ci_review"] is True

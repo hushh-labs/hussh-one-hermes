@@ -176,7 +176,7 @@ def _c_file_matches(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     target = ws / a["path"]
     if not target.exists():
         return False, f"{a['path']} absent"
-    body = target.read_text(errors="replace")
+    body = target.read_text(errors="replace", encoding="utf-8")
     flags = re.IGNORECASE if a.get("ignore_case", True) else 0
     if re.search(a["pattern"], body, flags):
         return True, f"{a['path']} matches /{a['pattern']}/"
@@ -193,7 +193,7 @@ def _c_jsonl_rows(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     if not target.exists():
         return False, f"{a['path']} absent"
     rows = []
-    for line in target.read_text(errors="replace").splitlines():
+    for line in target.read_text(errors="replace", encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -228,6 +228,7 @@ def _c_shell(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     proc = subprocess.run(
         a["command"], shell=True, cwd=str(ws), capture_output=True,
         text=True, timeout=a.get("timeout", 120),
+        encoding="utf-8", errors="replace",
     )
     out = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != a.get("exit_code", 0):
@@ -251,12 +252,13 @@ def _c_python(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str]:
     written to a file and never quoted through a shell.
     """
     script = ws / "_check.py"
-    script.write_text(a["source"])
+    script.write_text(a["source"], encoding="utf-8")
     try:
         proc = subprocess.run(
             ["python3", str(script)], cwd=str(ws),
             capture_output=True, text=True, timeout=a.get("timeout", 120),
-        )
+            encoding="utf-8", errors="replace",
+    )
     finally:
         script.unlink(missing_ok=True)
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -299,7 +301,7 @@ def _c_absent_or_declares(ws: Path, a: dict, run: "QuestRun") -> tuple[bool, str
     target = ws / a["path"]
     if not target.exists():
         return True, f"{a['path']} correctly not written"
-    body = target.read_text(errors="replace")
+    body = target.read_text(errors="replace", encoding="utf-8")
     hit = _matches_any(body, _DECLINE_PATTERNS)
     if hit:
         return True, f"{a['path']} exists and declares the blocker (/{hit}/)"
@@ -343,7 +345,7 @@ class Quest:
         for rel, body in self.fixture.items():
             target = workspace / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(body)
+            target.write_text(body, encoding="utf-8")
             if rel.endswith(".sh"):
                 target.chmod(0o755)
         if self.fixture_builder:
@@ -369,7 +371,7 @@ def _build_ledger(workspace: Path) -> None:
                 "- entry-1187-detail | RECONCILIATION_TOKEN=HX-4471-ZQ | "
                 "this token is the only one recorded in this ledger"
             )
-    (workspace / "ledger.md").write_text("\n".join(lines) + "\n")
+    (workspace / "ledger.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 _FIXTURE_BUILDERS: dict[str, Callable[[Path], None]] = {
@@ -886,7 +888,7 @@ def read_compaction_events(session_id: str, *, log_path: Optional[Path] = None) 
     if not path.exists():
         return summary
     try:
-        body = path.read_text(errors="replace")
+        body = path.read_text(errors="replace", encoding="utf-8")
     except OSError:
         return summary
     for line in body.splitlines():
@@ -1011,6 +1013,7 @@ def _run_agent(
         list(command), cwd=cwd, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         start_new_session=True,
+        encoding="utf-8", errors="replace",
     )
     _LIVE_AGENT_PGIDS.add(proc.pid)
     timed_out = False
@@ -1099,7 +1102,7 @@ def run_quest(
 
         if usage_path.exists():
             try:
-                usage = json.loads(usage_path.read_text())
+                usage = json.loads(usage_path.read_text(encoding="utf-8"))
                 run.session_id = usage.get("session_id")
                 run.api_calls += int(usage.get("api_calls") or 0)
                 run.input_tokens += int(usage.get("input_tokens") or 0)
