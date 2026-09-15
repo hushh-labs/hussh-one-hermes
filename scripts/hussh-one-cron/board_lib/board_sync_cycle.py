@@ -157,13 +157,13 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
         proc = subprocess.run(
             ["git", "-C", local_repo_path, "log", "@{u}..HEAD", "--oneline"],
             capture_output=True, text=True, check=False, timeout=10
-        )
+        , encoding="utf-8")
         if proc.returncode != 0:
             # If no upstream is configured, fall back to checking against origin/main, but limit to operator's own commits
             proc = subprocess.run(
                 ["git", "-C", local_repo_path, "log", f"--author={OPERATOR_LOGIN}", "origin/main..HEAD", "--oneline"],
                 capture_output=True, text=True, check=True, timeout=10
-            )
+            , encoding="utf-8")
         lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     except Exception:
         lines = []
@@ -173,7 +173,7 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
         proc_status = subprocess.run(
             ["git", "-C", local_repo_path, "status", "--porcelain"],
             capture_output=True, text=True, check=True, timeout=10
-        )
+        , encoding="utf-8")
         status_lines = [line.strip() for line in proc_status.stdout.splitlines() if line.strip()]
     except Exception:
         status_lines = []
@@ -257,7 +257,7 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
                     "--assignee", OPERATOR_LOGIN,
                     "--label", "enhancement"
                 ]
-                proc_issue = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+                proc_issue = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30, encoding="utf-8")
                 url = proc_issue.stdout.strip()
                 new_num = int(url.rstrip("/").split("/")[-1])
 
@@ -395,7 +395,7 @@ def sync_taxonomy_fields(dry_run: bool = False) -> tuple[list[str], bool]:
         cat = json.loads(subprocess.run(
             ["gh", "project", "field-list", str(board_ops.PROJECT_NUMBER),
              "--owner", board_ops.OWNER, "--format", "json", "-L", "60"],
-            text=True, capture_output=True, timeout=60, check=True).stdout)
+            text=True, capture_output=True, timeout=60, check=True, encoding="utf-8").stdout)
         fields = {}
         for f in cat["fields"]:
             if f.get("name") in ("Sector", "Workstream"):

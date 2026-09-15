@@ -30,6 +30,7 @@ import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
 import {
+  FEATURED_ID,
   FeaturedProviderRow,
   FireworksProviderRow,
   OpenRouterProviderRow,
@@ -38,6 +39,7 @@ import {
 } from './providers'
 
 export {
+  FEATURED_ID,
   FeaturedProviderRow,
   FireworksProviderRow,
   KeyProviderRow,
@@ -403,7 +405,6 @@ function Header() {
   )
 }
 
-export const FEATURED_ID = 'nous'
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {

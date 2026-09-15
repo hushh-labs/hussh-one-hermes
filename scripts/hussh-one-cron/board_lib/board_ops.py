@@ -51,7 +51,7 @@ def run_gh(args: list[str], *, input_text: str | None = None) -> str:
                 capture_output=True,
                 check=False,
                 timeout=25,
-            )
+            encoding="utf-8")
             if proc.returncode == 0:
                 return proc.stdout
             err_msg = proc.stderr.strip() or proc.stdout.strip() or "gh command failed"

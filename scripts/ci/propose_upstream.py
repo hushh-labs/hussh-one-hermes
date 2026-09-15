@@ -13,7 +13,7 @@ BRANCH = "sync/upstream-central"
 
 
 def run(*args: str) -> str:
-    return subprocess.check_output(args, text=True).strip()
+    return subprocess.check_output(args, text=True, encoding="utf-8").strip()
 
 
 def main() -> None:

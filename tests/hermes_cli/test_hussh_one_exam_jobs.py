@@ -169,6 +169,20 @@ class TestContractChecks:
         assert _fails(J.grade(run, now=datetime(2026, 9, 2))) == {}
         assert "artifact_exists" in _fails(J.grade(run, now=datetime(2026, 10, 2)))
 
+    def test_timesheet_uses_resolved_desktop(self, tmp_path, monkeypatch):
+        desktop = tmp_path / "OneDrive" / "Desktop"
+        folder = desktop / "Timesheets_and_Reimbursements"
+        folder.mkdir(parents=True)
+        artifact = folder / "Synthetic_August2026.xlsx"
+        artifact.write_bytes(b"fixture")
+        monkeypatch.setattr(J, "_desktop_dir", lambda: desktop)
+        contract = J.contract_for("monthly-timesheet-generator")
+        found, path = J._artifact_exists(contract.artifact_glob, datetime(2026, 9, 2))
+        assert found
+        assert Path(path) == artifact
+        found, _ = J._artifact_exists(contract.artifact_glob, datetime(2026, 10, 2))
+        assert not found
+
     def test_the_rule_vocabulary_is_registered(self):
         assert "contradicts-evidence" in rules_for("cron_quality")
         assert "leaked-error" in rules_for("cron_quality")

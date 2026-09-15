@@ -199,7 +199,9 @@ export default class App extends PureComponent<Props, State> {
   get keyParseState(): KeyParseState {
     const stream = this.props.stdin as unknown as object | undefined
 
-    if (!stream) return this.detachedKeyParseState
+    if (!stream) {
+      return this.detachedKeyParseState
+    }
     return App.keyParseStates.get(stream) ?? INITIAL_STATE
   }
 

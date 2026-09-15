@@ -142,12 +142,8 @@ let
             # This keeps SKILL.md edits from rebuilding the Python venv.
             "skills"
             "optional-skills"
-            # locales/ and optional-mcps/ are bare data dirs (no
-            # __init__.py) shipped via symlinks + HERMES_BUNDLED_LOCALES
-            # / HERMES_OPTIONAL_MCPS, not via the wheel. Excluding them
-            # keeps catalog edits from rebuilding the Python venv.
-            "locales"
-            "optional-mcps"
+            # pyproject.toml declares these wheel data files explicitly;
+            # keep locales and optional MCP manifests in the build source.
           ];
         excludedFiles = [
           # JS root manifests
