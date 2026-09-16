@@ -49,6 +49,46 @@ def test_default_process_admission_is_unbounded_and_migrates_legacy_cap():
         second.release()
 
 
+def test_unbounded_admission_reaps_dead_process_claims(monkeypatch):
+    from agent import local_admission
+
+    key = "process-stale-" + str(os.getpid())
+    conn = local_admission._queue_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO inference_limits(key, capacity) VALUES (?, 0)",
+                (key,),
+            )
+            conn.execute(
+                "INSERT INTO inference_queue "
+                "(ticket, key, pid, birth, priority, queued, active) "
+                "VALUES (?, ?, ?, ?, 0, ?, 1)",
+                ("stale-ticket", key, 999999, 0.0, 0.0),
+            )
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(local_admission, "_dead", lambda _pid, _birth: True)
+    permit = local_admission.acquire_process_permit(key, None, 0, "interactive")
+    try:
+        conn = local_admission._queue_connection()
+        try:
+            rows = conn.execute(
+                "SELECT ticket, active FROM inference_queue WHERE key=?",
+                (key,),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert [(row["ticket"], row["active"]) for row in rows] == [
+            (permit.ticket, 1)
+        ]
+    finally:
+        # The monkeypatch makes the current ticket appear dead too; release is
+        # still idempotent and removes it explicitly.
+        permit.release()
+
+
 @pytest.mark.macos_only
 def test_idle_sleep_assertion_is_owned_and_released(monkeypatch):
     import hermes_cli.config

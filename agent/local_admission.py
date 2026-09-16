@@ -114,6 +114,32 @@ def acquire_process_permit(
                 "INSERT OR IGNORE INTO inference_limits VALUES (?, ?)",
                 (key, requested_capacity if requested_capacity is not None else 0),
             )
+            # Unbounded callers do not enter the wait loop below, so they used
+            # to skip the dead-process sweep entirely.  A crashed Hermes
+            # process could therefore leave occupied-looking tickets in the
+            # durable ledger forever.  Capacity=0 still means the provider
+            # owns parallelism, but stale rows must be removed before the
+            # current ticket is recorded so diagnostics and later explicit
+            # policies see the real live owners.
+            rows = conn.execute(
+                "SELECT ticket,pid,birth FROM inference_queue WHERE key=?",
+                (key,),
+            ).fetchall()
+            stale_tickets = [
+                row["ticket"]
+                for row in rows
+                if _dead(row["pid"], row["birth"])
+            ]
+            if stale_tickets:
+                conn.executemany(
+                    "DELETE FROM inference_queue WHERE ticket=?",
+                    [(ticket,) for ticket in stale_tickets],
+                )
+                logger.info(
+                    "local_admission reaped_stale=%d key=%s",
+                    len(stale_tickets),
+                    key,
+                )
             if requested_capacity is None:
                 # 0 is the backwards-compatible unlimited sentinel. This is
                 # also the migration for rows pinned to capacity=1 by older
