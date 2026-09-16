@@ -1503,14 +1503,22 @@ class AIAgent:
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         local_endpoint = bool(base_url and is_local_endpoint(base_url))
         if uses_implicit_default and local_endpoint:
-            # A local model may legitimately spend minutes in prefill or
-            # hidden reasoning, but an infinite detector turns one wedged
-            # socket into a session that can never checkpoint or resume.
-            # Keep the generous local allowance finite and let an active
-            # run-budget cap it further below. Operators who run a slower
-            # model can raise this bound explicitly without changing the
-            # provider route or disabling recovery altogether.
-            stale_base = env_float("HERMES_LOCAL_NONSTREAM_STALE_TIMEOUT", 900.0)
+            # Share the local patience resolver with the Chat Completions
+            # stream path.  Responses and Chat Completions must advertise the
+            # same recovery budget; otherwise the TUI can say 1800s while the
+            # Codex watchdog kills the same prefill at 900s.  The helper keeps
+            # the legacy HERMES_LOCAL_NONSTREAM_STALE_TIMEOUT alias and the
+            # config/env precedence in one place.
+            try:
+                from agent.chat_completion_helpers import _local_stream_stale_timeout
+
+                resolved = _local_stream_stale_timeout(self)
+                if resolved is not None:
+                    stale_base = float(resolved)
+            except Exception:
+                # Preserve the standalone runner's recovery path if the
+                # helper cannot be imported during a partial installation.
+                stale_base = env_float("HERMES_LOCAL_NONSTREAM_STALE_TIMEOUT", 900.0)
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:

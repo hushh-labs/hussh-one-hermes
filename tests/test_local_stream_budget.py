@@ -87,3 +87,35 @@ def test_remote_responses_stream_has_no_local_stale_budget():
     )
 
     assert _local_stream_stale_timeout(agent) is None
+
+
+def test_local_prefill_notice_identifies_active_connection_without_content():
+    from agent.chat_completion_helpers import local_prefill_wait_notice
+
+    agent = _local_agent()
+    agent.model = "meta/muse-glimmer"
+    notice = local_prefill_wait_notice(
+        agent,
+        {
+            "model": "meta/muse-glimmer",
+            "instructions": "system guidance",
+            "input": [{"role": "user", "content": "hello"}],
+        },
+        elapsed=37,
+        stale_timeout=1_800,
+    )
+
+    assert notice is not None
+    assert "meta/muse-glimmer" in notice
+    assert "37s elapsed" in notice
+    assert "connection is active" in notice
+    assert "1800s" in notice
+    assert "hello" not in notice
+
+
+def test_remote_prefill_notice_is_not_emitted():
+    from agent.chat_completion_helpers import local_prefill_wait_notice
+
+    agent = SimpleNamespace(base_url="https://api.example.test/v1", model="gpt-test")
+
+    assert local_prefill_wait_notice(agent, {"model": "gpt-test"}) is None

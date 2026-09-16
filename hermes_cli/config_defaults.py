@@ -1418,7 +1418,10 @@ DEFAULT_CONFIG = {
         #   "error"   — final raw-output message only on non-zero exit
         #   "off"     — no watcher messages at all
         "background_process_notifications": "concise",
-        "streaming": False,
+        # Live token streaming is the default for terminal/TUI surfaces. Existing
+        # installations keep an explicit display.streaming preference when their
+        # config is migrated, so enabling this default does not overwrite it.
+        "streaming": True,
         "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
         "final_response_markdown": "strip",  # render | strip | raw

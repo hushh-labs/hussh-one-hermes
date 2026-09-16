@@ -1631,6 +1631,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
             stream_kwargs["stream"] = True
             stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
+            # A local Responses server may spend minutes in prompt prefill
+            # before yielding its first SSE event. Emit an explicit lifecycle
+            # status before opening the socket so the TUI does not look
+            # disconnected while LM Studio is actively working.
+            try:
+                from agent.chat_completion_helpers import local_prefill_wait_notice
+
+                notice = local_prefill_wait_notice(agent, stream_kwargs)
+                if notice:
+                    agent._emit_wait_notice(notice)
+            except Exception:
+                logger.debug("local prefill wait notice failed", exc_info=True)
             return active_client.responses.create(**stream_kwargs)
 
         def _codex_stream_created(_raw_stream: Any) -> None:

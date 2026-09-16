@@ -133,6 +133,23 @@ def test_local_default_stale_timeout_is_finite(monkeypatch, tmp_path):
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 900.0
 
 
+def test_local_responses_and_nonstream_use_configured_stale_timeout(monkeypatch, tmp_path):
+    """Both local transport paths read the same configured patience budget."""
+    import run_agent
+
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        config_body="agent:\n  local_stream_stale_timeout: 1800\n",
+        model="meta/muse-glimmer",
+        provider="lmstudio",
+        base_url="http://127.0.0.1:1234/v1",
+    )
+
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1800.0
+
+
 def test_local_stale_timeout_can_be_raised_explicitly(monkeypatch, tmp_path):
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)

@@ -1022,7 +1022,55 @@ def _local_stream_stale_timeout(agent) -> float | None:
             local_default = float(value)
     except Exception:
         pass
-    return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+    # Keep the pre-Responses setting as a compatibility alias.  Some
+    # installations already set the non-stream name; silently ignoring it
+    # would make Chat Completions and Responses advertise different recovery
+    # budgets during the same local turn.  The newer stream name wins when
+    # both are present.
+    legacy_default = env_float("HERMES_LOCAL_NONSTREAM_STALE_TIMEOUT", local_default)
+    return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", legacy_default)
+
+
+def local_prefill_wait_notice(
+    agent,
+    api_kwargs: dict,
+    *,
+    elapsed: float = 0.0,
+    stale_timeout: float | None = None,
+) -> str | None:
+    """Describe a quiet local-model prefill without exposing request content.
+
+    Local Responses-compatible servers can accept a request and then spend a
+    long time evaluating the prompt before the first output event. The existing
+    generic "waiting on provider" status is easy to mistake for a disconnected
+    TUI, especially when the local model is healthy but the fixed prompt is
+    large. Keep this diagnostic bounded to model identity, an estimated token
+    count, elapsed time and the configured recovery budget.
+    """
+    if not is_local_endpoint(getattr(agent, "base_url", "") or ""):
+        return None
+    try:
+        context_tokens = max(0, estimate_request_context_tokens(api_kwargs))
+    except Exception:
+        context_tokens = 0
+    model = str(
+        api_kwargs.get("model") or getattr(agent, "model", "") or "local model"
+    )
+    subject = (
+        f"⏳ {model} is preparing a ~{context_tokens:,}-token context on the local provider"
+    )
+    if elapsed > 0:
+        subject += f" ({int(elapsed)}s elapsed)"
+    parts = [
+        subject,
+        "the connection is active; no output event is available until prefill finishes",
+    ]
+    budget = stale_timeout
+    if budget is None:
+        budget = _local_stream_stale_timeout(agent)
+    if budget is not None and math.isfinite(float(budget)) and budget > 0:
+        parts.append(f"auto-reconnect at {int(budget)}s")
+    return "; ".join(parts) + "."
 
 
 class LocalAttemptDeadlineExceeded(InterruptedError):
@@ -2030,10 +2078,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     idle_timeout=_codex_idle_timeout,
                     elapsed=_elapsed,
                 )
+                local_notice = local_prefill_wait_notice(
+                    agent,
+                    api_kwargs,
+                    elapsed=_elapsed,
+                    stale_timeout=_stale_timeout,
+                )
                 agent._emit_wait_notice(
-                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                    f"{int(_elapsed)}s with no response yet (provider may be slow "
-                    f"or overloaded{_recovery})"
+                    local_notice
+                    or (
+                        f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                        f"{int(_elapsed)}s with no response yet (provider may be slow "
+                        f"or overloaded{_recovery})"
+                    )
                 )
             except Exception:
                 logger.debug("wait-notice construction failed", exc_info=True)
@@ -4428,6 +4485,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 )
                 attempt_request_client["value"] = request_client
                 last_chunk_time["t"] = time.time()
+                notice = local_prefill_wait_notice(agent, stream_kwargs)
+                if notice:
+                    agent._emit_wait_notice(notice)
                 agent._touch_activity("waiting for provider response (streaming)")
                 _check_stream_attempt_active()
                 raw_stream = request_client.chat.completions.create(**stream_kwargs)
@@ -5643,10 +5703,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     _recovery = f"; auto-reconnect at {int(_stream_stale_timeout)}s"
                 else:
                     _recovery = ""
+                local_notice = local_prefill_wait_notice(
+                    agent,
+                    api_kwargs,
+                    elapsed=_waiting_secs,
+                    stale_timeout=_stream_stale_timeout,
+                )
                 agent._emit_wait_notice(
-                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                    f"{_waiting_secs}s with no output yet (provider may be "
-                    f"slow or overloaded, or the model is thinking{_recovery})"
+                    local_notice
+                    or (
+                        f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                        f"{_waiting_secs}s with no output yet (provider may be "
+                        f"slow or overloaded, or the model is thinking{_recovery})"
+                    )
                 )
             else:
                 # Chunks are flowing — keep the activity tracker fresh but

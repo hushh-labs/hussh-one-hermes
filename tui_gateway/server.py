@@ -8020,7 +8020,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    return AIAgent(
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
@@ -8067,6 +8067,25 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    # Dashboard-backed TUI sessions commonly inherit the Hermes install tree
+    # as their logical cwd.  It remains the terminal execution directory, but
+    # its contributor AGENTS.md is not user-selected context and can add tens
+    # of thousands of prefill tokens.  Preserve that file for explicit
+    # workspaces and standalone CLI/TUI launches; suppress only the accidental
+    # dashboard fallback.  This is a prompt policy marker, not a tool or cwd
+    # restriction.
+    with _sessions_lock:
+        session = _sessions.get(sid) or {}
+        explicit_cwd = bool(session.get("explicit_cwd"))
+    platform = _resolve_agent_platform(platform_override)
+    agent.allow_install_tree_context = bool(
+        explicit_cwd
+        or (
+            platform in ("cli", "tui")
+            and not is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD"))
+        )
+    )
+    return agent
 
 
 def _init_session(

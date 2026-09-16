@@ -65,6 +65,68 @@ class TestContextFileCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
+    def test_dashboard_install_tree_fallback_is_not_project_context(self, monkeypatch):
+        """The dashboard keeps the install cwd for tools, but not its AGENTS.md."""
+        from pathlib import Path
+
+        captured = {}
+
+        def fake_context_files(
+            cwd=None,
+            skip_soul=False,
+            context_length=None,
+            allow_install_tree_fallback=False,
+            home_override=None,
+        ):
+            captured["cwd"] = cwd
+            captured["allow_install_tree_fallback"] = allow_install_tree_fallback
+            return ""
+
+        agent = _make_agent(
+            platform="tui",
+            allow_install_tree_context=False,
+        )
+        install_tree = Path("/hermes-install")
+        with (
+            patch("agent.system_prompt.resolve_context_cwd", return_value=install_tree),
+            patch("agent.system_prompt._is_install_tree", return_value=True),
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            build_system_prompt_parts(agent)
+
+        assert captured == {
+            "cwd": None,
+            "allow_install_tree_fallback": False,
+        }
+
+    def test_explicit_install_tree_context_remains_available(self, monkeypatch):
+        from pathlib import Path
+
+        captured = {}
+
+        def fake_context_files(**kwargs):
+            captured.update(kwargs)
+            return ""
+
+        agent = _make_agent(
+            platform="tui",
+            allow_install_tree_context=True,
+        )
+        install_tree = Path("/hermes-install")
+        with (
+            patch("agent.system_prompt.resolve_context_cwd", return_value=install_tree),
+            patch("agent.system_prompt._is_install_tree", return_value=True),
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            build_system_prompt_parts(agent)
+
+        assert captured["cwd"] == install_tree
+        assert captured["allow_install_tree_fallback"] is True
+
 
 def _stable_prompt(agent):
     with (

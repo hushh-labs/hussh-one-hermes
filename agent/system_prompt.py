@@ -54,7 +54,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
-from agent.runtime_cwd import resolve_context_cwd
+from agent.runtime_cwd import _is_install_tree, resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from pathlib import Path
 from utils import is_truthy_value
@@ -857,10 +857,25 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # (developing Hermes). Every other surface (desktop chat panel,
         # gateway daemons) self-spawns into the install tree, where the
         # fallback would inject this repo's contributor AGENTS.md (#64590).
+        context_cwd = resolve_context_cwd()
+        # A dashboard-backed TUI session can inherit the gateway's own
+        # installation directory as its session cwd even when the user never
+        # selected a workspace.  That directory contains Hermes' contributor
+        # AGENTS.md, which is useful for in-tree development but is an
+        # accidental, very large prompt for an ordinary chat.  The gateway
+        # marks this distinction on the agent; an explicitly selected cwd (or
+        # a standalone CLI/TUI launch) keeps the historical behavior.
+        allow_install_tree_context = getattr(
+            agent, "allow_install_tree_context", None
+        )
+        if allow_install_tree_context is False and context_cwd is not None and _is_install_tree(context_cwd):
+            context_cwd = None
+        if allow_install_tree_context is None:
+            allow_install_tree_context = agent.platform in ("cli", "tui")
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
+            cwd=context_cwd, skip_soul=_soul_loaded,
             context_length=_ctx_len,
-            allow_install_tree_fallback=agent.platform in ("cli", "tui"),
+            allow_install_tree_fallback=allow_install_tree_context,
             home_override=_agent_home(agent))
         if context_files_prompt:
             context_parts.append(context_files_prompt)
