@@ -18,7 +18,11 @@ new local LLMs without invoking inference, removes embedding models, preserves
 existing model settings, and leaves remote Copilot providers alone.
 After a successful refresh, the provider uses explicit model entries (with
 full Responses URLs) rather than provider-level discovery, matching VS Code's
-Custom Endpoint configuration semantics.
+Custom Endpoint configuration semantics. Each entry includes the required
+`maxInputTokens` and `maxOutputTokens` hints. LM Studio supplies the live
+context window; the sync reserves a 16,384-token output slice by default and
+assigns the remainder to input, while preserving any explicit per-model
+values.
 
 ## TL;DR
 

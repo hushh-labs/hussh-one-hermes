@@ -22,6 +22,13 @@ from urllib.error import HTTPError, URLError
 
 
 DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+# VS Code requires both token-limit hints on explicit custom-endpoint models.
+# LM Studio's native catalog publishes the context window but not an output
+# limit, so reserve a conservative slice for generation and give the remainder
+# to the input window. These are Copilot bookkeeping hints; LM Studio remains
+# authoritative for the actual request limits.
+DEFAULT_LMSTUDIO_CONTEXT_WINDOW = 131_072
+DEFAULT_LMSTUDIO_MAX_OUTPUT_TOKENS = 16_384
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -122,6 +129,68 @@ def _catalog_model_id(raw: dict[str, Any]) -> str:
     return str(raw.get("key") or raw.get("id") or "").strip()
 
 
+def _positive_int(value: Any) -> int | None:
+    """Return a positive integer metadata value, if present."""
+
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _local_token_limits(
+    raw: dict[str, Any],
+    existing: dict[str, Any] | None,
+) -> tuple[int, int]:
+    """Resolve the required VS Code input/output hints for a local model.
+
+    LM Studio exposes ``max_context_length`` but not a separate output cap.
+    Preserve explicit user values, derive a missing side from the live context
+    window, and keep the sum within that window as required by VS Code.
+    """
+
+    current = existing if isinstance(existing, dict) else {}
+    context = (
+        _positive_int(raw.get("max_context_length"))
+        or _positive_int(raw.get("context_window"))
+        or _positive_int(current.get("contextWindow"))
+        or DEFAULT_LMSTUDIO_CONTEXT_WINDOW
+    )
+    explicit_output = (
+        _positive_int(current.get("maxOutputTokens"))
+        or _positive_int(raw.get("max_output_tokens"))
+        or _positive_int(raw.get("max_completion_tokens"))
+    )
+    output = explicit_output or DEFAULT_LMSTUDIO_MAX_OUTPUT_TOKENS
+    input_tokens = (
+        _positive_int(current.get("maxInputTokens"))
+        or _positive_int(raw.get("max_input_tokens"))
+    )
+
+    # The VS Code contract is maxInputTokens + maxOutputTokens <= contextWindow.
+    # When one side was explicit, retain it and fit the derived side. When both
+    # were absent, reserve the default output slice and use the remainder.
+    if input_tokens is None:
+        # Without an input hint, reserve a bounded slice of the live context
+        # for generation. An explicit output hint wins, but can never consume
+        # the entire context window.
+        output = min(
+            output,
+            max(1, context - 1)
+            if explicit_output is not None
+            else min(DEFAULT_LMSTUDIO_MAX_OUTPUT_TOKENS, max(1, context // 4)),
+        )
+        input_tokens = max(1, context - output)
+    elif input_tokens + output > context:
+        output = max(1, context - input_tokens)
+    if input_tokens + output > context:
+        input_tokens = max(1, context - output)
+    return input_tokens, output
+
+
 def _catalog_model_entry(
     raw: dict[str, Any],
     *,
@@ -141,6 +210,9 @@ def _catalog_model_entry(
             "streaming": True,
         }
     )
+    max_input_tokens, max_output_tokens = _local_token_limits(raw, existing)
+    entry["maxInputTokens"] = max_input_tokens
+    entry["maxOutputTokens"] = max_output_tokens
     capabilities = raw.get("capabilities")
     if isinstance(capabilities, dict):
         if "trained_for_tool_use" in capabilities:
@@ -312,6 +384,9 @@ def normalize_lmstudio_provider(provider: dict[str, Any]) -> bool:
         if model_base:
             model["apiType"] = "responses"
             model["url"] = _responses_url(model.get("url"), base_url=model_base)
+            max_input_tokens, max_output_tokens = _local_token_limits({}, model)
+            model["maxInputTokens"] = max_input_tokens
+            model["maxOutputTokens"] = max_output_tokens
     # Keep URL-only providers discoverable. Once explicit model entries exist,
     # omit the provider URL so VS Code uses those entries and their metadata.
     if provider_base and models and all(_lmstudio_base_url(model.get("url")) for model in models):

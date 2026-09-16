@@ -44,6 +44,8 @@ def test_migrates_existing_lmstudio_model_to_responses() -> None:
     assert local["apiType"] == "responses"
     assert local["models"][0]["apiType"] == "responses"
     assert local["models"][0]["url"] == "http://127.0.0.1:1234/v1/responses"
+    assert local["models"][0]["maxInputTokens"] == 114688
+    assert local["models"][0]["maxOutputTokens"] == 16384
     assert [b["name"] for b in merged] == ["Custom Endpoint", "Hussh One Vertex ADC"]
 
 
@@ -130,3 +132,21 @@ def test_rerun_replaces_one_generated_vertex_block_and_no_duplicate_local() -> N
         "Hussh One LM Studio",
         "Hussh One Vertex ADC",
     ]
+
+
+def test_local_catalog_limits_fit_live_context_window() -> None:
+    entry = _MODULE._catalog_model_entry(
+        {
+            "type": "llm",
+            "key": "meta/muse-glimmer",
+            "display_name": "Muse Glimmer",
+            "max_context_length": 131072,
+        },
+        existing=None,
+        base_url="http://127.0.0.1:1234/v1",
+    )
+
+    assert entry is not None
+    assert entry["maxInputTokens"] == 114688
+    assert entry["maxOutputTokens"] == 16384
+    assert entry["maxInputTokens"] + entry["maxOutputTokens"] <= 131072

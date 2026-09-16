@@ -139,12 +139,15 @@ def test_sync_adds_new_models_and_preserves_remote_entries(tmp_path: Path) -> No
     existing, new = local["models"]
     assert existing["name"] == "Catalog name"
     assert existing["maxInputTokens"] == 1234
+    assert existing["maxOutputTokens"] == 8765
     assert existing["url"] == "http://127.0.0.1:1234/v1/responses"
     assert existing["toolCalling"] is True
     assert existing["vision"] is True
     assert existing["thinking"] is True
     assert new["name"] == "New local model"
     assert new["url"] == "http://127.0.0.1:1234/v1/responses"
+    assert new["maxInputTokens"] == 114688
+    assert new["maxOutputTokens"] == 16384
     assert remote["apiType"] == "chat-completions"
     assert remote["models"][0]["url"] == "https://api.example/v1"
 
