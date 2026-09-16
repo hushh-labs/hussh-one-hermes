@@ -1085,7 +1085,35 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted runtime-identity lines are stale."""
+    """Return False when persisted runtime identity or context policy is stale."""
+
+    # Dashboard sessions inherit the Hermes checkout as their terminal cwd,
+    # but that checkout's contributor instructions are not user-selected chat
+    # context.  Older sessions persisted a prompt containing that AGENTS.md;
+    # runtime identity alone still matched, so resume kept replaying the large
+    # stale prompt indefinitely.  Force one rebuild when the current agent is
+    # explicitly suppressing install-tree context and the stored prompt carries
+    # the old project-context block.  The rebuilt prompt is persisted and then
+    # matches normally on later turns.
+    if getattr(agent, "allow_install_tree_context", None) is False:
+        try:
+            from agent.runtime_cwd import (
+                _is_install_tree,
+                resolve_agent_cwd as _resolve_agent_cwd,
+            )
+
+            project_context = prompt.find("# Project Context")
+            if (
+                project_context >= 0
+                and "## AGENTS.md" in prompt[project_context:]
+                and _is_install_tree(_resolve_agent_cwd())
+            ):
+                return False
+        except Exception:
+            logger.debug(
+                "install-tree prompt policy check failed; reusing stored prompt",
+                exc_info=True,
+            )
 
     def line_value(label: str) -> str:
         """Last matching line wins.

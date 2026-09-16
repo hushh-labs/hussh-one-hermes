@@ -496,6 +496,25 @@ class TestStoredPromptCwdDrift:
                 "drift in the host-info block"
             )
 
+    def test_dashboard_rebuilds_stored_install_tree_context_once(self):
+        """Implicit dashboard cwd must not reuse an old install-tree AGENTS prompt."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        agent.allow_install_tree_context = False
+        stored_prompt = (
+            self._host_block("/Users/tester/hussh-one-hermes-agent")
+            + "\n# Project Context\n\n## AGENTS.md\n\n"
+            "old install-tree instructions\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+
+        with patch("agent.runtime_cwd.resolve_agent_cwd", return_value="/Users/tester/hussh-one-hermes-agent"), \
+             patch("agent.runtime_cwd._is_install_tree", return_value=True):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False
+
 
 
 
