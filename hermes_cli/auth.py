@@ -966,9 +966,9 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
     """Return the OpenAI-compatible LM Studio runtime base URL.
 
     LM Studio's native management API lives under ``/api/v1`` while its
-    OpenAI-compatible chat endpoint lives under ``/v1``. Users often paste
-    either form into ``LM_BASE_URL`` or ``model.base_url``; normalize before
-    the OpenAI SDK appends ``/chat/completions``.
+    OpenAI-compatible inference endpoints live under ``/v1``. Users often
+    paste either form into ``LM_BASE_URL`` or ``model.base_url``; normalize
+    before the selected adapter appends ``/responses`` or ``/chat/completions``.
     """
     root = str(base_url or "").strip().rstrip("/")
     for suffix in ("/api/v1", "/api", "/v1"):

@@ -157,6 +157,22 @@ class TestScriptInstall:
         assert not (target / "notes.md").exists()
         assert sync.install_scripts(source, target, apply=False) == []
 
+    def test_copilot_helper_is_installed_and_reconciled(self, sync, tmp_path):
+        source = tmp_path / "vscode_model_config.py"
+        source.write_text("VERSION = 1\n", encoding="utf-8")
+        target = tmp_path / "scripts"
+
+        assert sync.install_copilot_helper(source, target, apply=False) == [source.name]
+        assert not target.exists()
+        assert sync.install_copilot_helper(source, target, apply=True) == [source.name]
+        assert (target / source.name).read_text(encoding="utf-8") == "VERSION = 1\n"
+        assert sync.install_copilot_helper(source, target, apply=False) == []
+
+        source.write_text("VERSION = 2\n", encoding="utf-8")
+        assert sync.install_copilot_helper(source, target, apply=False) == [source.name]
+        assert sync.install_copilot_helper(source, target, apply=True) == [source.name]
+        assert (target / source.name).read_text(encoding="utf-8") == "VERSION = 2\n"
+
 
 def test_removed_jobs_preserve_history_and_do_not_return(sync, tmp_path, monkeypatch):
     from cron import jobs

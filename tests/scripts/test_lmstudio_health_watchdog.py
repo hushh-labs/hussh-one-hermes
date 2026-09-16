@@ -103,3 +103,8 @@ def test_manifest_keeps_health_checks_hourly_and_no_agent():
     assert watchdog["default_deliver"] == "local"
     assert "metadata-only" in watchdog["purpose"]
     assert "inference" in watchdog["purpose"]
+    sync = jobs["VS Code LM Studio Model Sync"]
+    assert sync["schedule"] == "every 15m"
+    assert sync["script"] == "lmstudio_copilot_sync.py"
+    assert sync["no_agent"] is True
+    assert "metadata-only" in sync["purpose"]

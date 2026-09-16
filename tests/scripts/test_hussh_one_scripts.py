@@ -400,6 +400,9 @@ def test_copilot_setup_writes_a_loopback_vertex_endpoint_to_a_temp_editor_profil
 
     proxy_launcher = (hermes_home / "scripts/start_litellm_proxy.sh").read_text()
     shim_launcher = (hermes_home / "scripts/start_litellm_shim.sh").read_text()
+    model_config_helper = hermes_home / "scripts/vscode_model_config.py"
+    assert model_config_helper.exists()
+    assert "sync_lmstudio_file" in model_config_helper.read_text()
     assert f"export HERMES_HOME={hermes_home}" in proxy_launcher
     assert f"export HERMES_HOME={hermes_home}" in shim_launcher
     assert "$HOME/.hermes" not in proxy_launcher

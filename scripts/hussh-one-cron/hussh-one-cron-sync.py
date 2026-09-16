@@ -143,6 +143,25 @@ def install_scripts(source: Path, target: Path, *, apply: bool) -> list[str]:
     return changed
 
 
+def install_copilot_helper(source: Path, target: Path, *, apply: bool) -> list[str]:
+    """Install the shared VS Code model helper alongside managed job scripts.
+
+    The LM Studio sync job imports this helper from ``$HERMES_HOME``. Keeping
+    it in the updater's managed file set prevents a fork fast-forward from
+    updating the job while leaving its model-discovery contract stale.
+    """
+    if not source.is_file():
+        return []
+    destination = target / source.name
+    if destination.exists() and filecmp.cmp(source, destination, shallow=False):
+        return []
+    if apply:
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        os.chmod(destination, 0o644)
+    return [source.name]
+
+
 def _dir_differs(source: Path, destination: Path) -> bool:
     for path in source.rglob("*"):
         if "__pycache__" in path.parts or path.is_dir():
@@ -250,7 +269,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     apply = bool(args.apply and not args.check)
 
     manifest_jobs = load_manifest(Path(args.manifest))
-    scripts_changed = install_scripts(HERE, hermes_home() / "scripts", apply=apply)
+    scripts_target = hermes_home() / "scripts"
+    scripts_changed = install_scripts(HERE, scripts_target, apply=apply)
+    scripts_changed.extend(install_copilot_helper(
+        REPO_ROOT / "scripts" / "copilot-byok" / "vscode_model_config.py",
+        scripts_target,
+        apply=apply,
+    ))
 
     sys.path.insert(0, str(REPO_ROOT))
     from cron import jobs as store  # noqa: E402 - the repo's own cron store

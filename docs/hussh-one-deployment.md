@@ -86,6 +86,15 @@ Copilot Chat. The installer detects loopback LM Studio entries and sets
 discovery provider at that base URL. This keeps Hermes and Copilot on the same
 Responses API path without imposing a model or concurrency limit.
 
+Once a local provider exists, the managed `VS Code LM Studio Model Sync`
+no-agent job refreshes both supported VS Code profiles every 15 minutes from
+LM Studio's metadata catalog. A missing or stopped LM Studio server is treated
+as a skipped metadata refresh; no prompt is sent and no configured model is
+removed during that outage. Reload VS Code after a refresh to display newly
+discovered entries. Once the catalog is materialized, the provider keeps an
+explicit model array and full `/v1/responses` URLs so VS Code uses the synced
+entries directly.
+
 ---
 
 ## Developer Onboarding & Multi-Agent Integration Reference

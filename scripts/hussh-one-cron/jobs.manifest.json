@@ -1,7 +1,7 @@
 {
   "version": 1,
   "notes": [
-    "The Puppy One daily jobs as a versioned product. hussh-one-cron-sync.py installs the scripts into $HERMES_HOME/scripts and reconciles the jobs by name.",
+    "The Puppy One daily jobs as a versioned product. hussh-one-cron-sync.py installs the scripts and shared Copilot model helper into $HERMES_HOME/scripts and reconciles the jobs by name.",
     "deliver is set only when a job is created (it is per device: the owner's own chat); model and provider are never touched (the device default applies).",
     "Jobs absent from this manifest are left alone; the founder disables jobs on purpose and the sync must not resurrect or remove them.",
     "Auto-Dream was deleted; the explicit cleanup migration removes only its known jobs/scripts and preserves history."
@@ -60,6 +60,14 @@
       "no_agent": true,
       "default_deliver": "local",
       "purpose": "Low-power metadata-only reachability check; emits only on failure. Use --deep manually for an inference probe."
+    },
+    {
+      "name": "VS Code LM Studio Model Sync",
+      "schedule": "every 15m",
+      "script": "lmstudio_copilot_sync.py",
+      "no_agent": true,
+      "default_deliver": "local",
+      "purpose": "Synchronizes the local LM Studio catalog into configured VS Code Copilot Responses providers; metadata-only, never invokes inference."
     },
     {
       "name": "Hussh One Self-Healing Doctor",

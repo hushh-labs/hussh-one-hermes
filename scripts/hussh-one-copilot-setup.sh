@@ -170,6 +170,7 @@ fi
 #      automatically restore *.bak and restart again — see rollback path below.
 PROXY_CONFIG="$HERMES_HOME/litellm-proxy-config.yaml"
 SHIM_DST="$HERMES_HOME/scripts/litellm_auth_shim.py"
+MODEL_CONFIG_HELPER_DST="$HERMES_HOME/scripts/vscode_model_config.py"
 LAUNCHER_SHIM="$HERMES_HOME/scripts/start_litellm_shim.sh"
 PROXY_CONFIG_BAK="$PROXY_CONFIG.bak"
 SHIM_DST_BAK="$SHIM_DST.bak"
@@ -189,6 +190,12 @@ validate_yaml() {  # $1 = path
 validate_py() {  # $1 = path
   python3 -m py_compile "$1" 2>&1
 }
+
+if ! py_err="$(validate_py "$ASSETS/vscode_model_config.py")"; then
+  err "vscode_model_config.py failed to compile — refusing to install the Copilot sync helper."
+  err "$py_err"
+  exit 1
+fi
 
 # proxy config (substitute project) — render to scratch, validate, then swap.
 if [[ "$DRY_RUN" != "1" ]]; then
@@ -219,8 +226,16 @@ if [[ "$DRY_RUN" != "1" ]]; then
   fi
   mv "$SHIM_DST_NEW" "$SHIM_DST"
   chmod 755 "$SHIM_DST"
+
+  MODEL_CONFIG_HELPER_NEW="$MODEL_CONFIG_HELPER_DST.new"
+  cp "$ASSETS/vscode_model_config.py" "$MODEL_CONFIG_HELPER_NEW"
+  if [[ -f "$MODEL_CONFIG_HELPER_DST" ]]; then
+    cp "$MODEL_CONFIG_HELPER_DST" "$MODEL_CONFIG_HELPER_DST.bak"
+  fi
+  mv "$MODEL_CONFIG_HELPER_NEW" "$MODEL_CONFIG_HELPER_DST"
+  chmod 644 "$MODEL_CONFIG_HELPER_DST"
 else
-  log "dry-run: would write $PROXY_CONFIG and $SHIM_DST"
+  log "dry-run: would write $PROXY_CONFIG, $SHIM_DST, and $MODEL_CONFIG_HELPER_DST"
 fi
 
 # proxy launcher (carries the key; chmod 700)

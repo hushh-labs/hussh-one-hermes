@@ -16,6 +16,17 @@ machine-checkable). Use this page when you need to answer *"when did we add X, a
 
 ## 🐶 Puppy One — on-device edge compute
 
+### 2026-09-16 — Local LM Studio model inventory sync
+
+Commit: `pending`
+
+After the local Copilot provider is enabled, the managed `VS Code LM Studio
+Model Sync` job refreshes both supported VS Code profiles every 15 minutes
+from LM Studio's metadata catalog. Newly detected local LLMs are exposed via
+the OpenAI Responses API as explicit model entries, embedding models are
+excluded, existing model settings are retained, and a stopped LM Studio server
+never removes entries or invokes inference.
+
 ### 2026-09-09 — Hourly low-power health cadence
 
 Commit: `5eb822b637`

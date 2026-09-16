@@ -12,6 +12,13 @@ Loopback LM Studio entries are migrated to the OpenAI Responses API
 (`http://127.0.0.1:1234/v1/responses`) and a discovery-based provider is added
 when no local entry exists. The local provider has no model or concurrency cap;
 LM Studio's own loaded-model and scheduler policy remains authoritative.
+After the bridge is enabled, the versioned `VS Code LM Studio Model Sync` job
+refreshes configured profiles every 15 minutes from LM Studio metadata. It adds
+new local LLMs without invoking inference, removes embedding models, preserves
+existing model settings, and leaves remote Copilot providers alone.
+After a successful refresh, the provider uses explicit model entries (with
+full Responses URLs) rather than provider-level discovery, matching VS Code's
+Custom Endpoint configuration semantics.
 
 ## TL;DR
 

@@ -11,11 +11,14 @@ to run repeatedly.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 
 
 DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
@@ -65,6 +68,209 @@ def _responses_url(raw_url: Any, *, base_url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
 
 
+def _lmstudio_native_root(base_url: str) -> str:
+    """Return the native LM Studio API root for an OpenAI-compatible base."""
+
+    parsed = urlsplit(base_url.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3].rstrip("/")
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+def fetch_lmstudio_catalog(
+    base_url: str = DEFAULT_LMSTUDIO_BASE_URL,
+    *,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+    opener=urllib_request.urlopen,
+) -> list[dict[str, Any]]:
+    """Read LM Studio's local model catalog without invoking inference."""
+
+    root = _lmstudio_native_root(base_url)
+    headers = {"User-Agent": "Hussh-One-LMStudio-Sync/1"}
+    token = str(api_key or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    def read(url: str) -> Any:
+        req = urllib_request.Request(url, headers=headers)
+        with opener(req, timeout=timeout) as response:
+            return json.load(response)
+
+    try:
+        payload = read(f"{root}/api/v1/models")
+        raw_models = payload.get("models") if isinstance(payload, dict) else None
+        if isinstance(raw_models, list):
+            return [item for item in raw_models if isinstance(item, dict)]
+    except (HTTPError, URLError, OSError, ValueError, json.JSONDecodeError):
+        pass
+
+    # Older LM Studio builds expose only the OpenAI-compatible inventory. It
+    # lacks capability metadata, but still lets Copilot show every local LLM.
+    payload = read(f"{base_url.rstrip('/')}/models")
+    raw_models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        raise ValueError("LM Studio returned no model catalog")
+    return [
+        {"type": "llm", "key": item.get("id"), "display_name": item.get("id")}
+        for item in raw_models
+        if isinstance(item, dict) and item.get("id")
+    ]
+
+
+def _catalog_model_id(raw: dict[str, Any]) -> str:
+    return str(raw.get("key") or raw.get("id") or "").strip()
+
+
+def _catalog_model_entry(
+    raw: dict[str, Any],
+    *,
+    existing: dict[str, Any] | None,
+    base_url: str,
+) -> dict[str, Any] | None:
+    model_id = _catalog_model_id(raw)
+    if not model_id or str(raw.get("type") or "").lower() == "embedding":
+        return None
+    entry = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    entry.update(
+        {
+            "id": model_id,
+            "name": str(raw.get("display_name") or entry.get("name") or model_id),
+            "url": _responses_url(None, base_url=base_url),
+            "apiType": "responses",
+            "streaming": True,
+        }
+    )
+    capabilities = raw.get("capabilities")
+    if isinstance(capabilities, dict):
+        if "trained_for_tool_use" in capabilities:
+            entry["toolCalling"] = bool(capabilities["trained_for_tool_use"])
+        if "vision" in capabilities:
+            entry["vision"] = bool(capabilities["vision"])
+        if "reasoning" in capabilities:
+            entry["thinking"] = bool(capabilities["reasoning"])
+    elif existing is None:
+        entry.update({"toolCalling": False, "vision": False, "thinking": False})
+    return entry
+
+
+def sync_lmstudio_provider(
+    provider: dict[str, Any],
+    catalog: list[dict[str, Any]],
+) -> bool:
+    """Add/update catalog models in one configured local provider."""
+
+    if not _is_local_provider(provider):
+        return False
+    provider_base = _lmstudio_base_url(provider.get("url"))
+    models = [model for model in provider.get("models", []) if isinstance(model, dict)]
+    if provider_base is None:
+        provider_base = next(
+            (
+                _lmstudio_base_url(model.get("url"))
+                for model in models
+                if _lmstudio_base_url(model.get("url"))
+            ),
+            DEFAULT_LMSTUDIO_BASE_URL,
+        )
+    local_models = [
+        model for model in models
+        if _model_is_local(model, provider_base)
+    ]
+    existing_by_id = {
+        str(model.get("id")): model
+        for model in local_models
+        if str(model.get("id") or "").strip()
+    }
+    catalog_by_id = {
+        _catalog_model_id(raw): raw
+        for raw in catalog
+        if _catalog_model_id(raw)
+    }
+    synced: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    embedding_ids = {
+        _catalog_model_id(raw)
+        for raw in catalog
+        if _catalog_model_id(raw)
+        and str(raw.get("type") or "").lower() == "embedding"
+    }
+    for model in models:
+        model_id = str(model.get("id") or "").strip()
+        if not _model_is_local(model, provider_base):
+            # An explicit remote entry in a mixed provider keeps its original
+            # URL and API type; the local catalog must never rewrite it.
+            synced.append(model)
+            if model_id:
+                seen.add(model_id)
+            continue
+        if model_id in embedding_ids:
+            continue
+        raw = catalog_by_id.get(model_id)
+        entry = (
+            _catalog_model_entry(raw, existing=model, base_url=provider_base)
+            if raw is not None
+            else model
+        )
+        if entry is not None:
+            synced.append(entry)
+        if model_id:
+            seen.add(model_id)
+    for raw in catalog:
+        model_id = _catalog_model_id(raw)
+        if not model_id or model_id in seen or model_id in embedding_ids:
+            continue
+        entry = _catalog_model_entry(raw, existing=None, base_url=provider_base)
+        if entry is not None:
+            synced.append(entry)
+            seen.add(model_id)
+    all_local = bool(provider_base) and all(
+        _model_is_local(model, provider_base) for model in models
+    )
+    if all_local:
+        provider["apiType"] = "responses"
+    # An explicit models array is authoritative in VS Code. A provider-level
+    # URL switches Custom Endpoint back to automatic discovery, which can hide
+    # the catalog's per-model capabilities and explicit Responses paths.
+    if synced and any(_model_is_local(model, provider_base) for model in synced):
+        provider.pop("url", None)
+    provider["models"] = synced
+    return True
+
+
+def sync_lmstudio_file(
+    target: Path,
+    catalog: list[dict[str, Any]],
+) -> tuple[bool, int]:
+    """Synchronize every configured LM Studio provider in one VS Code file."""
+
+    try:
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else []
+    except (OSError, json.JSONDecodeError):
+        return False, 0
+    if not isinstance(existing, list):
+        return False, 0
+    merged = copy.deepcopy(existing)
+    changed = False
+    local_count = 0
+    for provider in merged:
+        if not isinstance(provider, dict) or not _is_local_provider(provider):
+            continue
+        before = copy.deepcopy(provider)
+        sync_lmstudio_provider(provider, catalog)
+        local_count += 1
+        changed = changed or provider != before
+    if not changed:
+        return False, local_count
+    target.parent.mkdir(parents=True, exist_ok=True)
+    mode = target.stat().st_mode & 0o777 if target.exists() else 0o600
+    temp = target.with_name(f".{target.name}.new")
+    temp.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    os.chmod(temp, mode)
+    os.replace(temp, target)
+    return True, local_count
+
+
 def _is_local_provider(provider: dict[str, Any]) -> bool:
     if _lmstudio_base_url(provider.get("url")):
         return True
@@ -74,18 +280,24 @@ def _is_local_provider(provider: dict[str, Any]) -> bool:
     )
 
 
+def _model_is_local(model: dict[str, Any], provider_base: str | None) -> bool:
+    """Return whether a model inherits or declares the loopback endpoint."""
+
+    if _lmstudio_base_url(model.get("url")):
+        return True
+    return provider_base is not None and not model.get("url")
+
+
 def normalize_lmstudio_provider(provider: dict[str, Any]) -> bool:
     """Migrate one provider in place; return whether it is an LM Studio entry."""
 
     if not _is_local_provider(provider):
         return False
 
+    models = [model for model in provider.get("models", []) if isinstance(model, dict)]
     provider_base = _lmstudio_base_url(provider.get("url"))
     if provider_base:
         provider["apiType"] = "responses"
-        provider["url"] = provider_base
-
-    models = [model for model in provider.get("models", []) if isinstance(model, dict)]
     local_models = [model for model in models if _lmstudio_base_url(model.get("url"))]
     # A provider made entirely of local models can safely use one provider-wide
     # default. In a mixed provider, keep the existing default and override only
@@ -100,6 +312,10 @@ def normalize_lmstudio_provider(provider: dict[str, Any]) -> bool:
         if model_base:
             model["apiType"] = "responses"
             model["url"] = _responses_url(model.get("url"), base_url=model_base)
+    # Keep URL-only providers discoverable. Once explicit model entries exist,
+    # omit the provider URL so VS Code uses those entries and their metadata.
+    if provider_base and models and all(_lmstudio_base_url(model.get("url")) for model in models):
+        provider.pop("url", None)
     return True
 
 
