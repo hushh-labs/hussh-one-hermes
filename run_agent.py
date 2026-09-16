@@ -498,6 +498,7 @@ class AIAgent:
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
+        allow_install_tree_context: Optional[bool] = None,
         user_id: str = None,
         user_id_alt: str = None,
         user_name: str = None,
@@ -524,6 +525,12 @@ class AIAgent:
         requested_provider: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
+        # This prompt-policy marker must be available before ``init_agent``
+        # runs.  Some initialization paths build or inspect the system prompt
+        # during construction, so assigning it after the constructor (as the
+        # dashboard used to do) could still inject the Hermes install tree's
+        # contributor AGENTS.md into an ordinary chat.
+        self.allow_install_tree_context = allow_install_tree_context
         if tool_delay is not None:
             warnings.warn(
                 "tool_delay is deprecated and ignored; sequential tool calls "

@@ -8020,6 +8020,23 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    # The dashboard's fallback cwd is the Hermes install tree.  Decide this
+    # prompt policy before constructing AIAgent so every initialization path,
+    # including prompt inspection during init, sees the same authorization.
+    with _sessions_lock:
+        session = _sessions.get(sid) or {}
+        explicit_cwd = bool(session.get("explicit_cwd"))
+    platform = _resolve_agent_platform(platform_override)
+    allow_install_tree_context = bool(
+        explicit_cwd
+        or (
+            platform in ("cli", "tui")
+            and not (
+                is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD"))
+                or is_truthy_value(os.environ.get("HERMES_DASHBOARD_SERVER"))
+            )
+        )
+    )
     agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -8046,7 +8063,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
-        enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
+        enabled_toolsets=_load_enabled_toolsets(platform),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.
@@ -8056,7 +8073,8 @@ def _make_agent(
         provider_sort=_pr.get("sort"),
         provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"),
-        platform=_resolve_agent_platform(platform_override),
+        platform=platform,
+        allow_install_tree_context=allow_install_tree_context,
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),
         ephemeral_system_prompt=system_prompt or None,
@@ -8066,27 +8084,6 @@ def _make_agent(
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
-    )
-    # Dashboard-backed TUI sessions commonly inherit the Hermes install tree
-    # as their logical cwd.  It remains the terminal execution directory, but
-    # its contributor AGENTS.md is not user-selected context and can add tens
-    # of thousands of prefill tokens.  Preserve that file for explicit
-    # workspaces and standalone CLI/TUI launches; suppress only the accidental
-    # dashboard fallback.  This is a prompt policy marker, not a tool or cwd
-    # restriction.
-    with _sessions_lock:
-        session = _sessions.get(sid) or {}
-        explicit_cwd = bool(session.get("explicit_cwd"))
-    platform = _resolve_agent_platform(platform_override)
-    agent.allow_install_tree_context = bool(
-        explicit_cwd
-        or (
-            platform in ("cli", "tui")
-            and not (
-                is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD"))
-                or is_truthy_value(os.environ.get("HERMES_DASHBOARD_SERVER"))
-            )
-        )
     )
     return agent
 
