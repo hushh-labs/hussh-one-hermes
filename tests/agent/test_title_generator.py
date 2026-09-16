@@ -45,6 +45,7 @@ class TestGenerateTitle:
 
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
+        assert captured_kwargs["reasoning_config"] == {"enabled": False}
 
 
 

@@ -409,6 +409,11 @@ def generate_title(
             temperature=0.3,
             timeout=timeout,
             main_runtime=main_runtime,
+            # Titling is cosmetic and must not inherit a local model's default
+            # reasoning budget. Without this explicit control, LM Studio can
+            # spend the entire auxiliary timeout thinking about a three-word
+            # title while the interactive turn is waiting for useful output.
+            reasoning_config={"enabled": False},
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
         content = response.choices[0].message.content or ""
