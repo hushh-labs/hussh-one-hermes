@@ -75,6 +75,21 @@ def test_local_provider_still_resolves_with_the_gate_on(gate_on):
     assert client is not None
 
 
+def test_explicit_loopback_custom_endpoint_is_local_with_gate_on(gate_on):
+    client, _model = ac.resolve_provider_client(
+        "custom",
+        model="local-test-model",
+        explicit_base_url="http://localhost:1234/v1",
+        explicit_api_key="lm-studio",
+        task="compression",
+    )
+    try:
+        assert isinstance(client, ac.CodexAuxiliaryClient)
+    finally:
+        if client is not None:
+            client.close()
+
+
 def test_cloud_provider_is_not_short_circuited_when_the_gate_is_off(
     gate_off, monkeypatch
 ):

@@ -54,6 +54,18 @@ class TestFallbackApiMode:
     def test_openrouter_stays_chat_completions(self):
         assert _fallback_api_mode("openrouter", "https://openrouter.ai/api/v1") == "chat_completions"
 
+    def test_lmstudio_defaults_to_responses(self):
+        assert (
+            _fallback_api_mode("lmstudio", "http://127.0.0.1:1234/v1")
+            == "codex_responses"
+        )
+
+    def test_lmstudio_loopback_alias_defaults_to_responses(self):
+        assert (
+            _fallback_api_mode("custom", "http://localhost:1234/v1")
+            == "codex_responses"
+        )
+
     def test_minimax_declared_anthropic_transport_honored(self):
         # Same latent bug class: minimax declares an Anthropic-compatible
         # transport but previously fell back to chat_completions when the

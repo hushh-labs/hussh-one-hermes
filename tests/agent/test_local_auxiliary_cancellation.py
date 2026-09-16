@@ -108,6 +108,16 @@ def test_failed_abort_retains_capacity_until_worker_timeout(server, monkeypatch)
     from agent import agent_runtime_helpers
     client, started, disconnected, _, key = server
     monkeypatch.setattr(agent_runtime_helpers, 'force_close_tcp_sockets', lambda _: 0)
+    # This regression exercises the explicit finite-admission contract. The
+    # production default is unbounded and therefore intentionally cannot
+    # report a full-capacity state.
+    monkeypatch.setattr(
+        aux,
+        '_local_auxiliary_lease',
+        lambda _client, _kwargs: LocalInferenceAdmission.acquire(
+            key, max_concurrency=1, wait=0.25
+        ),
+    )
     cancel = threading.Event()
     owner_done = threading.Event()
 
@@ -160,7 +170,9 @@ def test_cancel_during_client_creation_never_dispatches_or_releases_early(monkey
         return owned
     shared = SimpleNamespace(base_url='http://127.0.0.1:1234/v1', copy=copy_client)
     monkeypatch.setattr(process_bootstrap, 'build_keepalive_http_client', lambda *_a, **_k: SimpleNamespace(close=lambda: None))
-    request = LocalAuxiliaryRequest(shared, lambda: LocalInferenceAdmission.acquire(key))
+    request = LocalAuxiliaryRequest(
+        shared, lambda: LocalInferenceAdmission.acquire(key, max_concurrency=1)
+    )
     def run():
         try:
             request.run({}, lambda *_args: calls.append('dispatched'))

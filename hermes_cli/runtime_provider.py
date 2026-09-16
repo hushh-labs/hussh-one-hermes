@@ -126,6 +126,20 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
+    # LM Studio's OpenAI-compatible local server exposes both legacy chat and
+    # Responses routes. Prefer Responses for the loopback service so custom
+    # provider aliases and fresh runtime resolution use the same protocol as
+    # the built-in ``lmstudio`` provider.
+    parsed_url = urlparse(normalized)
+    try:
+        local_port = parsed_url.port
+    except ValueError:
+        # A malformed port must fall through to the ordinary provider
+        # detection path rather than turning configuration inspection into a
+        # startup exception.
+        local_port = None
+    if hostname in {"127.0.0.1", "localhost", "::1"} and local_port == 1234:
+        return "codex_responses"
     if hostname == "api.x.ai":
         return "codex_responses"
     # Official OpenAI host family: canonical api.openai.com plus the

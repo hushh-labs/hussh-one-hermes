@@ -83,7 +83,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="HERMES_QWEN_BASE_URL",
     ),
     "lmstudio": HermesOverlay(
-        transport="openai_chat",
+        # LM Studio exposes the OpenAI Responses surface, including streamed
+        # output items and tool calls. Keep local inference on the same
+        # Responses wire used by the relay adapters so message/tool
+        # conversion and cancellation use one implementation.
+        transport="codex_responses",
         auth_type="api_key",
         extra_env_vars=("LM_API_KEY",),
         base_url_override="http://127.0.0.1:1234/v1",

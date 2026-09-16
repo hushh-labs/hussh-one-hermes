@@ -718,6 +718,11 @@ def init_agent(
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
+    elif agent.provider in {"lmstudio", "lm-studio", "lm_studio"}:
+        # LM Studio exposes an OpenAI-compatible Responses endpoint. Keep
+        # direct AIAgent construction aligned with the central provider
+        # registry so local main and auxiliary calls share one wire format.
+        agent.api_mode = "codex_responses"
     elif (provider_name is None) and (
         agent._base_url_hostname == "chatgpt.com"
         and "/backend-api/codex" in agent._base_url_lower

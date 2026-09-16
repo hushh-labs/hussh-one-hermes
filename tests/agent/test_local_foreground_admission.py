@@ -15,7 +15,7 @@ from hermes_cli.hussh_one_routing.local_runtime import LocalInferenceAdmission
 @pytest.mark.parametrize('cancelled', [False, True])
 def test_queued_turn_resumes_or_cancels_without_leaking_capacity(cancelled):
     key = f'admission-test-{uuid.uuid4().hex}'
-    held = LocalInferenceAdmission.acquire(key)
+    held = LocalInferenceAdmission.acquire(key, max_concurrency=1)
     waiting = threading.Event()
     cancel = threading.Event()
     events, results = [], []
@@ -27,7 +27,9 @@ def test_queued_turn_resumes_or_cancels_without_leaking_capacity(cancelled):
     agent = SimpleNamespace(base_url='http://127.0.0.1:1234/v1',
                             run_budget_seconds=5, _run_budget_started_at=time.time(),
                             status_callback=status)
-    runtime = SimpleNamespace(acquire=lambda _model, **kw: LocalInferenceAdmission.acquire(key, **kw))
+    runtime = SimpleNamespace(acquire=lambda _model, **kw: LocalInferenceAdmission.acquire(
+        key, max_concurrency=1, **kw
+    ))
 
     def check_attempt():
         if cancel.is_set():
@@ -72,7 +74,7 @@ def test_status_failure_does_not_leak_granted_permit():
     agent = SimpleNamespace(base_url='http://127.0.0.1:1234/v1', status_callback=broken)
     def acquire(_model, **kwargs):
         kwargs['on_wait']()
-        return LocalInferenceAdmission.acquire(key, wait=0)
+        return LocalInferenceAdmission.acquire(key, max_concurrency=1, wait=0)
     lease = _acquire_local_for_agent(agent, SimpleNamespace(acquire=acquire), 'test')
     lease.release()
     LocalInferenceAdmission.acquire(key, wait=0).release()
@@ -85,11 +87,11 @@ def test_actual_nonstream_watchdog_removes_queued_attempt_before_dispatch(monkey
     from run_agent import AIAgent
 
     key = f'watchdog-admission-{uuid.uuid4().hex}'
-    held = LocalInferenceAdmission.acquire(key)
+    held = LocalInferenceAdmission.acquire(key, max_concurrency=1)
     queue_exited = threading.Event()
     def acquire(_model, **kwargs):
         try:
-            return LocalInferenceAdmission.acquire(key, **kwargs)
+            return LocalInferenceAdmission.acquire(key, max_concurrency=1, **kwargs)
         finally:
             queue_exited.set()
     runtime = SimpleNamespace(acquire=acquire)

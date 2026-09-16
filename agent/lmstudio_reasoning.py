@@ -1,5 +1,5 @@
-"""LM Studio reasoning-effort resolution shared by the chat-completions
-transport and run_agent's iteration-limit summary path.
+"""LM Studio reasoning-effort resolution shared by OpenAI-wire transports
+and run_agent's iteration-limit summary path.
 
 LM Studio publishes per-model ``capabilities.reasoning.allowed_options`` (e.g.
 ``["off","on"]`` for toggle-style models, ``["off","minimal","low"]`` for
@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-# LM Studio accepts these top-level reasoning_effort values via its
-# OpenAI-compatible chat.completions endpoint.
+# LM Studio accepts these values through its OpenAI-compatible request
+# surfaces. The Responses adapter wraps the selected value as
+# ``reasoning: {"effort": ...}``; the legacy chat path uses its native
+# ``reasoning_effort`` field.
 _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 # Toggle-style models publish allowed_options as ["off","on"] in /api/v1/models.

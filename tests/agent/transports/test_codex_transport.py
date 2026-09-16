@@ -39,6 +39,51 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_lmstudio_uses_responses_shape_without_foreign_cache_or_reasoning_blobs(
+        self, transport
+    ):
+        messages = [
+            {"role": "user", "content": "Summarize this"},
+            {
+                "role": "assistant",
+                "content": "prior answer",
+                "codex_reasoning_items": [
+                    {"type": "reasoning", "encrypted_content": "foreign"}
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="local-test-model",
+            messages=messages,
+            tools=[],
+            provider="lmstudio",
+            base_url="http://127.0.0.1:1234/v1",
+            max_tokens=321,
+            reasoning_config={"enabled": True, "effort": "high"},
+            lmstudio_reasoning_options=["off", "low", "medium", "high"],
+            session_id="lmstudio-test",
+        )
+        assert kw["max_output_tokens"] == 321
+        assert kw["reasoning"] == {"effort": "high"}
+        assert "include" not in kw
+        assert "prompt_cache_key" not in kw
+        assert all(item.get("type") != "reasoning" for item in kw["input"])
+
+    def test_lmstudio_explicit_reasoning_disable_is_preserved_when_supported(
+        self, transport
+    ):
+        kw = transport.build_kwargs(
+            model="local-test-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            provider="lmstudio",
+            base_url="http://127.0.0.1:1234/v1",
+            reasoning_config={"enabled": False},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning"] == {"effort": "none"}
+        assert "include" not in kw
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must

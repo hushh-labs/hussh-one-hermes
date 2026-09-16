@@ -10,6 +10,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Optional
 
 import psutil
 
@@ -77,23 +78,60 @@ class ProcessPermit:
                 logger.info("local_inference_idle_sleep_prevention active=false")
 
 
-def acquire_process_permit(key: str, capacity: int, wait: float, priority: str, check_cancel=None, on_wait=None) -> ProcessPermit:
-    """Claim a permit atomically; never expire a live process's active claim.
+def acquire_process_permit(
+    key: str,
+    capacity: Optional[int],
+    wait: float,
+    priority: str,
+    check_cancel=None,
+    on_wait=None,
+) -> ProcessPermit:
+    """Record ownership across processes without imposing a default cap.
 
-    Capacity is pinned by the first claimant for a key. Changing per-call
-    settings cannot replace a pool with active requests. Dead-process cleanup
-    uses both PID and birth time to distinguish PID reuse.
+    ``capacity=None`` is the normal local-runtime path.  It records an active
+    ticket for diagnostics and crash recovery, but grants immediately so the
+    provider (LM Studio, Ollama, or another loopback server) controls its own
+    parallelism.  A positive capacity remains available only for an explicit
+    caller policy.  Existing rows created by the old single-flight default are
+    migrated to ``0`` (the durable unlimited sentinel) when an unbounded caller
+    arrives, so a stale database row cannot keep blocking every future turn.
     """
     ticket = uuid.uuid4().hex
     permit = ProcessPermit(ticket)
     deadline = time.monotonic() + max(0.0, wait)
+    requested_capacity = None
+    if capacity is not None:
+        try:
+            requested_capacity = int(capacity)
+        except (TypeError, ValueError):
+            requested_capacity = None
+        if requested_capacity is not None and requested_capacity <= 0:
+            requested_capacity = None
     conn = _queue_connection()
     try:
         with conn:
-            conn.execute("INSERT OR IGNORE INTO inference_limits VALUES (?, ?)", (key, max(1, capacity)))
+            conn.execute(
+                "INSERT OR IGNORE INTO inference_limits VALUES (?, ?)",
+                (key, requested_capacity if requested_capacity is not None else 0),
+            )
+            if requested_capacity is None:
+                # 0 is the backwards-compatible unlimited sentinel. This is
+                # also the migration for rows pinned to capacity=1 by older
+                # Hermes processes.
+                conn.execute(
+                    "UPDATE inference_limits SET capacity=0 WHERE key=?",
+                    (key,),
+                )
             conn.execute("INSERT INTO inference_queue VALUES (?, ?, ?, ?, ?, ?, 0)",
                          (ticket, key, os.getpid(), psutil.Process().create_time(),
                           0 if priority == "interactive" else 1, time.time()))
+            if requested_capacity is None:
+                conn.execute(
+                    "UPDATE inference_queue SET active=1 WHERE ticket=?",
+                    (ticket,),
+                )
+                permit.prevent_idle_sleep()
+                return permit
         waiting_reported = False
         while True:
             if check_cancel is not None:
@@ -107,7 +145,14 @@ def acquire_process_permit(key: str, capacity: int, wait: float, priority: str, 
                 limit = conn.execute("SELECT capacity FROM inference_limits WHERE key=?", (key,)).fetchone()[0]
                 active = conn.execute("SELECT count(*) FROM inference_queue WHERE key=? AND active=1", (key,)).fetchone()[0]
                 first = conn.execute("SELECT ticket FROM inference_queue WHERE key=? AND active=0 ORDER BY priority,queued,ticket LIMIT 1", (key,)).fetchone()
-                granted = active < limit and first is not None and first[0] == ticket
+                # A non-positive persisted capacity is the durable unlimited
+                # mode. It never waits for another Hermes process to release a
+                # ticket, while still retaining live ownership rows for
+                # diagnostics and dead-process cleanup.
+                granted = (
+                    limit <= 0
+                    or (active < limit and first is not None and first[0] == ticket)
+                )
                 if granted:
                     conn.execute("UPDATE inference_queue SET active=1 WHERE ticket=?", (ticket,))
                 conn.commit()

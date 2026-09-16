@@ -121,6 +121,52 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestLocalAuxiliaryAdmission:
+    def test_local_codex_wrapper_gets_request_owned_clone(self, monkeypatch):
+        import agent.auxiliary_client as aux
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        class FakeResponses:
+            def create(self, **_kwargs):
+                return []
+
+        class FakeOpenAI:
+            api_key = "local"
+            base_url = "http://127.0.0.1:1234/v1"
+
+            def __init__(self):
+                self.responses = FakeResponses()
+                self.copied = []
+
+            def copy(self, **kwargs):
+                self.copied.append(kwargs)
+                return FakeOpenAI()
+
+            def close(self):
+                pass
+
+        lease = MagicMock()
+        monkeypatch.setattr(aux, "_local_auxiliary_lease", lambda *_args: lease)
+        monkeypatch.setattr(
+            "agent.process_bootstrap.build_keepalive_http_client",
+            lambda *_args, **_kwargs: SimpleNamespace(close=lambda: None),
+        )
+        real = FakeOpenAI()
+        wrapper = CodexAuxiliaryClient(real, "local-test-model")
+        seen = []
+        response = SimpleNamespace(choices=[])
+
+        result = aux._relay_sync_completion(
+            wrapper,
+            {"model": "local-test-model"},
+            create=lambda owned, _request: (seen.append(owned), response)[1],
+        )
+
+        assert result is response
+        assert seen and isinstance(seen[0], CodexAuxiliaryClient)
+        assert seen[0] is not wrapper
+        assert real.copied and real.copied[0]["max_retries"] == 0
+        lease.release.assert_called_once_with()
+
     def test_local_auxiliary_completion_uses_shared_admission(self, monkeypatch):
         import agent.auxiliary_client as aux
 
@@ -2942,6 +2988,107 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_lmstudio_responses_preserves_output_cap_and_drops_codex_only_fields(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=None),
+            ),
+        ]
+
+        class _FakeStream:
+            def __iter__(self):
+                return iter(events)
+
+            def close(self):
+                pass
+
+        captured = {}
+        real_client = MagicMock()
+        real_client.base_url = "http://127.0.0.1:1234/v1"
+
+        def create(**kwargs):
+            captured.update(kwargs)
+            return _FakeStream()
+
+        real_client.responses.create = create
+        adapter = _CodexCompletionsAdapter(real_client, "local-test-model")
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=256,
+            temperature=0.2,
+            extra_body={"reasoning": {"effort": "high"}},
+        )
+
+        assert captured["max_output_tokens"] == 256
+        assert captured["temperature"] == 0.2
+        assert captured["reasoning"] == {"effort": "high"}
+        assert "include" not in captured
+        assert "prompt_cache_key" not in captured
+        assert "prompt_cache_retention" not in captured
+
+    @pytest.mark.asyncio
+    async def test_lmstudio_async_adapter_clones_transport_per_request(self):
+        from agent.auxiliary_client import (
+            _AsyncCodexCompletionsAdapter,
+            _CodexCompletionsAdapter,
+        )
+
+        item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", usage=None),
+            ),
+        ]
+
+        class FakeClient:
+            base_url = "http://127.0.0.1:1234/v1"
+
+            def __init__(self):
+                self.copy_calls = []
+                self.responses = self
+
+            def copy(self, **kwargs):
+                self.copy_calls.append(kwargs)
+                transport = kwargs.get("http_client")
+                if transport is not None:
+                    transport.close()
+                clone = FakeClient()
+                clone.responses = clone
+                return clone
+
+            def create(self, **_kwargs):
+                return iter(events)
+
+            def close(self):
+                pass
+
+        real = FakeClient()
+        async_adapter = _AsyncCodexCompletionsAdapter(
+            _CodexCompletionsAdapter(real, "local-test-model")
+        )
+        response = await async_adapter.create(
+            messages=[{"role": "user", "content": "hi"}]
+        )
+        assert response.choices[0].message.content == "hi"
+        assert len(real.copy_calls) == 1
+        assert real.copy_calls[0]["max_retries"] == 0
 
 
 

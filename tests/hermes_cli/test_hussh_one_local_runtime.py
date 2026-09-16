@@ -150,17 +150,29 @@ def test_resolver_invalidation_forces_a_fresh_inventory_probe():
     ]
 
 
-def test_admission_is_bounded_and_lease_release_is_idempotent():
+def test_explicit_admission_limit_and_lease_release_are_idempotent():
     key = "test-admission-" + str(time.time_ns())
-    first = LocalInferenceAdmission.acquire(key, wait=0)
+    first = LocalInferenceAdmission.acquire(key, max_concurrency=1, wait=0)
     try:
         with pytest.raises(LocalModelOverloaded):
-            LocalInferenceAdmission.acquire(key, wait=0.01)
+            LocalInferenceAdmission.acquire(key, max_concurrency=1, wait=0.01)
     finally:
         first.release()
         first.release()
     second = LocalInferenceAdmission.acquire(key, wait=0)
     second.release()
+
+
+def test_default_local_admission_is_unbounded():
+    key = "unbounded-admission-" + str(time.time_ns())
+    first = LocalInferenceAdmission.acquire(key, wait=0)
+    second = LocalInferenceAdmission.acquire(key, wait=0)
+    try:
+        assert first.key == key
+        assert second.key == key
+    finally:
+        first.release()
+        second.release()
 
 
 def test_circuit_opens_only_for_repeated_identical_failures_and_recovers():
@@ -191,12 +203,12 @@ def test_runtime_records_repeated_preflight_outages_without_restarting_process()
 
 def test_admission_wait_does_not_block_other_threads_forever():
     key = "thread-admission-" + str(time.time_ns())
-    lease = LocalInferenceAdmission.acquire(key, wait=0)
+    lease = LocalInferenceAdmission.acquire(key, max_concurrency=1, wait=0)
     result = []
 
     def attempt():
         try:
-            LocalInferenceAdmission.acquire(key, wait=0.02)
+            LocalInferenceAdmission.acquire(key, max_concurrency=1, wait=0.02)
         except LocalModelOverloaded:
             result.append(True)
 
@@ -209,7 +221,7 @@ def test_admission_wait_does_not_block_other_threads_forever():
 
 def test_interactive_waiter_preempts_queued_background_work():
     key = "priority-admission-" + str(time.time_ns())
-    first = LocalInferenceAdmission.acquire(key, wait=0)
+    first = LocalInferenceAdmission.acquire(key, max_concurrency=1, wait=0)
     background_started = threading.Event()
     interactive_started = threading.Event()
     background_acquired = threading.Event()
@@ -219,7 +231,7 @@ def test_interactive_waiter_preempts_queued_background_work():
     def background():
         background_started.set()
         lease = LocalInferenceAdmission.acquire(
-            key, wait=1.0, priority="background"
+            key, max_concurrency=1, wait=1.0, priority="background"
         )
         background_acquired.set()
         lease.release()
@@ -227,7 +239,7 @@ def test_interactive_waiter_preempts_queued_background_work():
     def interactive():
         interactive_started.set()
         lease = LocalInferenceAdmission.acquire(
-            key, wait=1.0, priority="interactive"
+            key, max_concurrency=1, wait=1.0, priority="interactive"
         )
         interactive_acquired.set()
         release_interactive.wait(timeout=1.0)

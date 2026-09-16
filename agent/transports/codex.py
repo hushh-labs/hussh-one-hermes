@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 # Cron fires build session_id as ``cron_<job_id>_<YYYYMMDD_HHMMSS>`` (see
 # cron/scheduler.py). The trailing timestamp is per-fire noise; stripped so
@@ -256,6 +257,33 @@ def _is_azure_foundry_responses(params: Dict[str, Any]) -> bool:
     )
 
 
+def _is_lmstudio_responses_target(params: Dict[str, Any]) -> bool:
+    """Return True for LM Studio's local OpenAI-compatible Responses API.
+
+    The provider id is the authoritative signal.  The loopback URL check is
+    a compatibility fallback for callers that construct a transport directly
+    without resolving a provider first.  Restricting the fallback to the
+    documented LM Studio port avoids changing behavior for unrelated local
+    OpenAI-compatible servers.
+    """
+    provider = str(params.get("provider") or "").strip().lower()
+    if provider in {"lmstudio", "lm-studio", "lm_studio"}:
+        return True
+    base_url = str(params.get("base_url") or "").strip()
+    parsed_url = urlparse(base_url)
+    try:
+        port = parsed_url.port
+    except ValueError:
+        return False
+    try:
+        from utils import base_url_hostname
+
+        hostname = base_url_hostname(base_url)
+    except Exception:
+        hostname = (parsed_url.hostname or "").lower().rstrip(".")
+    return hostname in {"127.0.0.1", "localhost", "::1"} and port == 1234
+
+
 def _is_post_tool_replay(messages: Optional[List[Dict[str, Any]]]) -> bool:
     """Return True when ``messages`` end on a tool result awaiting a follow-up.
 
@@ -428,6 +456,8 @@ class ResponsesApiTransport(ProviderTransport):
             is_github_responses: bool — Copilot/GitHub models backend
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
+            lmstudio_reasoning_options: list[str] | None — LM Studio's
+                model-advertised reasoning options
             github_reasoning_extra: dict | None — Copilot reasoning params
         """
         from agent.codex_responses_adapter import (
@@ -449,9 +479,15 @@ class ResponsesApiTransport(ProviderTransport):
         is_github_responses = params.get("is_github_responses") is True
         is_codex_backend = params.get("is_codex_backend") is True
         is_xai_responses = params.get("is_xai_responses") is True
+        is_lmstudio_responses = _is_lmstudio_responses_target(params)
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
+        # LM Studio is a local, independent Responses endpoint.  It does not
+        # mint OpenAI/Codex encrypted-reasoning items, so replaying those blobs
+        # from a prior provider can make an otherwise valid request fail.
+        if is_lmstudio_responses:
+            replay_encrypted_reasoning = False
         if replay_encrypted_reasoning and _is_azure_foundry_responses(params):
             # Microsoft Foundry accepts the initial Responses function-call
             # request and ordinary (non-tool) multi-turn continuity, but
@@ -512,12 +548,19 @@ class ResponsesApiTransport(ProviderTransport):
             # Actual Computer relays to SGLang/vLLM backends:
             # none/low/medium/high/max.
             _supported = ACTUAL_RELAY_EFFORTS
+        elif is_lmstudio_responses:
+            # LM Studio publishes the accepted effort values through
+            # /api/v1/models.  Keep its provider-specific vocabulary and let
+            # an unavailable probe omit the optional dial rather than invent
+            # a value that the loaded model may reject.
+            _supported = None
         else:
             # OpenAI/Codex Responses backend — per-model vocabulary
             # (live-verified: "max" is gpt-5.6-only, "minimal" always
             # rejected). #68365 premise confirmed.
             _supported = codex_supported_efforts(model)
-        reasoning_effort = clamp_effort(reasoning_effort, _supported)
+        if not is_lmstudio_responses:
+            reasoning_effort = clamp_effort(reasoning_effort, _supported)
 
         response_tools = _responses_tools(tools)
 
@@ -623,15 +666,21 @@ class ResponsesApiTransport(ProviderTransport):
         ) or _cache_scope
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
-        if not is_github_responses and not is_xai_responses and cache_key:
+        if (
+            not is_github_responses
+            and not is_xai_responses
+            and not is_lmstudio_responses
+            and cache_key
+        ):
             kwargs["prompt_cache_key"] = cache_key
 
-        cache_retention = _default_prompt_cache_retention_for_request(
-            model,
-            params.get("base_url"),
-        )
-        if cache_retention:
-            kwargs.setdefault("prompt_cache_retention", cache_retention)
+        if not is_lmstudio_responses:
+            cache_retention = _default_prompt_cache_retention_for_request(
+                model,
+                params.get("base_url"),
+            )
+            if cache_retention:
+                kwargs.setdefault("prompt_cache_retention", cache_retention)
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
@@ -650,6 +699,15 @@ class ResponsesApiTransport(ProviderTransport):
             # `reasoning` key at all and let the model reason on its own.
             if grok_supports_reasoning_effort(model):
                 kwargs["reasoning"] = {"effort": reasoning_effort}
+        elif is_lmstudio_responses:
+            from agent.lmstudio_reasoning import resolve_lmstudio_effort
+
+            lmstudio_effort = resolve_lmstudio_effort(
+                reasoning_config,
+                params.get("lmstudio_reasoning_options"),
+            )
+            if lmstudio_effort is not None:
+                kwargs["reasoning"] = {"effort": lmstudio_effort}
         elif reasoning_enabled:
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
@@ -660,7 +718,11 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["include"] = (
                     ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
                 )
-        elif not is_github_responses and not is_xai_responses:
+        elif (
+            not is_github_responses
+            and not is_xai_responses
+            and not is_lmstudio_responses
+        ):
             kwargs["include"] = []
 
         request_overrides = params.get("request_overrides")

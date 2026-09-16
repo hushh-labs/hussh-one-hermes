@@ -35,6 +35,20 @@ sys.stdin.read()
         child.stdout.close()
 
 
+def test_default_process_admission_is_unbounded_and_migrates_legacy_cap():
+    key = "process-unlimited"
+    legacy = acquire_process_permit(key, 1, 0, "interactive")
+    legacy.release()
+
+    first = acquire_process_permit(key, None, 0, "interactive")
+    second = acquire_process_permit(key, None, 0, "background")
+    try:
+        assert first.ticket != second.ticket
+    finally:
+        first.release()
+        second.release()
+
+
 @pytest.mark.macos_only
 def test_idle_sleep_assertion_is_owned_and_released(monkeypatch):
     import hermes_cli.config

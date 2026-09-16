@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bounded local-model readiness, admission, and attempt bookkeeping.
+"""Local-model readiness, optional admission, and attempt bookkeeping.
 
 LM Studio exposes a stable OpenAI-compatible front server (normally port
 1234) while its llama-server worker may use another port.  Hermes must route
 through the front server, verify the resident model before sending work, and
-avoid letting background calls consume every local inference slot.
+keep request ownership and diagnostics explicit without imposing an application
+single-flight limit on a local model server.  Local providers own their own
+parallelism; Hermes only applies a limit when a caller explicitly supplies one.
 
 This module deliberately has no model fallback policy.  It supplies typed
 readiness and admission signals to the existing agent retry/fallback owner and
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_FRONT_URL = "http://127.0.0.1:1234/v1"
 DEFAULT_PROBE_TIMEOUT_S = 3.0
 DEFAULT_CACHE_TTL_S = 5.0
-DEFAULT_MAX_CONCURRENCY = 1
+DEFAULT_MAX_CONCURRENCY: int | None = None
 DEFAULT_ADMISSION_WAIT_S = 0.25
 DEFAULT_CIRCUIT_THRESHOLD = 3
 DEFAULT_CIRCUIT_COOLDOWN_S = 30.0
@@ -323,9 +325,27 @@ class LocalModelResolver:
                 self._cache.pop(str(model).strip(), None)
 
 
+def _normalize_limit(value: int | None) -> int | None:
+    """Normalize an optional caller-owned concurrency policy.
+
+    ``None`` is the normal local-runtime behavior: the provider decides how
+    many requests it can run.  Non-positive values are treated as unbounded so
+    a stale or legacy zero setting cannot turn into a dead queue.
+    """
+    if value is None:
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
 @dataclass
 class _AdmissionPool:
-    limit: int
+    # ``None`` means unbounded.  A finite value is an explicit caller policy,
+    # never a Hermes-wide default.
+    limit: int | None
     condition: threading.Condition = field(default_factory=threading.Condition)
     active: int = 0
     waiters: int = 0
@@ -334,7 +354,7 @@ class _AdmissionPool:
 
 
 class AdmissionLease:
-    """A single bounded local inference permit."""
+    """Ownership record for one local inference attempt."""
 
     def __init__(self, pool: _AdmissionPool, key: str) -> None:
         self._pool = pool
@@ -372,7 +392,7 @@ class LocalInferenceAdmission:
         cls,
         key: str,
         *,
-        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        max_concurrency: int | None = DEFAULT_MAX_CONCURRENCY,
         wait: float = DEFAULT_ADMISSION_WAIT_S,
         priority: str = "interactive",
         check_cancel: Optional[Callable[[], None]] = None,
@@ -400,12 +420,12 @@ class LocalInferenceAdmission:
 
     @classmethod
     def _acquire_thread_permit(
-        cls, key: str, *, max_concurrency: int, wait: float, priority: str,
+        cls, key: str, *, max_concurrency: int | None, wait: float, priority: str,
         check_cancel: Optional[Callable[[], None]] = None,
         on_wait: Optional[Callable[[], None]] = None,
     ) -> AdmissionLease:
         key = str(key or "local").strip()
-        limit = max(1, int(max_concurrency))
+        limit = _normalize_limit(max_concurrency)
         priority = "background" if str(priority).strip().lower() == "background" else "interactive"
         with cls._lock:
             pool = cls._pools.get(key)
@@ -428,7 +448,10 @@ class LocalInferenceAdmission:
                     interactive_priority = (
                         priority == "interactive" or pool.interactive_waiters == 0
                     )
-                    if pool.active < pool.limit and interactive_priority:
+                    if (
+                        (pool.limit is None or pool.active < pool.limit)
+                        and interactive_priority
+                    ):
                         pool.active += 1
                         return AdmissionLease(pool, key)
                     if not waiting_reported and on_wait is not None:
@@ -551,7 +574,13 @@ class LocalRuntime:
             self.resolver.invalidate(model)
             self.circuit.record_failure(key, exc)
             raise
-        return LocalInferenceAdmission.acquire(key, wait=wait, priority=priority, check_cancel=check_cancel, on_wait=on_wait)
+        return LocalInferenceAdmission.acquire(
+            key,
+            wait=wait,
+            priority=priority,
+            check_cancel=check_cancel,
+            on_wait=on_wait,
+        )
 
     def record_success(self, model: str) -> None:
         self.circuit.record_success(self.key(model))

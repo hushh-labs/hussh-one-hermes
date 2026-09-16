@@ -4368,6 +4368,12 @@ def _iter_pool_sockets(client: Any):
     try:
         http_client = getattr(client, "_client", None)
         if http_client is None:
+            # CodexAuxiliaryClient owns a plain OpenAI client under
+            # ``_real_client``.  Cancellation must traverse that wrapper so
+            # Responses streams on local LM Studio can be interrupted without
+            # closing the shared adapter object.
+            http_client = getattr(client, "_real_client", None)
+        if http_client is None:
             # Some SDK wrappers *are* the httpx client (or expose the pool
             # directly). Fall through so mount-aware discovery still runs.
             http_client = client

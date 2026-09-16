@@ -1592,6 +1592,7 @@ class _CodexCompletionsAdapter:
         # Responses path normalizes tool history identically and cannot drift.
         from agent.codex_responses_adapter import _chat_messages_to_responses_input
         from utils import base_url_host_matches
+        from agent.transports.codex import _is_lmstudio_responses_target
 
         instructions = "You are a helpful assistant."
         replay_messages: List[Dict[str, Any]] = []
@@ -1612,6 +1613,7 @@ class _CodexCompletionsAdapter:
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
         _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        _is_lmstudio = _is_lmstudio_responses_target({"base_url": _host_for_input})
         # Auxiliary calls never send ``context_management`` (native
         # compaction is a main-turn feature), so they must never replay a
         # compaction checkpoint from the replayed history nor let one
@@ -1641,8 +1643,18 @@ class _CodexCompletionsAdapter:
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
 
-        # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
-        # support max_output_tokens or temperature — omit to avoid 400 errors.
+        # The consumer Codex endpoint does NOT support max_output_tokens or
+        # temperature. LM Studio's Responses endpoint does, so preserve the
+        # caller's output bound and temperature there instead of applying the
+        # Codex-specific omission to every Responses-compatible host.
+        if _is_lmstudio:
+            max_tokens = kwargs.get("max_tokens")
+            if max_tokens is None:
+                max_tokens = kwargs.get("max_completion_tokens")
+            if max_tokens is not None:
+                resp_kwargs["max_output_tokens"] = max_tokens
+            if "temperature" in kwargs and kwargs.get("temperature") is not None:
+                resp_kwargs["temperature"] = kwargs["temperature"]
 
         # Translate extra_body.reasoning (chat.completions shape) into the
         # Responses API's top-level reasoning + include fields.  Mirrors
@@ -1653,7 +1665,13 @@ class _CodexCompletionsAdapter:
         if isinstance(extra_body, dict):
             reasoning_cfg = extra_body.get("reasoning")
             if isinstance(reasoning_cfg, dict):
-                if reasoning_cfg.get("enabled") is False:
+                if _is_lmstudio:
+                    from agent.lmstudio_reasoning import resolve_lmstudio_effort
+
+                    effort = resolve_lmstudio_effort(reasoning_cfg, None)
+                    if effort is not None:
+                        resp_kwargs["reasoning"] = {"effort": effort}
+                elif reasoning_cfg.get("enabled") is False:
                     # Reasoning explicitly disabled — do not set reasoning
                     # or include.  The Codex backend still thinks by
                     # default, but we honor the caller's intent where the
@@ -1747,7 +1765,12 @@ class _CodexCompletionsAdapter:
                 base_url_host_matches(_host_src, "githubcopilot.com")
                 or base_url_host_matches(_host_src, "models.github.ai")
             )
-            if not _is_xai and not _is_github and "prompt_cache_key" not in resp_kwargs:
+            if (
+                not _is_xai
+                and not _is_github
+                and not _is_lmstudio
+                and "prompt_cache_key" not in resp_kwargs
+            ):
                 # Scope by the owning turn's conversation so two unrelated
                 # sessions with the same instructions/tools (e.g. compression,
                 # MoA, flush_memories firing back-to-back on different
@@ -1763,7 +1786,7 @@ class _CodexCompletionsAdapter:
                 _cache_key = _content_cache_key(instructions, resp_kwargs.get("tools"), _scope)
                 if _cache_key:
                     resp_kwargs["prompt_cache_key"] = _cache_key
-            if "prompt_cache_retention" not in resp_kwargs:
+            if not _is_lmstudio and "prompt_cache_retention" not in resp_kwargs:
                 _cache_retention = _default_prompt_cache_retention_for_request(
                     model,
                     _host_src,
@@ -2035,6 +2058,7 @@ class CodexAuxiliaryClient:
 
     def __init__(self, real_client: OpenAI, model: str):
         self._real_client = real_client
+        self._model = model
         adapter = _CodexCompletionsAdapter(real_client, model)
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
@@ -2042,6 +2066,15 @@ class CodexAuxiliaryClient:
 
     def close(self):
         self._real_client.close()
+
+    def copy(self, **kwargs) -> "CodexAuxiliaryClient":
+        """Clone the underlying client while preserving Responses routing.
+
+        Local auxiliary cancellation gives each request an independent httpx
+        transport.  Keeping this operation on the wrapper prevents that
+        ownership seam from accidentally falling back to chat completions.
+        """
+        return type(self)(self._real_client.copy(**kwargs), self._model)
 
 
 class _AsyncCodexCompletionsAdapter:
@@ -2056,7 +2089,57 @@ class _AsyncCodexCompletionsAdapter:
 
     async def create(self, **kwargs) -> Any:
         import asyncio
-        return await asyncio.to_thread(self._sync.create, **kwargs)
+        from agent.transports.codex import _is_lmstudio_responses_target
+
+        if not _is_lmstudio_responses_target(
+            {"base_url": str(getattr(self._sync._client, "base_url", "") or "")}
+        ):
+            return await asyncio.to_thread(self._sync.create, **kwargs)
+
+        # The async OpenAI wrapper's shared client is only a compatibility
+        # facade around the sync Responses adapter. Clone the underlying
+        # transport for each LM Studio request so cancelling one coroutine
+        # cannot close or poison another conversation's connection pool.
+        from agent.process_bootstrap import build_keepalive_http_client
+        from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+        base_url = str(getattr(self._sync._client, "base_url", "") or "")
+        transport = await asyncio.to_thread(
+            build_keepalive_http_client,
+            base_url,
+            verify=_resolve_aux_verify(base_url),
+        )
+        if transport is None:
+            raise RuntimeError("Cannot create an independent local auxiliary transport")
+        try:
+            owned_client = self._sync._client.copy(
+                http_client=transport,
+                max_retries=0,
+            )
+        except BaseException:
+            transport.close()
+            raise
+        owned_adapter = _CodexCompletionsAdapter(owned_client, self._sync._model)
+
+        def run_owned() -> Any:
+            try:
+                return owned_adapter.create(**kwargs)
+            finally:
+                owned_client.close()
+
+        worker = asyncio.create_task(asyncio.to_thread(run_owned))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # Shutdown is request-scoped; the worker owns final close. Waiting
+            # for it before propagating cancellation keeps admission occupied
+            # until the provider request has actually terminated.
+            await asyncio.to_thread(force_close_tcp_sockets, owned_client)
+            try:
+                await asyncio.shield(worker)
+            except BaseException:
+                pass
+            raise
 
 
 class _AsyncCodexChatShim:
@@ -2068,6 +2151,7 @@ class AsyncCodexAuxiliaryClient:
     """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
 
     def __init__(self, sync_wrapper: "CodexAuxiliaryClient"):
+        self._sync_wrapper = sync_wrapper
         sync_adapter = sync_wrapper.chat.completions
         async_adapter = _AsyncCodexCompletionsAdapter(sync_adapter)
         self.chat = _AsyncCodexChatShim(async_adapter)
@@ -2081,6 +2165,12 @@ class AsyncCodexAuxiliaryClient:
         # subsequent async aux call with 'Connection error' until the
         # gateway restarts.
         self._real_client = sync_wrapper._real_client
+
+    def copy(self, **kwargs) -> "AsyncCodexAuxiliaryClient":
+        return type(self)(self._sync_wrapper.copy(**kwargs))
+
+    def close(self):
+        self._real_client.close()
 
 
 def _translate_anthropic_response_format(
@@ -3485,14 +3575,51 @@ def _relay_sync_completion(
     create: Callable[[Any, dict[str, Any]], Any] | None = None,
 ) -> Any:
     import openai
-    create_request = create or (lambda request_client, request: request_client.chat.completions.create(**request))
+    if create is None:
+        create_request = lambda request_client, request: request_client.chat.completions.create(**request)
+    else:
+        # Keep the historical one-argument test/integration callback contract
+        # while allowing request-owned transports to pass their cloned client
+        # to the two-argument adapter callback.
+        try:
+            positional = [
+                parameter
+                for parameter in inspect.signature(create).parameters.values()
+                if parameter.kind
+                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            accepts_two = any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                for parameter in inspect.signature(create).parameters.values()
+            ) or len(positional) >= 2
+        except (TypeError, ValueError):
+            accepts_two = True
+        create_request = (
+            create
+            if accepts_two
+            else lambda _request_client, request: create(request)
+        )
     callback = lambda request: create_request(client, request)
     local_request = None
-    if isinstance(client, openai.OpenAI) and is_local_endpoint(str(client.base_url)):
+    client_base_url = str(
+        getattr(client, "base_url", "")
+        or getattr(getattr(client, "_real_client", None), "base_url", "")
+        or ""
+    )
+    # A CodexAuxiliaryClient is a deliberate Responses adapter around an
+    # OpenAI client, so include it in request-owned local cancellation.  The
+    # old isinstance(OpenAI) check silently sent the wrapper through the
+    # shared-client lease path and made cancellation unable to interrupt only
+    # that request.
+    is_request_owned_local = (
+        isinstance(client, (openai.OpenAI, CodexAuxiliaryClient))
+        and is_local_endpoint(client_base_url)
+    )
+    if is_request_owned_local:
         from agent.local_auxiliary_request import LocalAuxiliaryRequest
         local_request = LocalAuxiliaryRequest(
             client, lambda: _local_auxiliary_lease(client, kwargs),
-            verify=_resolve_aux_verify(str(client.base_url)),
+            verify=_resolve_aux_verify(client_base_url),
             purpose=str((_RELAY_AUX_CALL_CONTEXT.get() or {}).get("task") or "auxiliary"),
         )
         callback = lambda request: local_request.run(request, create_request)
@@ -6391,7 +6518,13 @@ def resolve_provider_client(
     if (
         provider
         and str(provider).strip().lower() not in {"auto", ""}
-        and not _is_local_aux_provider(provider)
+        and not (
+            _is_local_aux_provider(provider)
+            or (
+                explicit_base_url
+                and is_local_endpoint(str(explicit_base_url))
+            )
+        )
         and _on_device_only_enabled()
     ):
         logger.warning(
@@ -6500,6 +6633,19 @@ def resolve_provider_client(
         # Auto-detect: api.openai.com + codex model name pattern
         if api_mode and api_mode != "codex_responses":
             return False  # explicit non-codex mode
+        # LM Studio's loopback server supports the Responses surface even
+        # when the caller arrived through the generic API-key-provider path.
+        # Resolve this before the OpenAI model-name heuristic so local models
+        # such as ``meta/muse-glimmer`` are not left on chat completions.
+        try:
+            from agent.transports.codex import _is_lmstudio_responses_target
+
+            if _is_lmstudio_responses_target(
+                {"provider": provider, "base_url": base_url_str}
+            ):
+                return True
+        except Exception:
+            pass
         if base_url_hostname(base_url_str) == "api.openai.com":
             model_lower = (model_str or "").lower()
             if "codex" in model_lower:
