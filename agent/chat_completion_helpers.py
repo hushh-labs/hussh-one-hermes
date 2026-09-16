@@ -988,6 +988,43 @@ def _cap_local_stream_stale_timeout(agent, timeout: float) -> float:
     return timeout
 
 
+def _local_stream_stale_timeout(agent) -> float | None:
+    """Return the configured inactivity budget for a local provider stream.
+
+    Responses traffic uses the Codex worker path, while Chat Completions uses
+    the older streaming path. Both must use the same local patience budget;
+    otherwise a normal local prompt prefill can be mistaken for a dead stream
+    by the Codex-specific 12-second cloud default.
+
+    An explicit provider stale timeout or ``HERMES_STREAM_STALE_TIMEOUT`` keeps
+    precedence. The local-specific setting is only selected for the ordinary
+    180-second default, matching the existing Chat Completions behavior.
+    """
+    if not is_local_endpoint(getattr(agent, "base_url", "") or ""):
+        return None
+    configured = get_provider_stale_timeout(
+        getattr(agent, "provider", None), getattr(agent, "model", None)
+    )
+    if configured is not None:
+        return float(configured)
+    base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    if base != 180.0:
+        return base
+
+    local_default = 900.0
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        agent_config = config.get("agent") if isinstance(config, dict) else None
+        value = agent_config.get("local_stream_stale_timeout") if isinstance(agent_config, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            local_default = float(value)
+    except Exception:
+        pass
+    return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+
+
 class LocalAttemptDeadlineExceeded(InterruptedError):
     """The current local attempt ended; preserve state before another attempt."""
 
@@ -1877,7 +1914,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
     ):
         _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
 
-    if _est_tokens_for_codex_watchdog > 100_000:
+    # Local Responses backends can spend several seconds in prompt prefill
+    # after the initial ``response.created`` / ``response.in_progress`` frames.
+    # Reusing the cloud-sized 12-second idle default here kills healthy local
+    # requests before their first reasoning or answer event. Keep the local
+    # stream budget shared with Chat Completions; it remains configurable and
+    # still sits below the turn's explicit deadline when one is supplied.
+    _local_codex_stale_timeout = _local_stream_stale_timeout(agent)
+    if _local_codex_stale_timeout is not None:
+        _codex_idle_timeout_default = _local_codex_stale_timeout
+    elif _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
     elif _est_tokens_for_codex_watchdog > 50_000:
         _codex_idle_timeout_default = 120.0
@@ -1894,7 +1940,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # reconnect promptly when the socket is genuinely wedged. Set
     # HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 to disable this watchdog entirely.
     _ttfb_enabled = _codex_watchdog_enabled
-    _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
+    _ttfb_timeout = _env_float(
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+        _local_codex_stale_timeout
+        if _local_codex_stale_timeout is not None
+        else 120.0,
+    )
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
     elif _openai_codex_backend:
@@ -5514,21 +5565,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # local ceiling with HERMES_LOCAL_STREAM_STALE_TIMEOUT (documented in
     # website/docs/reference/environment-variables.md).
     if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
-        # Read config.yaml ``agent.local_stream_stale_timeout`` (default 900),
-        # env var ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch.
-        _local_default = 900.0
-        try:
-            from hermes_cli.config import load_config_readonly
-
-            _cfg = load_config_readonly()  # read-only consumer — no deepcopy
-            _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
-            if isinstance(_agent_cfg, dict):
-                _v = _agent_cfg.get("local_stream_stale_timeout")
-                if isinstance(_v, (int, float)):
-                    _local_default = float(_v)
-        except Exception:
-            pass
-        _stream_stale_timeout = env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", _local_default)
+        _stream_stale_timeout = _local_stream_stale_timeout(agent)
+        if _stream_stale_timeout is None:
+            _stream_stale_timeout = _stream_stale_timeout_base
         logger.debug(
             "Local provider detected (%s) — stale stream timeout set to %.0fs",
             agent.base_url, _stream_stale_timeout,

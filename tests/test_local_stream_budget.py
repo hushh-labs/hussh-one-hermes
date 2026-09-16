@@ -53,3 +53,37 @@ def test_expired_local_attempt_fails_before_retry():
 def test_unbudgeted_local_attempt_can_continue():
     from agent.chat_completion_helpers import _check_local_attempt_deadline
     _check_local_attempt_deadline(_local_agent())
+
+
+def test_local_responses_stream_uses_local_stale_budget(monkeypatch):
+    from agent.chat_completion_helpers import _local_stream_stale_timeout
+
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "321")
+    agent = _local_agent()
+    agent.provider = "lmstudio"
+    agent.model = "meta/muse-glimmer"
+
+    assert _local_stream_stale_timeout(agent) == 321.0
+
+
+def test_explicit_generic_stale_budget_keeps_precedence(monkeypatch):
+    from agent.chat_completion_helpers import _local_stream_stale_timeout
+
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "77")
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "321")
+    agent = _local_agent()
+
+    assert _local_stream_stale_timeout(agent) == 77.0
+
+
+def test_remote_responses_stream_has_no_local_stale_budget():
+    from agent.chat_completion_helpers import _local_stream_stale_timeout
+
+    agent = SimpleNamespace(
+        base_url="https://api.example.test/v1",
+        provider="openai",
+        model="gpt-test",
+    )
+
+    assert _local_stream_stale_timeout(agent) is None
