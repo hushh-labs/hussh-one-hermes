@@ -11921,6 +11921,13 @@ def cmd_dashboard(args):
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
 
+    # Mark the in-process dashboard backend so resumed sessions can distinguish
+    # the server's install checkout from a workspace the user selected. The
+    # embedded PTY already sets HERMES_TUI_DASHBOARD for its child; this parent
+    # marker covers the dashboard's /api/ws gateway, which builds TUI agents
+    # directly in-process.
+    os.environ.setdefault("HERMES_DASHBOARD_SERVER", "1")
+
     # `serve` is the headless backend: no UI build, no SPA mount, neutral
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.

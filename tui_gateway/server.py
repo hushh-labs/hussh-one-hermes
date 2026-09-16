@@ -8082,7 +8082,10 @@ def _make_agent(
         explicit_cwd
         or (
             platform in ("cli", "tui")
-            and not is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD"))
+            and not (
+                is_truthy_value(os.environ.get("HERMES_TUI_DASHBOARD"))
+                or is_truthy_value(os.environ.get("HERMES_DASHBOARD_SERVER"))
+            )
         )
     )
     return agent
