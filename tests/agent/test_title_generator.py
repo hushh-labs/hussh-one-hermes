@@ -291,6 +291,25 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
+    def test_defers_unisolated_local_upgrade_after_instant_title(self, tmp_path):
+        """A local main model keeps the instant title without a competing call."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        runtime = {
+            "provider": "lmstudio",
+            "model": "meta/muse-glimmer",
+            "base_url": "http://127.0.0.1:1234/v1",
+        }
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto, patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"auxiliary": {"title_generation": {}}},
+        ):
+            maybe_auto_title(db, "sess-1", "Fix the chat stream", [], main_runtime=runtime)
+
+        mock_auto.assert_not_called()
+        assert db.get_session_title("sess-1") == "Fix the chat stream"
+
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
         """The derived title lands synchronously — no LLM, no waiting."""
         db = SessionDB(tmp_path / "state.db")

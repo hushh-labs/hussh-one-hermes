@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
+from agent.model_metadata import is_local_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,8 @@ MAX_DERIVED_TITLE_CHARS = 48
 # can1357/oh-my-pi#7306). 12 leaves headroom for legitimate wordy titles
 # while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+
+_LOCAL_PROVIDERS = frozenset({"lmstudio", "lm-studio", "lm_studio", "ollama", "local"})
 
 _TITLE_PROMPT_TEMPLATE = (
     "You name chat sessions. Given the user's opening message, write a title "
@@ -182,6 +185,44 @@ def _auto_title_enabled() -> bool:
     except Exception:
         logger.debug("Failed to read title_generation.enabled", exc_info=True)
         return True
+
+
+def _local_title_upgrade_is_unisolated(main_runtime: Optional[dict]) -> bool:
+    """Return whether a cosmetic title call would reuse the active local model.
+
+    Local servers own their parallelism, but starting a second large-model
+    request for a cosmetic rename still consumes memory and scheduler time at
+    the exact moment an interactive turn starts. The synchronous derived title
+    is sufficient until an operator explicitly configures a separate title
+    provider, model, or endpoint.
+    """
+    if not isinstance(main_runtime, dict):
+        return False
+    provider = str(main_runtime.get("provider") or "").strip().lower()
+    base_url = str(main_runtime.get("base_url") or "").strip()
+    if provider not in _LOCAL_PROVIDERS and not is_local_endpoint(base_url):
+        return False
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        title_config = ((load_config_readonly() or {}).get("auxiliary") or {}).get(
+            "title_generation", {}
+        )
+    except Exception:
+        title_config = {}
+    if not isinstance(title_config, dict):
+        title_config = {}
+    configured_provider = str(title_config.get("provider") or "").strip().lower()
+    configured_model = str(title_config.get("model") or "").strip()
+    configured_base_url = str(title_config.get("base_url") or "").strip()
+    # An explicit title route is an intentional isolation boundary. Empty or
+    # ``auto`` means inherit the interactive local runtime and should be
+    # deferred.
+    return (
+        configured_provider in {"", "auto"}
+        and not configured_model
+        and not configured_base_url
+    )
 
 
 def strip_control_wrappers(text: str) -> str:
@@ -751,6 +792,13 @@ def maybe_auto_title(
         return
 
     apply_instant_title(session_db, session_id, user_message, title_callback)
+
+    if _local_title_upgrade_is_unisolated(main_runtime):
+        logger.info(
+            "Auto-title LLM upgrade deferred: interactive local model is active; "
+            "derived title retained"
+        )
+        return
 
     thread = threading.Thread(
         target=auto_title_session,
