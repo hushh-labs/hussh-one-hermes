@@ -79,6 +79,13 @@ configuration. That key authenticates VS Code to the loopback-only auth shim;
 it is **not** a Google/Vertex credential. The shim and proxy use ADC for every
 request sent onward to Vertex.
 
+The same `chatLanguageModels.json` file can expose local LM Studio models to
+Copilot Chat. The installer detects loopback LM Studio entries and sets
+`apiType: "responses"`, resolving model requests to
+`http://127.0.0.1:1234/v1/responses`; when no local entry exists it adds a
+discovery provider at that base URL. This keeps Hermes and Copilot on the same
+Responses API path without imposing a model or concurrency limit.
+
 ---
 
 ## Developer Onboarding & Multi-Agent Integration Reference

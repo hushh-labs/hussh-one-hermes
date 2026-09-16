@@ -7,6 +7,12 @@ models Hussh One uses — no third-party extension and no Google/Vertex API key.
 The installer generates a separate local bearer key solely for VS Code to
 authenticate to the loopback-only auth shim; it is not sent to Vertex.
 
+The same VS Code Chat surface can also use local LM Studio models directly.
+Loopback LM Studio entries are migrated to the OpenAI Responses API
+(`http://127.0.0.1:1234/v1/responses`) and a discovery-based provider is added
+when no local entry exists. The local provider has no model or concurrency cap;
+LM Studio's own loaded-model and scheduler policy remains authoritative.
+
 ## TL;DR
 
 ```bash
@@ -182,7 +188,10 @@ scripts/hussh-one-copilot-setup.sh [options]
 
 The installer is idempotent: the master key is generated once and reused on
 re-runs; existing non-Vertex Copilot endpoints (e.g. LM Studio) in
-`chatLanguageModels.json` are preserved.
+`chatLanguageModels.json` are preserved. Loopback LM Studio endpoints are
+updated in place to `apiType: "responses"` so selecting them in Copilot does
+not silently fall back to `/v1/chat/completions`; remote endpoints are left
+unchanged.
 
 ## Prerequisites
 

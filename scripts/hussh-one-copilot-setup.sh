@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Hushh Labs
 # SPDX-License-Identifier: Apache-2.0
-# Hussh One — VS Code Copilot BYOK (Vertex ADC) onboarding.
+# Hussh One — VS Code Copilot BYOK (Vertex ADC + local LM Studio) onboarding.
 #
 # Idempotent setup for native VS Code Copilot Custom Endpoints backed by Google
 # Vertex AI through Application Default Credentials (ADC). Stands up two local,
@@ -19,7 +19,8 @@
 #   4. Generate a master key once (persisted; reused on re-runs).
 #   5. Materialize launchers + proxy config + shim into ~/.hermes from repo assets.
 #   6. Write VS Code Copilot chatLanguageModels.json (Insiders and/or stable),
-#      pointing the "Hussh One Vertex ADC" endpoint at the shim (:8644).
+#      pointing the "Hussh One Vertex ADC" endpoint at the shim (:8644) and
+#      migrating loopback LM Studio entries to the Responses API.
 #   7. Optionally start the services and smoke-test end to end (--start).
 #
 # Secrets: the master key lives only in ~/.hermes/scripts/start_litellm_proxy.sh
@@ -263,6 +264,8 @@ else
 fi
 
 # ── 6. VS Code Copilot config ────────────────────────────────────────────────
+# The helper preserves remote/user-defined endpoints, while making local
+# LM Studio entries explicit Responses API providers for Copilot Chat.
 write_vscode_config() {
   local user_dir="$1" edition="$2"
   [[ -d "$user_dir" ]] || return 0
@@ -271,80 +274,8 @@ write_vscode_config() {
     log "dry-run: would write $target ($edition)"
     return 0
   fi
-  VSCODE_TARGET="$target" SHIM_PORT="$SHIM_PORT" MASTER_KEY="$KEY" python3 - <<'PY'
-import json, os, sys
-
-target = os.environ["VSCODE_TARGET"]
-shim_port = os.environ["SHIM_PORT"]
-master_key = os.environ.get("MASTER_KEY", "")
-url = f"http://127.0.0.1:{shim_port}/v1"
-
-# Context/output limits below are LIVE-PROBED against Vertex ADC (Jul 2026):
-# all four Claudes natively accept 1M-token prompts on Vertex (no beta header;
-# rejected only above 1,000,000: "prompt is too long: N > 1000000 maximum")
-# and cap output at exactly 128,000 ("max_tokens: N > 128000"). Gemini 3.5
-# Flash: 1,048,576 in / 65,536 out (65537 exclusive). Keeping these accurate
-# matters: Copilot uses maxInputTokens to drive its rolling-window /
-# summarization heuristics — understating it makes the agent truncate context
-# 5x too early; overstating it causes hard API 400s mid-conversation.
-vertex_models = [
-    {"id": "gemini-3.7-flash", "name": "Gemini 3.7 Flash (Vertex ADC)",
-     "maxInputTokens": 1048576, "maxOutputTokens": 65536},
-    {"id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash (Vertex ADC)",
-     "maxInputTokens": 1048576, "maxOutputTokens": 65536},
-    {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash (Vertex ADC)",
-     "maxInputTokens": 1048576, "maxOutputTokens": 65536},
-    {"id": "gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro Preview (Vertex ADC)",
-     "maxInputTokens": 2097152, "maxOutputTokens": 65536},
-    {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Vertex ADC)",
-     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
-    {"id": "claude-opus-4-8", "name": "Claude Opus 4.8 (Vertex ADC)",
-     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
-    {"id": "claude-sonnet-5", "name": "Claude Sonnet 5 (Vertex ADC)",
-     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
-    {"id": "claude-fable-5", "name": "Claude Fable 5 (Vertex ADC)",
-     "maxInputTokens": 1000000, "maxOutputTokens": 128000},
-]
-for m in vertex_models:
-    m.update({
-        "url": url,
-        "apiKey": master_key,
-        "headers": {"Authorization": f"Bearer {master_key}"},
-        "toolCalling": True,
-        "vision": True,
-        "thinking": True,
-        "streaming": True,
-    })
-
-vertex_block = {
-    "name": "Hussh One Vertex ADC",
-    "vendor": "customendpoint",
-    "apiKey": master_key,
-    "headers": {"Authorization": f"Bearer {master_key}"},
-    "apiType": "chat-completions",
-    "models": vertex_models,
-}
-
-# Preserve any existing non-Vertex endpoints (e.g. LM Studio) verbatim.
-existing = []
-if os.path.exists(target):
-    try:
-        with open(target) as f:
-            existing = json.load(f)
-        if not isinstance(existing, list):
-            existing = []
-    except Exception:
-        existing = []
-
-merged = [b for b in existing
-          if isinstance(b, dict) and b.get("name") != "Hussh One Vertex ADC"]
-merged.append(vertex_block)
-
-os.makedirs(os.path.dirname(target), exist_ok=True)
-with open(target, "w") as f:
-    json.dump(merged, f, indent=2)
-print(f"  wrote {target}")
-PY
+  MASTER_KEY="$KEY" python3 "$ASSETS/vscode_model_config.py" \
+    --target "$target" --shim-port "$SHIM_PORT"
 }
 
 # ── 6b. VS Code Plan-agent fix (disable auto "Start Implementation" on switch) ─

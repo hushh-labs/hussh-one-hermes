@@ -622,6 +622,58 @@ PY
         *) warn "VS Code Vertex ADC key MISSING/placeholder in $cfg — Copilot will silently fall back to a metered model (bogus 'credit limit'). Re-run: scripts/hussh-one-copilot-setup.sh" ;;
       esac
     fi
+
+    # Local LM Studio is a separate Copilot Custom Endpoint lane. It must use
+    # the Responses API explicitly; otherwise VS Code resolves the same /v1
+    # base URL to /v1/chat/completions and can diverge from Hermes' local path.
+    if CFG="$cfg" "$py" - <<'PY'
+import json, os, sys
+from urllib.parse import urlsplit
+
+cfg = os.environ["CFG"]
+try:
+    data = json.load(open(cfg, encoding="utf-8"))
+except Exception:
+    sys.exit(3)
+
+def local_url(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return ((parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+                and (parsed.port or 80) == 1234)
+    except ValueError:
+        return False
+
+local_blocks = []
+for block in data if isinstance(data, list) else []:
+    if not isinstance(block, dict):
+        continue
+    models = block.get("models") if isinstance(block.get("models"), list) else []
+    if local_url(block.get("url")) or any(
+        isinstance(m, dict) and local_url(m.get("url")) for m in models
+    ):
+        local_blocks.append((block, models))
+if not local_blocks:
+    sys.exit(2)
+for block, models in local_blocks:
+    if block.get("apiType") != "responses":
+        sys.exit(1)
+    for model in models:
+        endpoint = str(model.get("url", "")).split("?", 1)[0].rstrip("/")
+        if local_url(model.get("url")) and not endpoint.endswith("/responses"):
+            sys.exit(1)
+sys.exit(0)
+PY
+    then
+      pass "VS Code LM Studio endpoint uses Responses API ($(basename "$(dirname "$vs_dir")"))"
+    else
+      case $? in
+        2) : ;;  # no local endpoint configured in this edition
+        *) warn "VS Code LM Studio endpoint is not configured for Responses API in $cfg — re-run: scripts/hussh-one-copilot-setup.sh" ;;
+      esac
+    fi
   done
 
   # Guard the smart-tool-usage steering file. BYOK models (Vertex Claude/Gemini)
