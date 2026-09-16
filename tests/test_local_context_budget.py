@@ -78,6 +78,45 @@ def test_local_omitted_cap_uses_remaining_context():
     assert fitted["max_tokens"] == 131_072 - estimate_request_tokens_rough(kwargs["messages"]) - 1_024
 
 
+def test_local_responses_omitted_cap_uses_input_and_responses_keyword():
+    from agent.chat_completion_helpers import _fit_local_output_cap
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    agent = _local_agent()
+    agent.api_mode = "codex_responses"
+    kwargs = {
+        "instructions": "You are a local assistant.",
+        "input": [{"role": "user", "content": "short request"}],
+    }
+
+    fitted = _fit_local_output_cap(agent, kwargs)
+    expected = (
+        131_072
+        - estimate_request_tokens_rough(
+            kwargs["input"], system_prompt=kwargs["instructions"]
+        )
+        - 1_024
+    )
+    assert fitted["max_output_tokens"] == expected
+    assert "max_tokens" not in fitted
+
+
+def test_local_responses_normalizes_late_chat_completion_override():
+    from agent.chat_completion_helpers import _fit_local_output_cap
+
+    agent = _local_agent()
+    agent.api_mode = "codex_responses"
+    kwargs = {
+        "instructions": "local",
+        "input": [{"role": "user", "content": "hi"}],
+        "max_tokens": 256,
+    }
+
+    fitted = _fit_local_output_cap(agent, kwargs)
+    assert fitted["max_output_tokens"] == 256
+    assert "max_tokens" not in fitted
+
+
 def test_explicit_large_reasoning_budget_is_preserved():
     from agent.chat_completion_helpers import _fit_local_output_cap
 

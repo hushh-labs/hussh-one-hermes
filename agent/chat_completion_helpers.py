@@ -85,12 +85,29 @@ def _fit_local_output_cap(agent, api_kwargs: dict, *, context_length=None) -> di
         return api_kwargs
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
     base_url = getattr(agent, "base_url", "") or ""
-    if (
-        provider
-        not in {"lmstudio", "lm-studio", "lm_studio", "ollama", "local"}
-        and not is_local_endpoint(base_url)
-    ):
+    is_local_provider = provider in {
+        "lmstudio", "lm-studio", "lm_studio", "ollama", "local"
+    }
+    if not is_local_provider and not is_local_endpoint(base_url):
         return api_kwargs
+
+    # Responses API requests use ``input`` and ``max_output_tokens``.  This
+    # helper also runs after the transport has built the request, so the
+    # provider-neutral ``_max_tokens_param`` fallback must not reintroduce the
+    # Chat Completions-only ``max_tokens`` key for LM Studio.  Normalize late
+    # overrides here as a final guard at the local request boundary.
+    is_local_responses = (
+        getattr(agent, "api_mode", "") == "codex_responses"
+        and (is_local_provider or is_local_endpoint(base_url))
+    )
+    if is_local_responses:
+        if "max_output_tokens" not in api_kwargs:
+            for legacy_key in ("max_tokens", "max_completion_tokens"):
+                if legacy_key in api_kwargs:
+                    api_kwargs["max_output_tokens"] = api_kwargs[legacy_key]
+                    break
+        api_kwargs.pop("max_tokens", None)
+        api_kwargs.pop("max_completion_tokens", None)
 
     if context_length is None:
         compressor = getattr(agent, "context_compressor", None)
@@ -102,10 +119,20 @@ def _fit_local_output_cap(agent, api_kwargs: dict, *, context_length=None) -> di
     if context_length <= 0:
         return api_kwargs
 
-    messages = api_kwargs.get("messages") or []
+    messages = (
+        api_kwargs.get("input") if is_local_responses else api_kwargs.get("messages")
+    ) or []
     tools = api_kwargs.get("tools") or None
     try:
-        prompt_tokens = estimate_request_tokens_rough(messages, tools=tools)
+        prompt_tokens = estimate_request_tokens_rough(
+            messages,
+            system_prompt=(
+                str(api_kwargs.get("instructions") or "")
+                if is_local_responses
+                else ""
+            ),
+            tools=tools,
+        )
     except Exception:
         logger.debug(
             "Unable to estimate local request size for output-cap fitting",
@@ -140,14 +167,17 @@ def _fit_local_output_cap(agent, api_kwargs: dict, *, context_length=None) -> di
     if cap <= 0:
         return api_kwargs
 
-    # Preserve an explicitly selected wire key. For an omitted cap, use the
-    # agent's provider-aware selector so GPT-family models still receive
-    # ``max_completion_tokens`` when their endpoint requires it.
+    # Preserve an explicitly selected wire key. Responses API local endpoints
+    # require ``max_output_tokens``; Chat Completions keeps the provider-aware
+    # selector so existing local/remote callers retain their wire contract.
     if output_key is None:
-        try:
-            selected = agent._max_tokens_param(cap)
-        except Exception:
-            selected = {"max_tokens": cap}
+        if is_local_responses:
+            selected = {"max_output_tokens": cap}
+        else:
+            try:
+                selected = agent._max_tokens_param(cap)
+            except Exception:
+                selected = {"max_tokens": cap}
         api_kwargs.update(selected)
         output_key = next(iter(selected), "max_tokens")
     elif current is None or current != cap:
@@ -1124,10 +1154,19 @@ def _acquire_local_for_agent(agent, runtime, model, *, attempt_cancel_check=None
 
 def _local_attempt_metadata(agent, api_kwargs: dict, model: str) -> dict[str, Any]:
     """Build bounded, non-sensitive coordinates for the local attempt ledger."""
-    messages = api_kwargs.get("messages") or []
+    is_responses = getattr(agent, "api_mode", "") == "codex_responses"
+    messages = (
+        api_kwargs.get("input") if is_responses else api_kwargs.get("messages")
+    ) or []
     tools = api_kwargs.get("tools") or None
     try:
-        context_tokens = estimate_request_tokens_rough(messages, tools=tools)
+        context_tokens = estimate_request_tokens_rough(
+            messages,
+            system_prompt=(
+                str(api_kwargs.get("instructions") or "") if is_responses else ""
+            ),
+            tools=tools,
+        )
     except Exception:
         context_tokens = 0
     generation = str(

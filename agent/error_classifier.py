@@ -899,6 +899,22 @@ def classify_api_error(
         )
         return _result(reason, **plugin_classification)
 
+    # The OpenAI SDK raises this before any network request when a caller uses
+    # a Chat Completions-only keyword on ``responses.create``.  Treat it as a
+    # deterministic request-shape failure; the message often contains
+    # ``max_tokens``, which must never be mistaken for context overflow and
+    # sent through the compression loop.
+    if (
+        error_type == "TypeError"
+        and "unexpected keyword argument" in error_msg
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_compress=False,
+            should_fallback=False,
+        )
+
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
     # Provider content-policy / safety-filter block. The provider has made a

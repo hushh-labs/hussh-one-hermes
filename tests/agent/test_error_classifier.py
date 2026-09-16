@@ -185,6 +185,16 @@ class TestClassify402:
 class TestClassifyApiError:
     """End-to-end classification tests."""
 
+    def test_sdk_unexpected_keyword_is_not_context_overflow(self):
+        error = TypeError("Responses.create() got an unexpected keyword argument 'max_tokens'")
+
+        result = classify_api_error(error, provider="lmstudio", model="meta/muse-glimmer")
+
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+        assert result.should_fallback is False
+
     # ── Auth errors ──
 
     def test_401_classified_as_auth(self):
@@ -1577,5 +1587,4 @@ class TestServerInjectedParameterRejection:
         result = classify_api_error(e, provider="custom", model="m")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
-
 
