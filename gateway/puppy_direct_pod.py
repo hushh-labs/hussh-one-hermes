@@ -175,7 +175,13 @@ class _SealedSender:
             await self.socket.send(wire)
 
 
-def _pin_endpoint(profile_home: Path, record: dict[str, Any], environment: str) -> None:
+def _pin_endpoint(
+    profile_home: Path,
+    record: dict[str, Any],
+    environment: str,
+    *,
+    persist: bool = True,
+) -> None:
     url = str(record.get("url") or "").rstrip("/")
     if (
         urlsplit(url).scheme != "https"
@@ -206,6 +212,8 @@ def _pin_endpoint(profile_home: Path, record: dict[str, Any], environment: str) 
             )
         ):
             raise DirectPodRefused("Owner pod endpoint changed without a valid version")
+    if not persist:
+        return
     public = {
         "url": url,
         "hushhId": record["hushhId"],
@@ -297,6 +305,9 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     signature = str(issued.get("signature") or "")
     if not signature.startswith("ed25519."):
         raise DirectPodRefused("Puppy binding signature is missing")
+    # Refuse an unexpected endpoint before sending a signed device proof or a
+    # pod session token to it. Commit a new pin only after admission succeeds.
+    _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
     pod = str(binding["url"]).rstrip("/")
     challenge = _json_response(
         identity.http.post(

@@ -210,3 +210,12 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
     ]
     pin = json.loads((tmp_path / "hussh-one/puppy-pod-pin.json").read_text())
     assert pin["podKeyId"] == "pod-key-1"
+    pin_path = tmp_path / "hussh-one/puppy-pod-pin.json"
+    pin_path.write_text(json.dumps({**pin, "url": "https://previous-pod.example"}))
+    paths.clear()
+    with pytest.raises(DirectPodRefused, match="endpoint changed"):
+        _admit(identity)
+    assert paths == [
+        "/api/one/personal-agent/endpoint",
+        "/api/account/trusted-devices/device-1/pod-binding",
+    ]
