@@ -672,10 +672,14 @@ class HusshIdentityClient:
         return {"Authorization": f"Bearer {self.id_token()}"}
 
     def device_status(self) -> str:
+        """Compatibility status view; an unavailable control plane never implies revocation."""
+        return str(self.device_control_status()["status"])
+
+    def device_control_status(self) -> dict[str, Any]:
         """Read this device's own trust status from Hussh One.
 
-        Returns exactly one of ``active`` | ``revoked`` | ``unknown_device`` |
-        ``indeterminate``. Never raises: the caller destroys user data on
+        Returns a status of ``active`` | ``revoked`` | ``unknown_device`` |
+        ``indeterminate`` and an optional metadata-only activation hint. Never raises: the caller destroys user data on
         ``revoked``, so every ambiguous outcome -- 503, timeout, transport
         error, unparseable body -- must be indistinguishable from "don't act".
         Fail-closed here means failing to NOT sealing.
@@ -686,23 +690,26 @@ class HusshIdentityClient:
         """
         state = self.read_state()
         if state is None:
-            return "indeterminate"
+            return {"status": "indeterminate"}
         try:
             response = self.http.get(
                 f"{state.api_base}/api/account/trusted-devices/{state.device_id}/status",
                 headers=self.auth_headers(),
             )
         except Exception:
-            return "indeterminate"
+            return {"status": "indeterminate"}
         if response.status_code == 404:
-            return "unknown_device"
+            return {"status": "unknown_device"}
         if response.status_code != 200:
-            return "indeterminate"
+            return {"status": "indeterminate"}
         try:
             payload = response.json() or {}
         except Exception:
-            return "indeterminate"
-        return "revoked" if str(payload.get("status")) == "revoked" else "active"
+            return {"status": "indeterminate"}
+        if not isinstance(payload, dict) or payload.get("status") not in ("active", "revoked"):
+            return {"status": "indeterminate"}
+        return {"status": payload["status"],
+                "puppyActivation": payload.get("puppyActivation") if isinstance(payload.get("puppyActivation"), dict) else None}
 
     def post_seal_ack(self) -> bool:
         """Best-effort advisory ack that this device sealed its local copy.

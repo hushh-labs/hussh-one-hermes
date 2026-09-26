@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
@@ -175,6 +177,22 @@ class _SealedSender:
             await self.socket.send(wire)
 
 
+def _verify_hub_signature(payload: dict[str, Any], signature: str, keys: dict[str, Any]) -> None:
+    """Only keys from the configured hub may authenticate a destination."""
+    try:
+        tag, kid, encoded = signature.split(".")
+        if tag != "ed25519" or not kid or kid not in keys:
+            raise ValueError("unknown issuer")
+        public = base64.b64decode(keys[kid], validate=True)
+        raw = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+        if len(public) != 32 or len(raw) != 64:
+            raise ValueError("invalid length")
+        message = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        Ed25519PublicKey.from_public_bytes(public).verify(raw, message)
+    except (ValueError, TypeError, KeyError, InvalidSignature) as exc:
+        raise DirectPodRefused("Hub signature did not authenticate") from exc
+
+
 def _pin_endpoint(
     profile_home: Path,
     record: dict[str, Any],
@@ -184,7 +202,13 @@ def _pin_endpoint(
 ) -> None:
     url = str(record.get("url") or "").rstrip("/")
     if (
-        urlsplit(url).scheme != "https"
+        record.get("kind") != "pod_endpoint_v1"
+        or urlsplit(url).scheme != "https"
+        or urlsplit(url).username
+        or urlsplit(url).password
+        or urlsplit(url).path not in {"", "/"}
+        or urlsplit(url).query
+        or urlsplit(url).fragment
         or not urlsplit(url).hostname
         or str(record.get("environment") or "") != environment
         or not str(record.get("signature") or "").startswith("ed25519.")
@@ -197,7 +221,7 @@ def _pin_endpoint(
         raise DirectPodRefused("Owner pod endpoint version is invalid")
     path = profile_home / "hussh-one" / "puppy-pod-pin.json"
     if path.exists():
-        previous = _object(json.loads(path.read_text()))
+        previous = _object(json.loads(path.read_text(encoding="utf-8")))
         prior_version = previous.get("endpointVersion")
         if (
             type(prior_version) is not int
@@ -219,10 +243,11 @@ def _pin_endpoint(
         "hushhId": record["hushhId"],
         "podKeyId": record["podKeyId"],
         "endpointVersion": version,
+        "environment": environment,
     }
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(public, separators=(",", ":")))
+    temporary.write_text(json.dumps(public, separators=(",", ":")), encoding="utf-8")
     os.chmod(temporary, 0o600)
     temporary.replace(path)
 
@@ -250,7 +275,11 @@ def _validate_binding(
     if any(binding.get(key) != value for key, value in expected.items()):
         raise DirectPodRefused("Puppy binding names another owner or pod")
     if (
-        "puppy.inference" not in (binding.get("scopes") or [])
+        binding.get("scopes") != ["puppy.inference"]
+        or type(binding.get("version")) is not int
+        or binding["version"] < 1
+        or type(binding.get("issued_at_ms")) is not int
+        or binding["issued_at_ms"] > time.time() * 1000
         or type(binding.get("expires_at_ms")) is not int
         or binding["expires_at_ms"] <= time.time() * 1000
     ):
@@ -285,6 +314,17 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
             f"{state.api_base}/api/one/personal-agent/endpoint", headers=headers
         )
     )
+    key_record = _json_response(identity.http.get(
+        f"{state.api_base}/api/one/personal-agent/verification-keys", headers=headers
+    ))
+    if key_record.get("kind") != "pod_verification_keys_v1":
+        raise DirectPodRefused("Hub verification keys are unavailable")
+    keys = _object(key_record.get("keys"))
+    _verify_hub_signature(
+        {key: value for key, value in endpoint.items() if key != "signature"},
+        str(endpoint.get("signature") or ""), keys,
+    )
+    _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
     issued = _json_response(
         identity.http.post(
             f"{state.api_base}/api/account/trusted-devices/{state.device_id}/pod-binding",
@@ -303,8 +343,7 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     if binding.get("subject_public_key") != identity.public_key_b64():
         raise DirectPodRefused("Puppy binding names another device key")
     signature = str(issued.get("signature") or "")
-    if not signature.startswith("ed25519."):
-        raise DirectPodRefused("Puppy binding signature is missing")
+    _verify_hub_signature(binding, signature, keys)
     # Refuse an unexpected endpoint before sending a signed device proof or a
     # pod session token to it. Commit a new pin only after admission succeeds.
     _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
@@ -331,6 +370,12 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     if (
         challenge.get("signingPayload") != expected_payload
         or challenge.get("podKeyId") != binding["pod_key_id"]
+        or not str(challenge.get("challengeId") or "").startswith("psc_")
+        or not str(challenge.get("nonce") or "")
+        or type(challenge.get("epoch")) is not int
+        or challenge["epoch"] < 1
+        or type(challenge.get("expiresAt")) is not int
+        or challenge["expiresAt"] <= time.time() * 1000
     ):
         raise DirectPodRefused("Puppy pod challenge changed owner or deployment")
     session = _json_response(
@@ -348,8 +393,12 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     )
     if (
         session.get("role") != "device"
-        or "puppy.inference" not in (session.get("scopes") or [])
+        or session.get("scopes") != ["puppy.inference"]
         or session.get("epoch") != challenge["epoch"]
+        or session.get("version") != binding["version"]
+        or type(session.get("expiresAt")) is not int
+        or session["expiresAt"] <= time.time() * 1000
+        or session["expiresAt"] > binding["expires_at_ms"]
         or not session.get("sid")
         or not session.get("session")
     ):
@@ -373,6 +422,50 @@ class PuppyDirectPodRelay:
             "model": model,
             "model_api_key": model_api_key,
         }
+        # Memory only: reconnecting an admitted session does not need the hub.
+        # A restart, changed device identity, expiry, or refusal requires admission.
+        self._admitted: tuple[dict[str, Any], dict[str, Any]] | None = None
+        self._waiting_activation = False
+        self._activation_id: str | None = None
+        self._idle_grace: int | None = None
+        self._last_work = time.monotonic()
+
+    async def _session(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        state = self.identity.read_state()
+        if self._admitted is not None and state is not None:
+            binding, session = self._admitted
+            if (binding["user_id"] == state.user_id
+                    and binding["subject_id"] == state.device_id
+                    and binding["environment"] == state.environment
+                    and min(binding["expires_at_ms"], session["expiresAt"]) > time.time() * 1000 + 5000):
+                # A valid session survives a pod process restart, but sealed frames
+                # must use the current epoch. Renew at the already admitted pod;
+                # this never contacts the hub or broadens the existing grant.
+                renewed = await asyncio.to_thread(self._renew, binding, session)
+                self._admitted = (binding, renewed)
+                return self._admitted
+        self._admitted = None
+        self._admitted = await asyncio.to_thread(_admit, self.identity)
+        return self._admitted
+
+    def _renew(self, binding: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+        renewed = _json_response(self.identity.http.post(
+            str(binding["url"]).rstrip("/") + "/api/one/pod/session/renew",
+            headers={"Authorization": f"Bearer {previous['session']}"},
+        ))
+        if (
+            renewed.get("role") != "device"
+            or set(renewed.get("scopes") or []) != {"puppy.inference"}
+            or renewed.get("version") != binding["version"]
+            or type(renewed.get("epoch")) is not int
+            or renewed["epoch"] < previous["epoch"]
+            or type(renewed.get("expiresAt")) is not int
+            or not time.time() * 1000 < renewed["expiresAt"] <= binding["expires_at_ms"]
+            or not renewed.get("sid")
+            or not renewed.get("session")
+        ):
+            raise DirectPodRefused("Puppy pod renewal changed the admitted authority")
+        return renewed
 
     async def _connected(
         self, binding: dict[str, Any], session: dict[str, Any]
@@ -412,6 +505,7 @@ class PuppyDirectPodRelay:
                 or ready.get("epoch") != session["epoch"]
             ):
                 raise DirectPodRefused("Puppy pod relay refused the bound session")
+            self._idle_grace = 600 if ready.get("idleGraceSeconds") == 600 else None
             envelope = DeviceEnvelope(
                 ephemeral,
                 str(binding["pod_public_key"]),
@@ -451,7 +545,11 @@ class PuppyDirectPodRelay:
                             )
                             continue
                         request_id = str(frame.get("requestId") or "")
+                        self._last_work = time.monotonic()
                         inference = asyncio.create_task(model._infer(frame, sender))
+                        inference.add_done_callback(lambda _task: setattr(self, "_last_work", time.monotonic()))
+                if socket.close_code == 1000 and socket.close_reason == "Puppy relay idle":
+                    self._waiting_activation = True
             finally:
                 heartbeat.cancel()
                 if inference is not None:
@@ -462,17 +560,47 @@ class PuppyDirectPodRelay:
                     with contextlib.suppress(asyncio.CancelledError):
                         await inference
 
+    async def _wait_for_activation(self) -> dict[str, Any]:
+        """Poll the existing hub control lane; never poll the sleeping pod."""
+        while True:
+            state = self.identity.read_state()
+            if state is None:
+                raise DirectPodRefused("Connect this trusted device first")
+            status = await asyncio.to_thread(self.identity.device_control_status)
+            if status.get("status") in {"revoked", "unknown_device"}:
+                raise DirectPodRefused("Trusted device is no longer active")
+            hint = status.get("puppyActivation")
+            if (status.get("status") == "active" and isinstance(hint, dict) and hint.get("id") != self._activation_id
+                    and isinstance(hint.get("id"), str) and len(hint["id"]) == 32
+                    and hint.get("ownerId") == state.user_id and hint.get("deviceId") == state.device_id
+                    and type(hint.get("expiresAt")) is int
+                    and time.time() * 1000 < hint["expiresAt"] <= time.time() * 1000 + 120_000):
+                return hint
+            await asyncio.sleep(15)
+
     async def serve(self) -> None:
         delay = 2.0
         while True:
             try:
-                binding, session = await asyncio.to_thread(_admit, self.identity)
+                if self._idle_grace and time.monotonic() - self._last_work >= self._idle_grace:
+                    self._waiting_activation = True
+                hint = await self._wait_for_activation() if self._waiting_activation else None
+                if hint and self._admitted and hint.get("podKeyId") != self._admitted[0]["pod_key_id"]:
+                    self._admitted = None
+                binding, session = await self._session()
+                if hint:
+                    if hint.get("podKeyId") != binding["pod_key_id"] or hint.get("hushhId") != binding["hushh_id"]:
+                        raise DirectPodRefused("Activation does not match the verified pod")
+                    self._activation_id = hint["id"]
+                    self._last_work = time.monotonic()
+                self._waiting_activation = False
                 await self._connected(binding, session)
                 delay = 2.0
                 await asyncio.sleep(delay)
             except asyncio.CancelledError:
                 raise
             except (DirectPodRefused, HusshIdentityError):
+                self._admitted = None
                 logger.warning("puppy_direct.refused")
                 raise
             except Exception:

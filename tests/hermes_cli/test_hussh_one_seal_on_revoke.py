@@ -73,6 +73,8 @@ def _identity_for_status(tmp_path: Path, http) -> HusshIdentityClient:
     [
         (200, "revoked", "revoked"),
         (200, "active", "active"),
+        (200, "", "indeterminate"),
+        (200, "unexpected", "indeterminate"),
         (404, "", "unknown_device"),
         (503, "", "indeterminate"),
         (500, "", "indeterminate"),

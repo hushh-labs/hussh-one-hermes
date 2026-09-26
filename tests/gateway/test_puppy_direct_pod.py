@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from gateway.puppy_direct_pod import (
@@ -18,6 +20,7 @@ from gateway.puppy_direct_pod import (
     _admit,
     _pin_endpoint,
     _validate_binding,
+    _verify_hub_signature,
 )
 
 
@@ -28,15 +31,25 @@ POD_FRAME = (
 )
 
 
+ISSUER = Ed25519PrivateKey.generate()
+PUBLIC = base64.b64encode(ISSUER.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
+
+
+def _signature(payload):
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return "ed25519.key." + base64.urlsafe_b64encode(ISSUER.sign(raw)).decode().rstrip("=")
+
+
 def _endpoint():
-    return {
+    body = {
+        "kind": "pod_endpoint_v1",
         "url": "https://owner-pod.example",
         "hushhId": "owner-1",
         "podKeyId": "pod-key-1",
         "environment": "dev",
         "endpointVersion": 2,
-        "signature": "ed25519.key.signature",
     }
+    return {**body, "signature": _signature(body)}
 
 
 def _binding():
@@ -54,6 +67,8 @@ def _binding():
         "role": "device",
         "subject_kind": "device",
         "scopes": ["puppy.inference"],
+        "issued_at_ms": int(time.time() * 1000) - 1000,
+        "version": 1,
         "expires_at_ms": int(time.time() * 1000) + 60_000,
     }
 
@@ -101,6 +116,8 @@ def test_pod_to_device_vector_and_replay_refusal():
         {"subject_id": "other-device"},
         {"pod_key_id": "replaced-pod"},
         {"scopes": []},
+        {"scopes": ["puppy.inference", "files.manage"]},
+        {"scopes": "puppy.inference"},
     ],
 )
 def test_binding_refuses_wrong_owner_pod_or_scope(change):
@@ -127,7 +144,7 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
     binding = _binding()
     payload = json.dumps(
         {
-            "challenge_id": "challenge-1",
+            "challenge_id": "psc_challenge1",
             "epoch": 2,
             "hushh_id": "owner-1",
             "nonce": "nonce-1",
@@ -142,21 +159,24 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
 
     def answer(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
+        if request.url.path.endswith("/verification-keys"):
+            return httpx.Response(200, json={"kind": "pod_verification_keys_v1", "keys": {"key": PUBLIC}})
         if request.url.path.endswith("/endpoint"):
             return httpx.Response(200, json=_endpoint())
         if request.url.path.endswith("/pod-binding"):
             return httpx.Response(
-                200, json={"binding": binding, "signature": "ed25519.key.signature"}
+                200, json={"binding": binding, "signature": _signature(binding)}
             )
         if request.url.path.endswith("/challenge"):
             return httpx.Response(
                 200,
                 json={
-                    "challengeId": "challenge-1",
+                    "challengeId": "psc_challenge1",
                     "nonce": "nonce-1",
                     "epoch": 2,
                     "podKeyId": "pod-key-1",
                     "signingPayload": payload,
+                    "expiresAt": int(time.time() * 1000) + 30_000,
                 },
             )
         if request.url.path.endswith("/admit"):
@@ -167,6 +187,8 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
                 200,
                 json={
                     "session": "opaque-session",
+                    "version": 1,
+                    "expiresAt": int(time.time() * 1000) + 20_000,
                     "sid": "sid-1",
                     "role": "device",
                     "scopes": ["puppy.inference"],
@@ -204,6 +226,7 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
     assert identity.signed == payload
     assert paths == [
         "/api/one/personal-agent/endpoint",
+        "/api/one/personal-agent/verification-keys",
         "/api/account/trusted-devices/device-1/pod-binding",
         "/api/one/pod/session/challenge",
         "/api/one/pod/session/admit",
@@ -217,5 +240,79 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
         _admit(identity)
     assert paths == [
         "/api/one/personal-agent/endpoint",
-        "/api/account/trusted-devices/device-1/pod-binding",
+        "/api/one/personal-agent/verification-keys",
     ]
+
+
+@pytest.mark.parametrize("change", [{"url": "https://attacker.example"}, {"environment": "prod"}])
+def test_signature_refuses_altered_destination(change):
+    endpoint = _endpoint()
+    signature = endpoint.pop("signature")
+    _verify_hub_signature(endpoint, signature, {"key": PUBLIC})
+    with pytest.raises(DirectPodRefused, match="signature"):
+        _verify_hub_signature({**endpoint, **change}, signature, {"key": PUBLIC})
+
+
+def test_unknown_key_and_prefix_only_signature_are_refused():
+    endpoint = _endpoint()
+    signature = endpoint.pop("signature")
+    with pytest.raises(DirectPodRefused):
+        _verify_hub_signature(endpoint, signature, {})
+    with pytest.raises(DirectPodRefused):
+        _verify_hub_signature(endpoint, "ed25519.key.signature", {"key": PUBLIC})
+
+
+@pytest.mark.asyncio
+async def test_cached_reconnect_renews_only_at_bound_pod_during_hub_outage():
+    from gateway.puppy_direct_pod import PuppyDirectPodRelay
+    binding = _binding()
+    previous = {"session": "admitted", "sid": "session-1", "role": "device",
+                "scopes": ["puppy.inference"], "version": 1, "epoch": 1,
+                "expiresAt": binding["expires_at_ms"] - 1000}
+    renewed = {**previous, "session": "renewed", "sid": "session-2", "epoch": 2}
+    calls = []
+    def post(url, **kwargs):
+        calls.append((url, kwargs))
+        assert url == binding["url"] + "/api/one/pod/session/renew"
+        return httpx.Response(200, json=renewed, request=httpx.Request("POST", url))
+    identity = SimpleNamespace(
+        read_state=lambda: SimpleNamespace(user_id="user-1", device_id="device-1", environment="dev"),
+        http=SimpleNamespace(post=post),
+    )
+    relay = PuppyDirectPodRelay(identity)
+    relay._admitted = (binding, previous)
+    assert await relay._session() == (binding, renewed)
+    assert len(calls) == 1
+    assert calls[0][1]["headers"] == {"Authorization": "Bearer admitted"}
+    renewed["scopes"] = ["puppy.inference", "pod.admin"]
+    with pytest.raises(DirectPodRefused):
+        await relay._session()
+
+
+@pytest.mark.asyncio
+async def test_idle_device_waits_for_active_owner_bound_hint(monkeypatch):
+    from gateway.puppy_direct_pod import PuppyDirectPodRelay
+    from unittest.mock import AsyncMock
+    hint = {"id": "a" * 32, "ownerId": "user-1", "deviceId": "device-1",
+            "podKeyId": "pod-key-1", "hushhId": "owner-1", "expiresAt": int(time.time() * 1000) + 60_000}
+    states = iter([
+        {"status": "indeterminate", "puppyActivation": hint},
+        {"status": "active", "puppyActivation": {**hint, "ownerId": "other"}},
+        {"status": "active", "puppyActivation": hint},
+    ])
+    identity = SimpleNamespace(read_state=lambda: SimpleNamespace(user_id="user-1", device_id="device-1"),
+                               device_control_status=lambda: next(states))
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.puppy_direct_pod.asyncio.sleep", sleep)
+    relay = PuppyDirectPodRelay(identity)
+    assert await relay._wait_for_activation() == hint
+    assert sleep.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_idle_device_refuses_revocation_without_contacting_pod():
+    from gateway.puppy_direct_pod import PuppyDirectPodRelay
+    identity = SimpleNamespace(read_state=lambda: SimpleNamespace(user_id="user-1", device_id="device-1"),
+                               device_control_status=lambda: {"status": "revoked"})
+    with pytest.raises(DirectPodRefused, match="no longer active"):
+        await PuppyDirectPodRelay(identity)._wait_for_activation()
