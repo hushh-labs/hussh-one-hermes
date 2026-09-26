@@ -179,7 +179,13 @@ class HusshVaultBridge:
             connection_state = "connected" if state.account_email else "reconnect_required"
         onboarding_status = self._onboarding_status
         if authorization.get("status") == "error":
-            onboarding_status = "connection_failed"
+            from .client import _authorization_failure_message
+
+            onboarding_status = (
+                "login_setup_required"
+                if authorization.get("error") == _authorization_failure_message("login_required")
+                else "connection_failed"
+            )
         elif state is None and authorization.get("status") == "waiting":
             onboarding_status = "waiting_for_browser_approval"
         return {

@@ -14919,6 +14919,11 @@ def _hussh_one_setup_output(arg: str) -> str:
         identity = bridge.identity_status()
         vault = bridge.vault_status()
         if action == "status":
+            setup_guidance = ""
+            if identity.get("onboarding_status") == "login_setup_required":
+                from hermes_cli.hussh_one_pkm.client import _authorization_failure_message
+
+                setup_guidance = _authorization_failure_message("login_required") + "\n\n"
             remote_vault = "not checked"
             session = {"session": "not_connected", "remedy": "", "reconnect_required": False}
             if identity.get("connected"):
@@ -14963,6 +14968,7 @@ def _hussh_one_setup_output(arg: str) -> str:
                 f"  owner capability: {capability}\n"
                 f"  encrypted sync: {sync_status} (cursor {sync_cursor})\n\n"
                 f"  setup: {onboarding}\n\n"
+                + setup_guidance
                 + (
                     # Point at the command that actually applies. `connect` on
                     # a profile that already has an account only prints a menu,

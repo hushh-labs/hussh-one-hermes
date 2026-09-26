@@ -1681,3 +1681,32 @@ def test_owner_capability_is_reused_in_memory_and_cleared_on_lock(
     bridge.lock()
     assert bridge.acquire_vault_owner_token() == "owner-token-2"
     assert fake_http.challenge_count == 2
+
+
+@pytest.mark.parametrize("error", ["login_required", "account_setup_required", "untrusted-description"])
+def test_loopback_prerequisite_failure_is_terminal_and_safe(error: str) -> None:
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LoopbackHandler)
+    server.expected_state = "expected-state"
+    server.callback_event = threading.Event()
+    server.completion_event = threading.Event()
+    serving = threading.Thread(target=server.handle_request, daemon=True)
+    serving.start()
+    try:
+        response = httpx.get(
+            f"http://127.0.0.1:{server.server_port}/callback",
+            params={"state": "expected-state", "error": error},
+            timeout=5,
+        )
+        assert response.status_code == 400
+        assert "Puppy One" in response.text
+        assert "Approval was received" not in response.text
+        assert "untrusted-description" not in response.text
+        if error != "untrusted-description":
+            assert "Sign in to One and finish setting up your account" in response.text
+        assert not server.result["code"]
+        assert server.callback_event.is_set()
+    finally:
+        serving.join(timeout=5)
+        server.server_close()

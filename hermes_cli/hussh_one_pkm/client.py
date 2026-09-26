@@ -403,9 +403,10 @@ class HusshIdentityClient:
             if callback_event is not None:
                 callback_event.wait(timeout=5)
             result = getattr(server, "result", None)
-            if not result or not result.get("code"):
+            if not result or result.get("error") or not result.get("code"):
                 raise HusshIdentityError(
-                    result.get("error") if result else "Authorization timed out."
+                    _authorization_failure_message(result.get("error"))
+                    if result else "Authorization timed out."
                 )
             # The environment chosen when this approval started, never a
             # constant: the code came from that environment's approval page
@@ -784,6 +785,15 @@ class HusshIdentityClient:
             self.identity_path.unlink()
 
 
+def _authorization_failure_message(error: object) -> str:
+    if error in ("login_required", "account_setup_required"):
+        return (
+            "Sign in to One and finish setting up your account, then try "
+            "connecting again from Puppy One."
+        )
+    return "Device approval did not complete. Return to Puppy One and try again."
+
+
 class _LoopbackHandler(BaseHTTPRequestHandler):
     server: ThreadingHTTPServer
 
@@ -808,12 +818,16 @@ class _LoopbackHandler(BaseHTTPRequestHandler):
             callback_event = getattr(self.server, "callback_event", None)
             if callback_event is not None:
                 callback_event.set()
+            error = self.server.result["error"]  # type: ignore[attr-defined]
             completion_event = getattr(self.server, "completion_event", None)
-            completed = bool(completion_event and completion_event.wait(timeout=65))
+            completed = bool(not error and completion_event and completion_event.wait(timeout=65))
             completion_status = str(
                 getattr(self.server, "completion_status", "pending")
             )
-            if completed and completion_status == "connected":
+            if error:
+                self.send_response(400)
+                body = _authorization_failure_message(error).encode("utf-8")
+            elif completed and completion_status == "connected":
                 self.send_response(200)
                 body = b"Hussh One connected to Hermes. You can close this window."
             elif completed and completion_status == "error":
