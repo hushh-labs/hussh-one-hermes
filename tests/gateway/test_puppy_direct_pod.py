@@ -140,7 +140,8 @@ def test_endpoint_pin_refuses_same_version_repoint(tmp_path: Path):
         )
 
 
-def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
+@pytest.mark.parametrize("refusal", [None, "PUPPY_OWNER_APPROVAL_REQUIRED", "unknown"])
+def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path, refusal):
     binding = _binding()
     payload = json.dumps(
         {
@@ -164,6 +165,10 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
         if request.url.path.endswith("/endpoint"):
             return httpx.Response(200, json=_endpoint())
         if request.url.path.endswith("/pod-binding"):
+            if refusal:
+                return httpx.Response(403, json={"detail": {
+                    "code": refusal, "message": "synthetic-private-response-do-not-display",
+                }})
             return httpx.Response(
                 200, json={"binding": binding, "signature": _signature(binding)}
             )
@@ -221,6 +226,16 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path):
             return "device-signature"
 
     identity = Identity()
+    if refusal:
+        with pytest.raises(DirectPodRefused) as caught:
+            _admit(identity)
+        assert "synthetic-private-response" not in str(caught.value)
+        if refusal == "PUPPY_OWNER_APPROVAL_REQUIRED":
+            assert "enable Puppy" in str(caught.value)
+        assert not identity.signed
+        assert not (tmp_path / "hussh-one/puppy-pod-pin.json").exists()
+        assert not any(path.endswith(("/challenge", "/admit")) for path in paths)
+        return
     admitted_binding, session = _admit(identity)
     assert admitted_binding == binding and session["sid"] == "sid-1"
     assert identity.signed == payload

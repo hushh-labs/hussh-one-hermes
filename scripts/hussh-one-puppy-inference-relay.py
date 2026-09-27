@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import sys
 
 from gateway.puppy_inference_relay import run_puppy_inference_relay
 
@@ -19,13 +20,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.direct:
         from hermes_constants import get_hermes_home
-        from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
-        from gateway.puppy_direct_pod import PuppyDirectPodRelay
+        from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
+        from gateway.puppy_direct_pod import PuppyDirectPodRelay, DirectPodRefused
 
-        asyncio.run(
-            PuppyDirectPodRelay(
-                HusshIdentityClient(profile_home=get_hermes_home())
-            ).serve()
-        )
+        try:
+            asyncio.run(
+                PuppyDirectPodRelay(
+                    HusshIdentityClient(profile_home=get_hermes_home())
+                ).serve()
+            )
+        except DirectPodRefused as exc:
+            print(f"Puppy could not connect: {exc}", file=sys.stderr)
+            sys.exit(1)
+        except HusshIdentityError:
+            print("Log in and finish account setup in the Hussh app, then reconnect this Hermes profile.", file=sys.stderr)
+            sys.exit(1)
     else:
         asyncio.run(run_puppy_inference_relay())

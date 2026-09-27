@@ -300,6 +300,23 @@ def _validate_binding(
 
 def _json_response(response: Any) -> dict[str, Any]:
     if not response.is_success:
+        # Only authored messages reach the terminal; response details may be private.
+        code = None
+        try:
+            if len(response.content) <= 16_384:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else None
+                code = detail.get("code") if isinstance(detail, dict) else None
+        except (ValueError, TypeError):
+            pass
+        if response.status_code == 403 and code == "PUPPY_OWNER_APPROVAL_REQUIRED":
+            raise DirectPodRefused(
+                "Open Trusted Devices in the Hussh app and enable Puppy for this computer, then retry."
+            )
+        if response.status_code == 401:
+            raise DirectPodRefused(
+                "Log in and finish account setup in the Hussh app, then reconnect this Hermes profile."
+            )
         raise DirectPodRefused("Puppy binding or pod session was refused")
     return _object(response.json())
 
