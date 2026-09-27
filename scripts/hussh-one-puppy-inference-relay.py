@@ -17,18 +17,34 @@ if __name__ == "__main__":
     parser.add_argument(
         "--direct", action="store_true", help="connect to this owner's BYOC pod"
     )
+    parser.add_argument(
+        "--wait-for-activation", action="store_true",
+        help="with --direct, wait on the device control lane before requesting pod access",
+    )
     args = parser.parse_args()
+    if args.wait_for_activation and not args.direct:
+        parser.error("--wait-for-activation requires --direct")
     if args.direct:
         from hermes_constants import get_hermes_home
         from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
         from gateway.puppy_direct_pod import PuppyDirectPodRelay, DirectPodRefused
 
         try:
+            if args.wait_for_activation:
+                print(
+                    "Waiting for Puppy activation. Enable Puppy for this device in "
+                    "the Hussh app, then start an inference request. Owner approval "
+                    "is still required before connecting to your pod.",
+                    file=sys.stderr, flush=True,
+                )
             asyncio.run(
                 PuppyDirectPodRelay(
-                    HusshIdentityClient(profile_home=get_hermes_home())
+                    HusshIdentityClient(profile_home=get_hermes_home()),
+                    wait_for_activation=args.wait_for_activation,
                 ).serve()
             )
+        except KeyboardInterrupt:
+            sys.exit(0)
         except DirectPodRefused as exc:
             print(f"Puppy could not connect: {exc}", file=sys.stderr)
             sys.exit(1)

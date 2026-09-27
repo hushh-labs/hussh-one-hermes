@@ -14,6 +14,15 @@ repair; a healthy trusted device does not need to register again. The direct
 path requires the owner's active BYOC pod and currently has no live two-device
 acceptance result.
 
+To keep the client ready before owner approval, add `--wait-for-activation` to
+`--direct`. This waits on the existing hub device-control lane without contacting
+or waking the pod. Enable Puppy for this device in the owner app, then start an
+inference request; that request supplies the activation signal. Activation is
+only a wake signal: the client still obtains a fresh verified binding and pod
+admission. Revocation or refused admission stops the client. Start only one relay
+process per profile; Ctrl-C stops an owned foreground process. Signing in to
+Hermes alone does not start this separate relay process.
+
 The older hub compatibility path still accepts these values in its existing
 profile configuration:
 

@@ -432,6 +432,7 @@ class PuppyDirectPodRelay:
         model_url: str | None = None,
         model: str | None = None,
         model_api_key: str | None = None,
+        wait_for_activation: bool = False,
     ) -> None:
         self.identity = identity
         self.model_options = {
@@ -442,7 +443,7 @@ class PuppyDirectPodRelay:
         # Memory only: reconnecting an admitted session does not need the hub.
         # A restart, changed device identity, expiry, or refusal requires admission.
         self._admitted: tuple[dict[str, Any], dict[str, Any]] | None = None
-        self._waiting_activation = False
+        self._waiting_activation = wait_for_activation
         self._activation_id: str | None = None
         self._idle_grace: int | None = None
         self._last_work = time.monotonic()

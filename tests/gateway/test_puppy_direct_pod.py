@@ -331,3 +331,35 @@ async def test_idle_device_refuses_revocation_without_contacting_pod():
                                device_control_status=lambda: {"status": "revoked"})
     with pytest.raises(DirectPodRefused, match="no longer active"):
         await PuppyDirectPodRelay(identity)._wait_for_activation()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_startup_wait_requires_activation_and_fresh_admission(approved):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from gateway.puppy_direct_pod import PuppyDirectPodRelay
+
+    relay = PuppyDirectPodRelay(SimpleNamespace(), wait_for_activation=True)
+    binding = _binding()
+    hint = {"id": "a" * 32, "podKeyId": binding["pod_key_id"],
+            "hushhId": binding["hushh_id"]}
+
+    async def activate():
+        relay._session.assert_not_awaited()
+        relay._connected.assert_not_awaited()
+        return hint
+
+    relay._wait_for_activation = AsyncMock(side_effect=activate)
+    relay._session = AsyncMock(return_value=(binding, {"session": "admitted"}))
+    if not approved:
+        relay._session.side_effect = DirectPodRefused("Owner approval is required")
+    relay._connected = AsyncMock(side_effect=asyncio.CancelledError)
+    with pytest.raises(asyncio.CancelledError if approved else DirectPodRefused):
+        await relay.serve()
+    relay._wait_for_activation.assert_awaited_once()
+    relay._session.assert_awaited_once()
+    if approved:
+        relay._connected.assert_awaited_once_with(binding, {"session": "admitted"})
+    else:
+        relay._connected.assert_not_awaited()
