@@ -23,6 +23,11 @@ admission. Revocation or refused admission stops the client. Start only one rela
 process per profile; Ctrl-C stops an owned foreground process. Signing in to
 Hermes alone does not start this separate relay process.
 
+The direct launcher reads the selected model and base URL from that profile's
+existing model settings. Its endpoint must be on loopback; a selected cloud
+model is refused rather than used as an inference fallback. Keep the local model
+server running. Restart the owned relay process after changing the model selection.
+
 The older hub compatibility path still accepts these values in its existing
 profile configuration:
 

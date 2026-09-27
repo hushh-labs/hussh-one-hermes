@@ -28,8 +28,11 @@ if __name__ == "__main__":
         from hermes_constants import get_hermes_home
         from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
         from gateway.puppy_direct_pod import PuppyDirectPodRelay, DirectPodRefused
+        from gateway.puppy_inference_relay import profile_model_options
+        from hermes_cli.config import load_config_readonly
 
         try:
+            model_options = profile_model_options(load_config_readonly())
             if args.wait_for_activation:
                 print(
                     "Waiting for Puppy activation. Enable Puppy for this device in "
@@ -41,10 +44,14 @@ if __name__ == "__main__":
                 PuppyDirectPodRelay(
                     HusshIdentityClient(profile_home=get_hermes_home()),
                     wait_for_activation=args.wait_for_activation,
+                    **model_options,
                 ).serve()
             )
         except KeyboardInterrupt:
             sys.exit(0)
+        except ValueError:
+            print("Select a local model with a loopback endpoint in this Hermes profile before starting Puppy.", file=sys.stderr)
+            sys.exit(1)
         except DirectPodRefused as exc:
             print(f"Puppy could not connect: {exc}", file=sys.stderr)
             sys.exit(1)

@@ -71,6 +71,25 @@ def _reportable_model(value: Any) -> str:
     return text
 
 
+def profile_model_options(config: dict[str, Any]) -> dict[str, str]:
+    """Use the selected profile model only when its endpoint is device-local."""
+    selected = config.get("model")
+    if not isinstance(selected, dict):
+        raise ValueError("Select a local model in this Hermes profile before starting Puppy.")
+    model = _reportable_model(selected.get("default"))
+    url = str(selected.get("base_url") or "").strip().rstrip("/")
+    try:
+        endpoint = urlparse(url)
+        local = endpoint.scheme in {"http", "https"} and endpoint.hostname in {
+            "127.0.0.1", "localhost", "::1",
+        } and not (endpoint.username or endpoint.password or endpoint.query or endpoint.fragment)
+    except ValueError:
+        local = False
+    if not model or not local:
+        raise ValueError("Select a local model with a loopback endpoint in this Hermes profile before starting Puppy.")
+    return {"model": model, "model_url": url}
+
+
 def _response_format(value: Any) -> dict[str, Any] | None:
     """Neutral ``responseFormat`` -> OpenAI ``response_format``."""
     if not isinstance(value, dict):

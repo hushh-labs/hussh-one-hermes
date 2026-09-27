@@ -64,6 +64,19 @@ def test_relay_rejects_non_loopback_model_endpoint():
         )
 
 
+def test_direct_profile_uses_selected_local_model_and_refuses_cloud_fallback():
+    from gateway.puppy_inference_relay import profile_model_options
+
+    selected = {"model": {"default": "owner-selected-model", "base_url": "http://localhost:1234/v1/"}}
+    assert profile_model_options(selected) == {
+        "model": "owner-selected-model", "model_url": "http://localhost:1234/v1",
+    }
+    assert selected["model"]["base_url"].endswith("/")
+    for endpoint in ("https://cloud.example/v1", "http://secret@localhost:1234/v1", ""):
+        with pytest.raises(ValueError, match="loopback"):
+            profile_model_options({"model": {"default": "owner-selected-model", "base_url": endpoint}})
+
+
 # --------------------------------------------------------------------------- #
 # The device says what it is and what it can do, maps every knob the pod set, and
 # refuses a capability it lacks BEFORE the local model is called.
