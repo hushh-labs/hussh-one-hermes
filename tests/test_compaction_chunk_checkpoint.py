@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Durable intermediate summaries survive a process/session-db reopen."""
 import pytest
 from hermes_state import SessionDB

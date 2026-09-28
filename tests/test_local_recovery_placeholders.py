@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Bookkeeping closures must not train the local replay to echo non-answers."""
 from agent.replay_cleanup import (
     _MISSING_FINAL_RESPONSE_CLOSURE,

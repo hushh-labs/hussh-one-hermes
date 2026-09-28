@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Contract tests for the shared local-model runtime gate."""
 
 from __future__ import annotations

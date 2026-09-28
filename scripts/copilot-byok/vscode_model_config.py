@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Maintain VS Code custom-endpoint configuration for local LM Studio.
 
 VS Code owns the Copilot-facing request contract.  The Custom Endpoint provider

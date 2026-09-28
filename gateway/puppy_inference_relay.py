@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Puppy One's inference-only outbound relay client.
 
 This process is a local-model adapter, not the Hermes agent loop. It dials the

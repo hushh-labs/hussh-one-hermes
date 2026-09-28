@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Regression tests for metadata-only LM Studio → VS Code synchronization."""
 
 from __future__ import annotations
