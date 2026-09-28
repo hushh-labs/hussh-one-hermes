@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """The device's direct BYOC boundary and the pod's sealed-frame wire vector."""
 
 from __future__ import annotations
@@ -129,6 +131,18 @@ def test_binding_refuses_wrong_owner_pod_or_scope(change):
             user_id="user-1",
             device_id="device-1",
             environment="dev",
+        )
+
+
+def test_binding_tolerates_clock_skew_without_accepting_future_grants():
+    binding = {**_binding(), "issued_at_ms": int(time.time() * 1000) + 1000}
+    _validate_binding(
+        binding, _endpoint(), user_id="user-1", device_id="device-1", environment="dev"
+    )
+    binding["issued_at_ms"] += 60_000
+    with pytest.raises(DirectPodRefused, match="not authorized"):
+        _validate_binding(
+            binding, _endpoint(), user_id="user-1", device_id="device-1", environment="dev"
         )
 
 

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Hushh Labs
+# SPDX-License-Identifier: Apache-2.0
 """Owner-bound Puppy connection to a BYOC pod.
 
 The hub issues a signed binding and publishes the endpoint. Inference frames
@@ -35,6 +37,7 @@ from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityEr
 
 logger = logging.getLogger(__name__)
 _KEY_INFO = b"hussh/puppy-envelope/aes256gcm/v1"
+_MAX_BINDING_CLOCK_SKEW_MS = 30_000
 _DEVICE_TO_POD = "d2p"
 _POD_TO_DEVICE = "p2d"
 _AAD_FIELDS = (
@@ -260,6 +263,7 @@ def _validate_binding(
     device_id: str,
     environment: str,
 ) -> None:
+    now_ms = time.time() * 1000
     expected = {
         "kind": "pod_binding_v1",
         "user_id": user_id,
@@ -279,9 +283,9 @@ def _validate_binding(
         or type(binding.get("version")) is not int
         or binding["version"] < 1
         or type(binding.get("issued_at_ms")) is not int
-        or binding["issued_at_ms"] > time.time() * 1000
+        or binding["issued_at_ms"] > now_ms + _MAX_BINDING_CLOCK_SKEW_MS
         or type(binding.get("expires_at_ms")) is not int
-        or binding["expires_at_ms"] <= time.time() * 1000
+        or binding["expires_at_ms"] <= now_ms
     ):
         raise DirectPodRefused("Puppy inference is not authorized")
     try:
