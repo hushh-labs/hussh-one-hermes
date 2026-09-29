@@ -611,20 +611,16 @@ def build_snapshot(
     # jobs.json or a locked database omits that one key and the beat still
     # lands. Liveness is the point of the beat; the summaries are a bonus.
     #
-    # An empty summary is omitted rather than sent as []. "The device did not
-    # report" and "the device has nothing scheduled" are different answers, and
-    # only the reader can tell them apart, and only if we keep them apart here.
+    # An empty list means the store was read and had no reportable rows. Omit
+    # the key only when the read failed; the owner must be able to distinguish
+    # "nothing scheduled" from "the device did not report".
     try:
-        scheduled = scheduled_summary(home=home)
-        if scheduled:
-            snapshot["scheduled"] = scheduled
+        snapshot["scheduled"] = scheduled_summary(home=home)
     except Exception:
         logger.debug("scheduled work unavailable", exc_info=True)
 
     try:
-        conversations = conversations_summary(home=home)
-        if conversations:
-            snapshot["conversations"] = conversations
+        snapshot["conversations"] = conversations_summary(home=home)
     except Exception:
         logger.debug("conversations unavailable", exc_info=True)
 

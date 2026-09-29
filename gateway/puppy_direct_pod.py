@@ -17,7 +17,7 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -34,6 +34,9 @@ from websockets.asyncio.client import connect
 
 from gateway.puppy_inference_relay import PuppyInferenceRelay, _MAX_FRAME_BYTES
 from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
+
+if TYPE_CHECKING:
+    from hermes_cli.hussh_one_pkm.presence import PresencePublisher
 
 logger = logging.getLogger(__name__)
 _KEY_INFO = b"hussh/puppy-envelope/aes256gcm/v1"
@@ -437,6 +440,7 @@ class PuppyDirectPodRelay:
         model: str | None = None,
         model_api_key: str | None = None,
         wait_for_activation: bool = False,
+        presence: PresencePublisher | None = None,
     ) -> None:
         self.identity = identity
         self.model_options = {
@@ -451,6 +455,25 @@ class PuppyDirectPodRelay:
         self._activation_id: str | None = None
         self._idle_grace: int | None = None
         self._last_work = time.monotonic()
+        self._presence = presence
+
+    async def _report_presence(self) -> None:
+        """Refresh the hub's machine reading without contacting a sleeping pod."""
+        if self._presence is None:
+            return
+        reported = False
+        while True:
+            if reported:
+                await asyncio.to_thread(self._presence.on_event, "relay_running")
+                await asyncio.to_thread(self._presence.keepalive)
+            else:
+                # A new identity client has no token until the control lane
+                # authenticates. Retry a failed first push without asking the
+                # heartbeat itself to refresh credentials or seal the device.
+                reported = await asyncio.to_thread(
+                    self._presence.on_event, "relay_running", force=True
+                )
+            await asyncio.sleep(60)
 
     async def _session(self) -> tuple[dict[str, Any], dict[str, Any]]:
         state = self.identity.read_state()
@@ -602,30 +625,36 @@ class PuppyDirectPodRelay:
 
     async def serve(self) -> None:
         delay = 2.0
-        while True:
-            try:
-                if self._idle_grace and time.monotonic() - self._last_work >= self._idle_grace:
-                    self._waiting_activation = True
-                hint = await self._wait_for_activation() if self._waiting_activation else None
-                if hint and self._admitted and hint.get("podKeyId") != self._admitted[0]["pod_key_id"]:
+        presence_task = asyncio.create_task(self._report_presence())
+        try:
+            while True:
+                try:
+                    if self._idle_grace and time.monotonic() - self._last_work >= self._idle_grace:
+                        self._waiting_activation = True
+                    hint = await self._wait_for_activation() if self._waiting_activation else None
+                    if hint and self._admitted and hint.get("podKeyId") != self._admitted[0]["pod_key_id"]:
+                        self._admitted = None
+                    binding, session = await self._session()
+                    if hint:
+                        if hint.get("podKeyId") != binding["pod_key_id"] or hint.get("hushhId") != binding["hushh_id"]:
+                            raise DirectPodRefused("Activation does not match the verified pod")
+                        self._activation_id = hint["id"]
+                        self._last_work = time.monotonic()
+                    self._waiting_activation = False
+                    await self._connected(binding, session)
+                    delay = 2.0
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    raise
+                except (DirectPodRefused, HusshIdentityError):
                     self._admitted = None
-                binding, session = await self._session()
-                if hint:
-                    if hint.get("podKeyId") != binding["pod_key_id"] or hint.get("hushhId") != binding["hushh_id"]:
-                        raise DirectPodRefused("Activation does not match the verified pod")
-                    self._activation_id = hint["id"]
-                    self._last_work = time.monotonic()
-                self._waiting_activation = False
-                await self._connected(binding, session)
-                delay = 2.0
-                await asyncio.sleep(delay)
-            except asyncio.CancelledError:
-                raise
-            except (DirectPodRefused, HusshIdentityError):
-                self._admitted = None
-                logger.warning("puppy_direct.refused")
-                raise
-            except Exception:
-                logger.info("puppy_direct.reconnecting")
-                await asyncio.sleep(delay + random.uniform(0.0, min(1.0, delay / 4)))
-                delay = min(delay * 2.0, 30.0)
+                    logger.warning("puppy_direct.refused")
+                    raise
+                except Exception:
+                    logger.info("puppy_direct.reconnecting")
+                    await asyncio.sleep(delay + random.uniform(0.0, min(1.0, delay / 4)))
+                    delay = min(delay * 2.0, 30.0)
+        finally:
+            presence_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await presence_task

@@ -29,12 +29,23 @@ if __name__ == "__main__":
     if args.direct:
         from hermes_constants import get_hermes_home
         from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
+        from hermes_cli.hussh_one_pkm.presence import PresencePublisher, agent_version, build_snapshot
         from gateway.puppy_direct_pod import PuppyDirectPodRelay, DirectPodRefused
         from gateway.puppy_inference_relay import profile_model_options
         from hermes_cli.config import load_config_readonly
 
         try:
             model_options = profile_model_options(load_config_readonly())
+            profile_home = get_hermes_home()
+            identity = HusshIdentityClient(profile_home=profile_home)
+            presence = PresencePublisher(
+                publish=identity.post_heartbeat,
+                snapshot=lambda: build_snapshot(
+                    current_model=model_options["model"],
+                    agent_version=agent_version(),
+                    home=profile_home,
+                ),
+            )
             if args.wait_for_activation:
                 print(
                     "Waiting for Puppy activation. Enable Puppy for this device in "
@@ -44,8 +55,9 @@ if __name__ == "__main__":
                 )
             asyncio.run(
                 PuppyDirectPodRelay(
-                    HusshIdentityClient(profile_home=get_hermes_home()),
+                    identity,
                     wait_for_activation=args.wait_for_activation,
+                    presence=presence,
                     **model_options,
                 ).serve()
             )

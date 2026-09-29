@@ -377,3 +377,42 @@ async def test_startup_wait_requires_activation_and_fresh_admission(approved):
         relay._connected.assert_awaited_once_with(binding, {"session": "admitted"})
     else:
         relay._connected.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_machine_presence_retries_after_login_then_uses_keepalive(monkeypatch):
+    import asyncio
+    from gateway.puppy_direct_pod import PuppyDirectPodRelay
+
+    class Presence:
+        def __init__(self):
+            self.events = []
+            self.keepalives = 0
+
+        def on_event(self, reason, *, force=False):
+            self.events.append((reason, force))
+            return len(self.events) >= 2
+
+        def keepalive(self):
+            self.keepalives += 1
+
+    presence = Presence()
+    relay = PuppyDirectPodRelay(SimpleNamespace(), presence=presence)
+    sleeps = 0
+
+    async def stop_after_three_ticks(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", stop_after_three_ticks)
+    with pytest.raises(asyncio.CancelledError):
+        await relay._report_presence()
+
+    assert presence.events == [
+        ("relay_running", True),
+        ("relay_running", True),
+        ("relay_running", False),
+    ]
+    assert presence.keepalives == 1

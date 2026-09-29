@@ -986,17 +986,17 @@ class TestSummariesNeverBlockABeat:
         assert "scheduled" not in snapshot
         assert snapshot["current_model"] == "gemma"
 
-    def test_an_empty_store_is_absent_not_an_empty_list(self, tmp_path):
+    def test_an_empty_store_reports_empty_lists(self, tmp_path):
         # "The device did not report" and "the device has nothing scheduled"
-        # are different answers. Sending [] would collapse them into one.
+        # are different answers. Omitting [] would collapse them into one.
         from hermes_cli.hussh_one_pkm.presence import build_snapshot
 
         _Stores(tmp_path).jobs([])
         _Stores(tmp_path).sessions([])
 
         snapshot = build_snapshot(current_model="gemma", home=tmp_path)
-        assert "scheduled" not in snapshot
-        assert "conversations" not in snapshot
+        assert snapshot["scheduled"] == []
+        assert snapshot["conversations"] == []
 
     def test_a_beat_from_a_bare_home_still_carries_the_machine(self, tmp_path):
         from hermes_cli.hussh_one_pkm.presence import build_snapshot
@@ -1004,8 +1004,8 @@ class TestSummariesNeverBlockABeat:
         snapshot = build_snapshot(current_model="gemma", active_sessions=2, home=tmp_path)
         assert snapshot["current_model"] == "gemma"
         assert snapshot["active_sessions"] == 2
-        assert "scheduled" not in snapshot
-        assert "conversations" not in snapshot
+        assert snapshot["scheduled"] == []
+        assert snapshot["conversations"] == []
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__]))
