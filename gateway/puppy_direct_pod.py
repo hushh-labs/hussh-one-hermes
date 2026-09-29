@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,7 +33,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from websockets.asyncio.client import connect
 
-from gateway.puppy_inference_relay import PuppyInferenceRelay, _MAX_FRAME_BYTES
+from gateway.puppy_inference_relay import PuppyInferenceRelay, _MAX_FRAME_BYTES, _reportable_model, profile_model_options
 from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ _KEY_INFO = b"hussh/puppy-envelope/aes256gcm/v1"
 _MAX_BINDING_CLOCK_SKEW_MS = 30_000
 _DEVICE_TO_POD = "d2p"
 _POD_TO_DEVICE = "p2d"
+_CATALOG_VERSION = re.compile(r"^[0-9a-f]{64}$")
 _AAD_FIELDS = (
     "v",
     "hushhId",
@@ -456,6 +458,156 @@ class PuppyDirectPodRelay:
         self._idle_grace: int | None = None
         self._last_work = time.monotonic()
         self._presence = presence
+        self._model_ack: dict[str, Any] | None = None
+
+    def _model_receipt_path(self) -> Path | None:
+        home = getattr(self.identity, "profile_home", None)
+        return Path(home) / "hussh-one" / "puppy-model-command-receipt.json" if home else None
+
+    def _read_model_ack(self) -> dict[str, Any] | None:
+        path = self._model_receipt_path()
+        if path is None:
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def _write_model_ack(self, statement: dict[str, Any]) -> None:
+        """Keep the exact ACK across a relay restart after a config write."""
+        path = self._model_receipt_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(statement, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.chmod(temporary, 0o600)
+            temporary.replace(path)
+        except OSError:
+            # The hub ACK is still worth attempting if local disk is full.
+            return
+
+    @staticmethod
+    def _model_command_statement(
+        command: dict[str, Any], binding: dict[str, Any], *,
+        owner_id: str, device_id: str,
+    ) -> dict[str, Any] | None:
+        """Reject a command that does not name this admitted owner and pod."""
+        now_ms = int(time.time() * 1000)
+        model = _reportable_model(command.get("model"))
+        version = command.get("version")
+        expires_at = command.get("expiresAt")
+        command_id = command.get("id")
+        catalog_version = command.get("catalogVersion")
+        if (
+            not isinstance(command_id, str) or not 1 <= len(command_id) <= 80
+            or type(version) is not int or version < 1
+            or type(expires_at) is not int
+            or not now_ms < expires_at <= now_ms + 150_000
+            or not model or model != command.get("model")
+            or not isinstance(catalog_version, str)
+            or not _CATALOG_VERSION.fullmatch(catalog_version)
+            or command.get("ownerId") != owner_id
+            or command.get("deviceId") != device_id
+            or command.get("hushhId") != binding.get("hushh_id")
+            or command.get("podKeyId") != binding.get("pod_key_id")
+        ):
+            return None
+        return {
+            "purpose": "puppy-model-selection-ack-v1",
+            "id": command_id,
+            "version": version,
+            "ownerId": owner_id,
+            "deviceId": device_id,
+            "hushhId": binding["hushh_id"],
+            "podKeyId": binding["pod_key_id"],
+            "model": model,
+            "catalogVersion": catalog_version,
+            "result": "refused",
+            "reason": "DEVICE_ERROR",
+        }
+
+    @staticmethod
+    def _save_local_default(model: str, relay: PuppyInferenceRelay) -> bool:
+        """Change only this profile's Puppy default, not Hermes chat or jobs."""
+        from hermes_cli import config as cfg
+
+        try:
+            with cfg._CONFIG_LOCK:
+                current = profile_model_options(cfg.load_config_readonly())
+                if current["model_url"] != relay.model_url or current["model"] != relay.model:
+                    return False
+                raw = cfg.read_user_config_raw()
+                hussh_one = raw.get("hussh_one")
+                if hussh_one is None:
+                    hussh_one = {}
+                    raw["hussh_one"] = hussh_one
+                if not isinstance(hussh_one, dict):
+                    return False
+                puppy = hussh_one.get("puppy")
+                if puppy is None:
+                    puppy = {}
+                    hussh_one["puppy"] = puppy
+                if not isinstance(puppy, dict):
+                    return False
+                puppy["default_model"] = model
+                puppy["model_base_url"] = relay.model_url
+                cfg.save_config(raw)
+                saved = profile_model_options(cfg.load_config_readonly())
+                return saved["model"] == model and saved["model_url"] == relay.model_url
+        except Exception:
+            return False
+
+    async def _process_model_command(
+        self, status: dict[str, Any], binding: dict[str, Any],
+        relay: PuppyInferenceRelay, *, busy: bool,
+    ) -> bool:
+        """Apply a single owner command; return whether the catalog changed."""
+        command = status.get("puppyModelSelection")
+        state = self.identity.read_state()
+        if status.get("status") != "active" or not isinstance(command, dict) or state is None:
+            return False
+        statement = self._model_command_statement(
+            command, binding, owner_id=state.user_id, device_id=state.device_id,
+        )
+        if statement is None or binding.get("expires_at_ms", 0) <= time.time() * 1000:
+            return False
+        previous = self._model_ack or await asyncio.to_thread(self._read_model_ack)
+        if previous is not None and all(
+            previous.get(key) == statement[key]
+            for key in (
+                "purpose", "id", "version", "ownerId", "deviceId",
+                "hushhId", "podKeyId", "model", "catalogVersion",
+            )
+        ) and previous.get("result") in {"applied", "refused"}:
+            if previous["result"] != "applied" or relay.model == statement["model"]:
+                self._model_ack = previous
+                await asyncio.to_thread(self.identity.post_puppy_model_selection_ack, previous)
+                return False
+        catalog = await relay.model_catalog()
+        if busy:
+            statement["reason"] = "DEVICE_BUSY"
+        elif statement["model"] not in {row["id"] for row in catalog["models"]}:
+            statement["reason"] = "MODEL_UNAVAILABLE"
+        elif catalog["catalogVersion"] != statement["catalogVersion"]:
+            statement["reason"] = "STALE_MODEL_CATALOG"
+        elif await asyncio.to_thread(self._save_local_default, statement["model"], relay):
+            relay.model = statement["model"]
+            relay.probe_mode = relay._probe_mode()
+            self.model_options["model"] = statement["model"]
+            statement["result"] = "applied"
+            statement["reason"] = ""
+        self._model_ack = statement
+        await asyncio.to_thread(self._write_model_ack, statement)
+        await asyncio.to_thread(self.identity.post_puppy_model_selection_ack, statement)
+        if statement["result"] == "applied" and self._presence is not None:
+            await asyncio.to_thread(self._presence.on_event, "model_selected", force=True)
+        return statement["result"] == "applied"
 
     async def _report_presence(self) -> None:
         """Refresh the hub's machine reading without contacting a sleeping pod."""
@@ -560,9 +712,29 @@ class PuppyDirectPodRelay:
                 epoch=int(session["epoch"]),
             )
             sender = _SealedSender(socket, envelope)
+            await sender.send(json.dumps(await model.model_catalog()))
             heartbeat = asyncio.create_task(model._heartbeat(sender))
             inference: asyncio.Task[None] | None = None
             request_id = ""
+            async def poll_model_commands() -> None:
+                while True:
+                    try:
+                        status = await asyncio.to_thread(self.identity.device_control_status)
+                        changed = await self._process_model_command(
+                            status, binding, model,
+                            busy=inference is not None and not inference.done(),
+                        )
+                        if changed:
+                            await sender.send(json.dumps(await model.model_catalog()))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # A control-plane read may fail while an admitted relay
+                        # continues inference; never make it a model fallback.
+                        logger.debug("puppy_direct.model_control_unavailable")
+                    await asyncio.sleep(15)
+
+            model_control = asyncio.create_task(poll_model_commands())
             try:
                 async for raw in socket:
                     if not isinstance(raw, str) or len(raw.encode()) > _MAX_FRAME_BYTES:
@@ -596,11 +768,14 @@ class PuppyDirectPodRelay:
                 if socket.close_code == 1000 and socket.close_reason == "Puppy relay idle":
                     self._waiting_activation = True
             finally:
+                model_control.cancel()
                 heartbeat.cancel()
                 if inference is not None:
                     inference.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat
+                with contextlib.suppress(asyncio.CancelledError):
+                    await model_control
                 if inference is not None:
                     with contextlib.suppress(asyncio.CancelledError):
                         await inference
@@ -614,6 +789,17 @@ class PuppyDirectPodRelay:
             status = await asyncio.to_thread(self.identity.device_control_status)
             if status.get("status") in {"revoked", "unknown_device"}:
                 raise DirectPodRefused("Trusted device is no longer active")
+            if self._admitted is not None and status.get("puppyModelSelection"):
+                binding, session = self._admitted
+                if binding.get("expires_at_ms", 0) > time.time() * 1000:
+                    relay = PuppyInferenceRelay(
+                        relay_url=str(binding["url"]).replace("https://", "wss://", 1)
+                        + "/api/one/puppy/relay",
+                        token=str(session["session"]),
+                        device_id=state.device_id,
+                        **self.model_options,
+                    )
+                    await self._process_model_command(status, binding, relay, busy=False)
             hint = status.get("puppyActivation")
             if (status.get("status") == "active" and isinstance(hint, dict) and hint.get("id") != self._activation_id
                     and isinstance(hint.get("id"), str) and len(hint["id"]) == 32

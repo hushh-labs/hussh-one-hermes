@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from gateway.puppy_direct_pod import (
     DeviceEnvelope,
     DirectPodRefused,
+    PuppyDirectPodRelay,
     _admit,
     _pin_endpoint,
     _validate_binding,
@@ -73,6 +74,72 @@ def _binding():
         "version": 1,
         "expires_at_ms": int(time.time() * 1000) + 60_000,
     }
+
+
+@pytest.mark.asyncio
+async def test_remote_model_command_requires_exact_admitted_owner_and_pod(tmp_path: Path, monkeypatch):
+    acknowledgements = []
+    identity = SimpleNamespace(
+        profile_home=tmp_path,
+        read_state=lambda: SimpleNamespace(user_id="user-1", device_id="device-1"),
+        post_puppy_model_selection_ack=lambda statement: acknowledgements.append(statement) or True,
+    )
+    direct = PuppyDirectPodRelay(identity)
+    catalog_version = "a" * 64
+    command = {
+        "id": "command-1", "version": 1, "ownerId": "user-1",
+        "deviceId": "device-1", "hushhId": "owner-1", "podKeyId": "pod-key-1",
+        "model": "local-two", "catalogVersion": catalog_version,
+        "expiresAt": int(time.time() * 1000) + 60_000,
+    }
+
+    class LocalRelay:
+        model = "local-one"
+        model_url = "http://127.0.0.1:1234/v1"
+
+        async def model_catalog(self):
+            return {
+                "status": "available", "catalogVersion": catalog_version,
+                "models": [{"id": "local-one"}, {"id": "local-two"}],
+            }
+
+        def _probe_mode(self):
+            return "local-two-mode"
+
+    relay = LocalRelay()
+    saves = []
+    monkeypatch.setattr(direct, "_save_local_default", lambda model, active: saves.append(model) or True)
+    binding = _binding()
+    assert await direct._process_model_command(
+        {"status": "active", "puppyModelSelection": {**command, "podKeyId": "replaced"}},
+        binding, relay, busy=False,
+    ) is False
+    assert saves == [] and acknowledgements == []
+    assert await direct._process_model_command(
+        {"status": "active", "puppyModelSelection": command}, binding, relay, busy=False,
+    ) is True
+    assert saves == ["local-two"]
+    assert relay.model == "local-two"
+    assert acknowledgements[0] == {
+        "purpose": "puppy-model-selection-ack-v1",
+        "id": "command-1", "version": 1, "ownerId": "user-1",
+        "deviceId": "device-1", "hushhId": "owner-1", "podKeyId": "pod-key-1",
+        "model": "local-two", "catalogVersion": catalog_version,
+        "result": "applied", "reason": "",
+    }
+    restarted = PuppyDirectPodRelay(identity, model="local-two")
+    monkeypatch.setattr(restarted, "_save_local_default", lambda *_: (_ for _ in ()).throw(AssertionError("duplicate write")))
+    assert await restarted._process_model_command(
+        {"status": "active", "puppyModelSelection": command}, binding, relay, busy=False,
+    ) is False
+    assert acknowledgements[-1] == acknowledgements[0]
+    next_command = {**command, "id": "command-2", "version": 2}
+    assert await direct._process_model_command(
+        {"status": "active", "puppyModelSelection": next_command},
+        binding, relay, busy=True,
+    ) is False
+    assert saves == ["local-two"]
+    assert acknowledgements[-1]["reason"] == "DEVICE_BUSY"
 
 
 def test_pod_to_device_vector_and_replay_refusal():
@@ -144,6 +211,69 @@ def test_binding_tolerates_clock_skew_without_accepting_future_grants():
         _validate_binding(
             binding, _endpoint(), user_id="user-1", device_id="device-1", environment="dev"
         )
+
+
+def test_remote_default_changes_only_the_local_profile_model(tmp_path: Path, monkeypatch):
+    from gateway.puppy_inference_relay import PuppyInferenceRelay
+    from hermes_cli import config as cfg
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    source = tmp_path / "config.yaml"
+    source.write_text(
+        "model:\n  provider: lmstudio\n  default: local-one\n"
+        "  base_url: http://127.0.0.1:1234/v1\n"
+        "agent:\n  max_turns: 12\n",
+        encoding="utf-8",
+    )
+    relay = PuppyInferenceRelay(
+        relay_url="wss://owner.example/relay", token="token", device_id="device-1",
+        model="local-one", model_url="http://127.0.0.1:1234/v1",
+    )
+    assert PuppyDirectPodRelay._save_local_default("local-two", relay) is True
+    stored = cfg.read_user_config_raw(source)
+    assert stored["model"] == {
+        "provider": "lmstudio", "default": "local-one",
+        "base_url": "http://127.0.0.1:1234/v1",
+    }
+    assert stored["hussh_one"]["puppy"] == {
+        "default_model": "local-two",
+        "model_base_url": "http://127.0.0.1:1234/v1",
+    }
+    assert stored["agent"]["max_turns"] == 12
+    other_endpoint = PuppyInferenceRelay(
+        relay_url="wss://owner.example/relay", token="token", device_id="device-1",
+        model="local-two", model_url="http://localhost:9999/v1",
+    )
+    assert PuppyDirectPodRelay._save_local_default("local-three", other_endpoint) is False
+    assert cfg.read_user_config_raw(source)["model"]["default"] == "local-one"
+
+
+def test_remote_model_ack_signs_exact_owner_device_and_pod_statement(tmp_path: Path, monkeypatch):
+    from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
+
+    calls = []
+    http = SimpleNamespace(post=lambda url, **kwargs: calls.append((url, kwargs)) or SimpleNamespace(status_code=200))
+    client = HusshIdentityClient(profile_home=tmp_path, http=http)
+    monkeypatch.setattr(
+        client, "read_state",
+        lambda: SimpleNamespace(api_base="https://hub.example", device_id="device-1"),
+    )
+    monkeypatch.setattr(client, "auth_headers", lambda: {"Authorization": "Bearer memory-only"})
+    signed = []
+    monkeypatch.setattr(client, "sign", lambda payload: signed.append(payload) or "device-proof")
+    statement = {
+        "purpose": "puppy-model-selection-ack-v1", "id": "command-1", "version": 1,
+        "ownerId": "user-1", "deviceId": "device-1", "hushhId": "owner-1",
+        "podKeyId": "pod-key-1", "model": "local-two",
+        "catalogVersion": "a" * 64, "result": "applied", "reason": "",
+    }
+    assert client.post_puppy_model_selection_ack(statement) is True
+    assert signed == [json.dumps(statement, sort_keys=True, separators=(",", ":"), ensure_ascii=False)]
+    assert calls[0][0] == "https://hub.example/api/account/trusted-devices/device-1/puppy-model-selection/ack"
+    assert calls[0][1]["json"] == {
+        "id": "command-1", "version": 1, "result": "applied",
+        "reason": "", "proof": "device-proof",
+    }
 
 
 def test_endpoint_pin_refuses_same_version_repoint(tmp_path: Path):

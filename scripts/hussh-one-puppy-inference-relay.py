@@ -38,10 +38,16 @@ if __name__ == "__main__":
             model_options = profile_model_options(load_config_readonly())
             profile_home = get_hermes_home()
             identity = HusshIdentityClient(profile_home=profile_home)
+            def current_model() -> str:
+                try:
+                    return profile_model_options(load_config_readonly())["model"]
+                except ValueError:
+                    return model_options["model"]
+
             presence = PresencePublisher(
                 publish=identity.post_heartbeat,
                 snapshot=lambda: build_snapshot(
-                    current_model=model_options["model"],
+                    current_model=current_model(),
                     agent_version=agent_version(),
                     home=profile_home,
                 ),

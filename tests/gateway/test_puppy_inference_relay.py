@@ -74,6 +74,20 @@ def test_direct_profile_uses_selected_local_model_and_refuses_cloud_fallback():
         "model": "owner-selected-model", "model_url": "http://localhost:1234/v1",
     }
     assert selected["model"]["base_url"].endswith("/")
+    assert profile_model_options({
+        **selected,
+        "hussh_one": {"puppy": {
+            "default_model": "puppy-only-model",
+            "model_base_url": "http://localhost:1234/v1",
+        }},
+    }) == {"model": "puppy-only-model", "model_url": "http://localhost:1234/v1"}
+    assert profile_model_options({
+        **selected,
+        "hussh_one": {"puppy": {
+            "default_model": "stale-puppy-model",
+            "model_base_url": "http://localhost:9999/v1",
+        }},
+    })["model"] == "owner-selected-model"
     for endpoint in ("https://cloud.example/v1", "http://secret@localhost:1234/v1", ""):
         with pytest.raises(ValueError, match="loopback"):
             profile_model_options({"model": {"default": "owner-selected-model", "base_url": endpoint}})
@@ -84,7 +98,7 @@ def test_direct_profile_uses_selected_local_model_and_refuses_cloud_fallback():
 # refuses a capability it lacks BEFORE the local model is called.
 # --------------------------------------------------------------------------- #
 
-import json  # noqa: E402
+import json as json_module  # noqa: E402
 
 import gateway.puppy_inference_relay as relay_mod  # noqa: E402
 
@@ -110,7 +124,7 @@ class _Socket:
         self.frames = []
 
     async def send(self, raw):
-        self.frames.append(json.loads(raw))
+        self.frames.append(json_module.loads(raw))
 
 
 def _never_call_the_model(monkeypatch):
@@ -135,7 +149,7 @@ def test_hello_carries_the_model_and_the_capability_profile_and_never_the_endpoi
     assert hello["probe_mode"].startswith(
         "puppy-inference-relay/openai_chat_completions/"
     )
-    rendered = json.dumps(hello)
+    rendered = json_module.dumps(hello)
     assert _ENDPOINT not in rendered and "127.0.0.1" not in rendered
     assert _LOCAL_KEY not in rendered and "relay-grant-token" not in rendered
 
@@ -284,6 +298,10 @@ class _Stream:
         for line in self._lines:
             yield line
 
+    async def aiter_bytes(self):
+        for chunk in self._lines:
+            yield chunk if isinstance(chunk, bytes) else chunk.encode()
+
 
 class _Client:
     """A fake httpx.AsyncClient that serves a scripted SSE completion."""
@@ -303,6 +321,59 @@ class _Client:
     def stream(self, method, url, json=None, headers=None):
         _Client.seen.append({"url": url, "json": json})
         return _Stream(_Client.lines)
+
+
+@pytest.mark.asyncio
+async def test_remote_catalog_and_selected_turn_use_only_fresh_local_models(monkeypatch):
+    class _CatalogClient(_Client):
+        inventory = [
+            {"id": "qwen3-30b-a3b-mlx"},
+            {"id": "gemma-3-27b-it"},
+            {"id": "https://cloud.example/secret"},
+        ]
+        requests = []
+
+        def stream(self, method, url, json=None, headers=None):
+            self.requests.append({"method": method, "url": url, "body": json})
+            if method == "GET":
+                return _Stream([json_module.dumps({"data": self.inventory})])
+            return _Stream([
+                'data: {"model":"gemma-3-27b-it","choices":[{"delta":{"content":"ok"}}]}',
+                "data: [DONE]",
+            ])
+
+    monkeypatch.setattr(relay_mod.httpx, "AsyncClient", _CatalogClient)
+    relay = _relay()
+    catalog = await relay.model_catalog()
+    assert catalog["status"] == "available"
+    assert catalog["defaultModel"] == "qwen3-30b-a3b-mlx"
+    assert [item["id"] for item in catalog["models"]] == [
+        "gemma-3-27b-it", "qwen3-30b-a3b-mlx",
+    ]
+    assert len(catalog["catalogVersion"]) == 64
+    assert _ENDPOINT not in json_module.dumps(catalog)
+    socket = _Socket()
+    request = {
+        "requestId": "selected-1", "messages": [{"role": "user", "text": "hi"}],
+        "model": "gemma-3-27b-it", "catalogVersion": catalog["catalogVersion"],
+    }
+    await relay._infer(request, socket)
+    assert _CatalogClient.requests[-1]["body"]["model"] == "gemma-3-27b-it"
+    assert socket.frames[-2]["model"] == "gemma-3-27b-it"
+    _CatalogClient.inventory.append({"id": "local-new"})
+    before = len([call for call in _CatalogClient.requests if call["method"] == "POST"])
+    socket = _Socket()
+    await relay._infer(request, socket)
+    assert socket.frames[0]["code"] == "STALE_MODEL_CATALOG"
+    assert len([call for call in _CatalogClient.requests if call["method"] == "POST"]) == before
+    _CatalogClient.inventory = [{"id": "qwen3-30b-a3b-mlx"}]
+    socket = _Socket()
+    await relay._infer(request, socket)
+    assert socket.frames == [{
+        "type": "inference.error", "requestId": "selected-1",
+        "code": "MODEL_UNAVAILABLE",
+    }]
+    assert len([call for call in _CatalogClient.requests if call["method"] == "POST"]) == before
 
 
 @pytest.mark.asyncio
@@ -329,7 +400,7 @@ async def test_the_result_names_the_model_that_answered_and_never_the_endpoint_o
     ]
     result = socket.frames[2]
     assert result["model"] == "qwen3-30b-a3b-mlx"
-    rendered = json.dumps(socket.frames)
+    rendered = json_module.dumps(socket.frames)
     assert _ENDPOINT not in rendered and "127.0.0.1" not in rendered
     assert _LOCAL_KEY not in rendered
     assert _Client.seen[0]["url"] == f"{_ENDPOINT}/chat/completions"
@@ -352,7 +423,7 @@ async def test_a_server_model_that_looks_like_an_endpoint_falls_back_to_the_resi
         frame for frame in socket.frames if frame["type"] == "inference.result"
     )
     assert result["model"] == "qwen3-30b-a3b-mlx"
-    assert "127.0.0.1" not in json.dumps(socket.frames)
+    assert "127.0.0.1" not in json_module.dumps(socket.frames)
 
 
 @pytest.mark.asyncio

@@ -710,7 +710,30 @@ class HusshIdentityClient:
         if not isinstance(payload, dict) or payload.get("status") not in ("active", "revoked"):
             return {"status": "indeterminate"}
         return {"status": payload["status"],
-                "puppyActivation": payload.get("puppyActivation") if isinstance(payload.get("puppyActivation"), dict) else None}
+                "puppyActivation": payload.get("puppyActivation") if isinstance(payload.get("puppyActivation"), dict) else None,
+                "puppyModelSelection": payload.get("puppyModelSelection") if isinstance(payload.get("puppyModelSelection"), dict) else None}
+
+    def post_puppy_model_selection_ack(self, statement: dict[str, Any]) -> bool:
+        """Acknowledge one exact owner command with this device's signing key."""
+        state = self.read_state()
+        if state is None or statement.get("deviceId") != state.device_id:
+            return False
+        payload = json.dumps(statement, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        try:
+            response = self.http.post(
+                f"{state.api_base}/api/account/trusted-devices/{state.device_id}/puppy-model-selection/ack",
+                headers=self.auth_headers(),
+                json={
+                    "id": statement["id"],
+                    "version": statement["version"],
+                    "result": statement["result"],
+                    "reason": statement["reason"],
+                    "proof": self.sign(payload),
+                },
+            )
+        except Exception:
+            return False
+        return 200 <= int(getattr(response, "status_code", 0)) < 300
 
     def post_seal_ack(self) -> bool:
         """Best-effort advisory ack that this device sealed its local copy.

@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import random
+import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,7 +39,10 @@ logger = logging.getLogger(__name__)
 _MAX_FRAME_BYTES = 1_048_576
 _DEFAULT_MODEL_TIMEOUT = 60.0
 _DEFAULT_HEARTBEAT_SECONDS = 30.0
-_MAX_MODEL_ID_LENGTH = 128
+_MAX_MODEL_ID_LENGTH = 120
+_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+_MAX_CATALOG_MODELS = 32
+_MAX_CATALOG_BYTES = 262_144
 
 #: The capability names this relay declares, in the harness vocabulary. An
 #: OpenAI-compatible chat endpoint supports all three unless the operator says
@@ -68,13 +74,13 @@ def _reportable_model(value: Any) -> str:
     text = value.strip()
     if not text or len(text) > _MAX_MODEL_ID_LENGTH:
         return ""
-    if "://" in text or text.startswith("/") or any(char.isspace() for char in text):
+    if "://" in text or text.startswith("/") or not _MODEL_ID.fullmatch(text):
         return ""
     return text
 
 
 def profile_model_options(config: dict[str, Any]) -> dict[str, str]:
-    """Use the selected profile model only when its endpoint is device-local."""
+    """Use a Puppy-only default at the configured profile's local endpoint."""
     selected = config.get("model")
     if not isinstance(selected, dict):
         raise ValueError("Select a local model in this Hermes profile before starting Puppy.")
@@ -89,6 +95,10 @@ def profile_model_options(config: dict[str, Any]) -> dict[str, str]:
         local = False
     if not model or not local:
         raise ValueError("Select a local model with a loopback endpoint in this Hermes profile before starting Puppy.")
+    hussh_one = config.get("hussh_one")
+    puppy = hussh_one.get("puppy") if isinstance(hussh_one, dict) else None
+    if isinstance(puppy, dict) and puppy.get("model_base_url") == url:
+        model = _reportable_model(puppy.get("default_model")) or model
     return {"model": model, "model_url": url}
 
 
@@ -253,6 +263,68 @@ class PuppyInferenceRelay:
             "probe_mode": self.probe_mode,
         }
 
+    async def model_catalog(self) -> dict[str, Any]:
+        """Report only models advertised by this device's loopback endpoint.
+
+        A failed or unparseable probe is unavailable, never a fabricated list
+        containing the configured default. The pod may show the last reading,
+        but a new remote selection must match a fresh probe on this machine.
+        """
+        observed_at = int(time.time() * 1000)
+        models: list[str] = []
+        try:
+            headers = (
+                {"Authorization": f"Bearer {self.model_api_key}"}
+                if self.model_api_key else {}
+            )
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                async with client.stream(
+                    "GET", f"{self.model_url}/models", headers=headers
+                ) as response:
+                    response.raise_for_status()
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > _MAX_CATALOG_BYTES:
+                            raise ValueError("local model inventory too large")
+                        chunks.append(chunk)
+            payload = json.loads(b"".join(chunks))
+            entries = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(entries, list):
+                raise ValueError("local model inventory has no data list")
+            available = sorted({
+                model_id
+                for item in entries
+                if isinstance(item, dict)
+                for model_id in [_reportable_model(item.get("id"))]
+                if model_id
+            })
+            models = available[:_MAX_CATALOG_MODELS]
+            selected = _reportable_model(self.model)
+            if selected in available and selected not in models:
+                models = sorted([*models[:-1], selected])
+        except Exception:  # noqa: BLE001 - no local endpoint details leave the device
+            models = []
+        default_model = _reportable_model(self.model)
+        if default_model not in models:
+            default_model = ""
+        version = ""
+        if models:
+            stable = json.dumps(
+                {"defaultModel": default_model, "models": models},
+                sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            )
+            version = hashlib.sha256(stable.encode()).hexdigest()
+        return {
+            "type": "model.catalog",
+            "status": "available" if models else "unavailable",
+            "defaultModel": default_model,
+            "models": [{"id": model_id} for model_id in models],
+            "catalogVersion": version,
+            "observedAt": observed_at,
+        }
+
     def unsupported_capability(self, request: dict[str, Any]) -> str:
         """The first capability this request needs that the profile lacks, or ''."""
         for name in needs_capability(request):
@@ -260,7 +332,7 @@ class PuppyInferenceRelay:
                 return name
         return ""
 
-    def _payload(self, request: dict[str, Any]) -> dict[str, Any]:
+    def _payload(self, request: dict[str, Any], *, model: str | None = None) -> dict[str, Any]:
         """Neutral ``inference.request`` -> OpenAI-compatible chat completion body.
 
         Every knob the pod set is mapped or the request was refused upstream;
@@ -269,7 +341,7 @@ class PuppyInferenceRelay:
         not by silence here.
         """
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": _messages(request),
             "stream": True,
         }
@@ -341,6 +413,30 @@ class PuppyInferenceRelay:
         request_id = str(request.get("requestId") or "")
         if not request_id:
             return
+        selected_model = self.model
+        if "model" in request or "catalogVersion" in request:
+            requested = _reportable_model(request.get("model"))
+            catalog = await self.model_catalog()
+            if (
+                not requested
+                or catalog["status"] != "available"
+                or requested not in {row["id"] for row in catalog["models"]}
+            ):
+                await websocket.send(json.dumps({
+                    "type": "inference.error", "requestId": request_id,
+                    "code": "MODEL_UNAVAILABLE",
+                }))
+                return
+            if (
+                not isinstance(request.get("catalogVersion"), str)
+                or request["catalogVersion"] != catalog["catalogVersion"]
+            ):
+                await websocket.send(json.dumps({
+                    "type": "inference.error", "requestId": request_id,
+                    "code": "STALE_MODEL_CATALOG",
+                }))
+                return
+            selected_model = requested
         lacking = self.unsupported_capability(request)
         if lacking:
             # Refuse BEFORE the local model is called. The pod maps this code to a
@@ -354,7 +450,7 @@ class PuppyInferenceRelay:
                 })
             )
             return
-        payload = self._payload(request)
+        payload = self._payload(request, model=selected_model)
         headers = (
             {"Authorization": f"Bearer {self.model_api_key}"}
             if self.model_api_key
@@ -370,7 +466,7 @@ class PuppyInferenceRelay:
                 normalize_front_url,
             )
 
-            admission_key = f"{normalize_front_url(self.model_url)}|{self.model}"
+            admission_key = f"{normalize_front_url(self.model_url)}|{selected_model}"
 
             # The relay is already a single async consumer, but the shared
             # process-wide permit also accounts for Hermes chat/cron calls.
@@ -464,7 +560,7 @@ class PuppyInferenceRelay:
                     "functionCalls": function_calls,
                     # The model that answered: what the server reported for
                     # this completion, else the configured resident id.
-                    "model": observed_model or _reportable_model(self.model),
+                    "model": observed_model or _reportable_model(selected_model),
                 })
             )
             await websocket.send(
