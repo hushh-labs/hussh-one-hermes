@@ -171,6 +171,7 @@ PY
 }
 
 lock_dir=""
+active_sync_branch=""
 release_lock() {
   if [[ -n "$lock_dir" && -d "$lock_dir" ]]; then
     rmdir "$lock_dir" 2>/dev/null || true
@@ -273,6 +274,7 @@ apply_update() {
   upstream_sha="$(git rev-parse upstream/main)"
   ts="$(date +%Y%m%d-%H%M%S)"
   sync_branch="sync/upstream-$ts"
+  active_sync_branch="$sync_branch"
   safety_tag="safety/main-$ts"
   git tag "$safety_tag" main
   git push origin "$safety_tag"
@@ -280,7 +282,9 @@ apply_update() {
 
   git switch -c "$sync_branch" main
   # A failed dependency install must not strand the runtime on a sync branch.
-  trap 'if [[ "$(git branch --show-current)" == "${sync_branch:-}" ]]; then git merge --abort 2>/dev/null || true; git switch main; fi; release_lock' EXIT
+  # EXIT runs after apply_update returns; a local function variable may already
+  # be out of scope on Bash 5 (the CI runner), so use the script-level name.
+  trap 'if [[ -n "$active_sync_branch" && "$(git branch --show-current)" == "$active_sync_branch" ]]; then git merge --abort 2>/dev/null || true; git switch main; fi; release_lock' EXIT
   if ! git merge --no-ff --no-edit upstream/main; then
     warn "Official upstream requires manual conflict resolution. main was not changed."
     git merge --abort || true
