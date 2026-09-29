@@ -469,6 +469,31 @@ async def test_idle_device_waits_for_active_owner_bound_hint(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_direct_relay_releases_idle_pod_but_preserves_active_inference():
+    """A transport reconnect cannot keep the owner's pod running indefinitely."""
+    import asyncio
+
+    class Socket:
+        def __init__(self):
+            self.closed = []
+
+        async def close(self, *, code, reason):
+            self.closed.append((code, reason))
+
+    relay = PuppyDirectPodRelay(SimpleNamespace())
+    relay._idle_grace = 0.01
+    relay._last_work = time.monotonic() - 1
+    socket = Socket()
+    busy = True
+    task = asyncio.create_task(relay._close_when_idle(socket, lambda: busy))
+    await asyncio.sleep(0.02)
+    assert socket.closed == []
+    busy = False
+    await asyncio.wait_for(task, timeout=2)
+    assert socket.closed == [(1000, "Puppy relay idle")]
+
+
+@pytest.mark.asyncio
 async def test_idle_device_refuses_revocation_without_contacting_pod():
     from gateway.puppy_direct_pod import PuppyDirectPodRelay
     identity = SimpleNamespace(read_state=lambda: SimpleNamespace(user_id="user-1", device_id="device-1"),

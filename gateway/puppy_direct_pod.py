@@ -18,7 +18,7 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -664,6 +664,21 @@ class PuppyDirectPodRelay:
             raise DirectPodRefused("Puppy pod renewal changed the admitted authority")
         return renewed
 
+    async def _close_when_idle(self, socket: Any, is_busy: Callable[[], bool]) -> None:
+        """Release the owner pod after the original work deadline, even across reconnects."""
+        # Cloud Run can end a WebSocket before the ten-minute grace. The next
+        # connection must keep the original last-work clock, then close locally
+        # so an idle device cannot hold the owner's instance billable forever.
+        while self._idle_grace:
+            remaining = self._idle_grace - (time.monotonic() - self._last_work)
+            if remaining > 0:
+                await asyncio.sleep(min(15.0, remaining))
+            elif is_busy():
+                await asyncio.sleep(1.0)
+            else:
+                await socket.close(code=1000, reason="Puppy relay idle")
+                return
+
     async def _connected(
         self, binding: dict[str, Any], session: dict[str, Any]
     ) -> None:
@@ -735,6 +750,9 @@ class PuppyDirectPodRelay:
                     await asyncio.sleep(15)
 
             model_control = asyncio.create_task(poll_model_commands())
+            idle_monitor = asyncio.create_task(self._close_when_idle(
+                socket, lambda: inference is not None and not inference.done()
+            ))
             try:
                 async for raw in socket:
                     if not isinstance(raw, str) or len(raw.encode()) > _MAX_FRAME_BYTES:
@@ -768,10 +786,13 @@ class PuppyDirectPodRelay:
                 if socket.close_code == 1000 and socket.close_reason == "Puppy relay idle":
                     self._waiting_activation = True
             finally:
+                idle_monitor.cancel()
                 model_control.cancel()
                 heartbeat.cancel()
                 if inference is not None:
                     inference.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await idle_monitor
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat
                 with contextlib.suppress(asyncio.CancelledError):
