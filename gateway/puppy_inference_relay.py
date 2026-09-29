@@ -264,11 +264,13 @@ class PuppyInferenceRelay:
         }
 
     async def model_catalog(self) -> dict[str, Any]:
-        """Report only models advertised by this device's loopback endpoint.
+        """Report only chat models advertised by this device's loopback endpoint.
 
         A failed or unparseable probe is unavailable, never a fabricated list
-        containing the configured default. The pod may show the last reading,
-        but a new remote selection must match a fresh probe on this machine.
+        containing the configured default. OpenAI-compatible ``/models`` can
+        mix chat and embedding models, so use typed local inventory where the
+        endpoint provides it. An untyped endpoint can offer only its configured
+        default; it cannot attest that its other IDs support chat.
         """
         observed_at = int(time.time() * 1000)
         models: list[str] = []
@@ -278,30 +280,52 @@ class PuppyInferenceRelay:
                 if self.model_api_key else {}
             )
             async with httpx.AsyncClient(timeout=3.0) as client:
-                async with client.stream(
-                    "GET", f"{self.model_url}/models", headers=headers
-                ) as response:
-                    response.raise_for_status()
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in response.aiter_bytes():
-                        total += len(chunk)
-                        if total > _MAX_CATALOG_BYTES:
-                            raise ValueError("local model inventory too large")
-                        chunks.append(chunk)
-            payload = json.loads(b"".join(chunks))
+                async def read_bounded(url: str) -> Any:
+                    async with client.stream("GET", url, headers=headers) as response:
+                        response.raise_for_status()
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in response.aiter_bytes():
+                            total += len(chunk)
+                            if total > _MAX_CATALOG_BYTES:
+                                raise ValueError("local model inventory too large")
+                            chunks.append(chunk)
+                    return json.loads(b"".join(chunks))
+
+                payload = await read_bounded(f"{self.model_url}/models")
+                typed: dict[str, str] = {}
+                if self.model_url.endswith("/v1"):
+                    try:
+                        native = await read_bounded(
+                            f"{self.model_url.removesuffix('/v1')}/api/v1/models"
+                        )
+                        native_entries = native.get("models") if isinstance(native, dict) else None
+                        if isinstance(native_entries, list):
+                            typed = {
+                                model_id: kind
+                                for item in native_entries
+                                if isinstance(item, dict)
+                                for model_id in [_reportable_model(item.get("key"))]
+                                for kind in [item.get("type")]
+                                if model_id and isinstance(kind, str)
+                            }
+                    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
+                        pass
             entries = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(entries, list):
                 raise ValueError("local model inventory has no data list")
+            selected = _reportable_model(self.model)
             available = sorted({
                 model_id
                 for item in entries
                 if isinstance(item, dict)
                 for model_id in [_reportable_model(item.get("id"))]
-                if model_id
+                if model_id and (
+                    (item.get("type") or typed.get(model_id)) in {"llm", "vlm", "chat", "text-generation"}
+                    or (not typed and not item.get("type") and model_id == selected)
+                )
             })
             models = available[:_MAX_CATALOG_MODELS]
-            selected = _reportable_model(self.model)
             if selected in available and selected not in models:
                 models = sorted([*models[:-1], selected])
         except Exception:  # noqa: BLE001 - no local endpoint details leave the device

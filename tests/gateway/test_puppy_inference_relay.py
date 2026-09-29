@@ -329,6 +329,7 @@ async def test_remote_catalog_and_selected_turn_use_only_fresh_local_models(monk
         inventory = [
             {"id": "qwen3-30b-a3b-mlx"},
             {"id": "gemma-3-27b-it"},
+            {"id": "text-embedding-nomic-embed-text-v1.5"},
             {"id": "https://cloud.example/secret"},
         ]
         requests = []
@@ -336,6 +337,11 @@ async def test_remote_catalog_and_selected_turn_use_only_fresh_local_models(monk
         def stream(self, method, url, json=None, headers=None):
             self.requests.append({"method": method, "url": url, "body": json})
             if method == "GET":
+                if url.endswith("/api/v1/models"):
+                    return _Stream([json_module.dumps({"models": [
+                        {"key": item["id"], "type": "embedding" if item["id"].startswith("text-embedding") else "llm"}
+                        for item in self.inventory
+                    ]})])
                 return _Stream([json_module.dumps({"data": self.inventory})])
             return _Stream([
                 'data: {"model":"gemma-3-27b-it","choices":[{"delta":{"content":"ok"}}]}',
@@ -352,6 +358,16 @@ async def test_remote_catalog_and_selected_turn_use_only_fresh_local_models(monk
     ]
     assert len(catalog["catalogVersion"]) == 64
     assert _ENDPOINT not in json_module.dumps(catalog)
+    socket = _Socket()
+    await relay._infer({
+        "requestId": "embedding-refused", "messages": [{"role": "user", "text": "hi"}],
+        "model": "text-embedding-nomic-embed-text-v1.5",
+        "catalogVersion": catalog["catalogVersion"],
+    }, socket)
+    assert socket.frames == [{
+        "type": "inference.error", "requestId": "embedding-refused",
+        "code": "MODEL_UNAVAILABLE",
+    }]
     socket = _Socket()
     request = {
         "requestId": "selected-1", "messages": [{"role": "user", "text": "hi"}],

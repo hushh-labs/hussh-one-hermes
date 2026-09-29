@@ -14,6 +14,11 @@ repair; a healthy trusted device does not need to register again. The direct
 path requires the owner's active BYOC pod and currently has no live two-device
 acceptance result.
 
+Set `HERMES_HOME` explicitly when starting or restarting a non-default profile.
+The direct launcher prints the selected environment before it waits for
+activation. Check that line before an owner rehearsal: an unset `HERMES_HOME`
+selects the default profile, which may point at a different environment.
+
 To keep the client ready before owner approval, add `--wait-for-activation` to
 `--direct`. This waits on the existing hub device-control lane without contacting
 or waking the pod. Enable Puppy for this device in the owner app, then start an

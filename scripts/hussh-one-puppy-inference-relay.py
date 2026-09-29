@@ -38,6 +38,12 @@ if __name__ == "__main__":
             model_options = profile_model_options(load_config_readonly())
             profile_home = get_hermes_home()
             identity = HusshIdentityClient(profile_home=profile_home)
+            state = identity.read_state()
+            if state is not None:
+                print(
+                    f"Puppy direct relay selected the {state.environment} Hussh profile.",
+                    file=sys.stderr, flush=True,
+                )
             def current_model() -> str:
                 try:
                     return profile_model_options(load_config_readonly())["model"]
