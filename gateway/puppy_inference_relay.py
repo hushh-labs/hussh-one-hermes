@@ -437,6 +437,9 @@ class PuppyInferenceRelay:
         request_id = str(request.get("requestId") or "")
         if not request_id:
             return
+        started = time.monotonic()
+        first_content_at: float | None = None
+        local_events = 0
         selected_model = self.model
         if "model" in request or "catalogVersion" in request:
             requested = _reportable_model(request.get("model"))
@@ -520,6 +523,11 @@ class PuppyInferenceRelay:
                     headers=headers,
                 ) as response:
                     response.raise_for_status()
+                    logger.info(
+                        "puppy_inference.model_headers elapsed_ms=%s status=%s",
+                        round((time.monotonic() - started) * 1000),
+                        getattr(response, "status_code", "unknown"),
+                    )
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
                             continue
@@ -541,6 +549,13 @@ class PuppyInferenceRelay:
                         )
                         text = delta.get("content") if isinstance(delta, dict) else None
                         if isinstance(text, str) and text:
+                            if first_content_at is None:
+                                first_content_at = time.monotonic()
+                                logger.info(
+                                    "puppy_inference.first_content elapsed_ms=%s",
+                                    round((first_content_at - started) * 1000),
+                                )
+                            local_events += 1
                             await websocket.send(
                                 json.dumps({
                                     "type": "inference.delta",
@@ -590,7 +605,15 @@ class PuppyInferenceRelay:
             await websocket.send(
                 json.dumps({"type": "inference.done", "requestId": request_id})
             )
-        except Exception:  # noqa: BLE001 - do not disclose local endpoint or credentials
+            logger.info(
+                "puppy_inference.completed elapsed_ms=%s content_frames=%s",
+                round((time.monotonic() - started) * 1000), local_events,
+            )
+        except Exception as exc:  # noqa: BLE001 - do not disclose local endpoint or credentials
+            logger.warning(
+                "puppy_inference.failed elapsed_ms=%s reason=%s",
+                round((time.monotonic() - started) * 1000), type(exc).__name__,
+            )
             await websocket.send(
                 json.dumps({
                     "type": "inference.error",
