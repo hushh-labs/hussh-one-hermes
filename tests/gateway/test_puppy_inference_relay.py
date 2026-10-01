@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import threading
+
 import pytest
 
 from gateway.puppy_inference_relay import PuppyInferenceRelay, _messages, _tools
@@ -125,6 +129,104 @@ class _Socket:
 
     async def send(self, raw):
         self.frames.append(json_module.loads(raw))
+
+
+class _ControlledSocket(_Socket):
+    def __init__(self):
+        super().__init__()
+        self.inbound = asyncio.Queue()
+        self.sent = asyncio.Event()
+
+    async def send(self, raw):
+        await super().send(raw)
+        self.sent.set()
+
+    async def __aiter__(self):
+        while True:
+            frame = await self.inbound.get()
+            if frame is None:
+                return
+            yield json_module.dumps(frame)
+
+
+@pytest.mark.asyncio
+async def test_matching_cancel_stops_inference_without_stopping_another_turn(monkeypatch):
+    relay = _relay()
+    socket = _ControlledSocket()
+    started = asyncio.Queue()
+    stopped = asyncio.Queue()
+
+    async def infer(frame, _socket):
+        request_id = frame["requestId"]
+        await started.put(request_id)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await stopped.put(request_id)
+
+    monkeypatch.setattr(relay, "_infer", infer)
+    receiver = asyncio.create_task(relay._receive_inference(socket))
+    try:
+        await socket.inbound.put({"type": "inference.request", "requestId": "first"})
+        assert await asyncio.wait_for(started.get(), 1) == "first"
+        await socket.inbound.put({"type": "inference.cancel", "requestId": "wrong"})
+        await socket.inbound.put({"type": "inference.request", "requestId": "second"})
+        await asyncio.wait_for(socket.sent.wait(), 1)
+        assert socket.frames == [{
+            "type": "inference.error", "requestId": "second", "code": "PUPPY_BUSY",
+        }]
+        assert stopped.empty()
+
+        await socket.inbound.put({"type": "inference.cancel", "requestId": "first"})
+        assert await asyncio.wait_for(stopped.get(), 1) == "first"
+        assert not any(frame["type"] == "inference.done" for frame in socket.frames)
+
+        await socket.inbound.put({"type": "inference.request", "requestId": "third"})
+        assert await asyncio.wait_for(started.get(), 1) == "third"
+        await socket.inbound.put(None)
+        await asyncio.wait_for(receiver, 1)
+        assert await asyncio.wait_for(stopped.get(), 1) == "third"
+    finally:
+        receiver.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await receiver
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_local_admission_releases_late_permit(monkeypatch):
+    from hermes_cli.hussh_one_routing.local_runtime import LocalInferenceAdmission
+
+    started = threading.Event()
+    complete = threading.Event()
+    released = threading.Event()
+
+    class Lease:
+        def release(self):
+            released.set()
+
+    def acquire(*_args, **_kwargs):
+        started.set()
+        if not complete.wait(2):
+            raise TimeoutError("test admission did not settle")
+        return Lease()
+
+    monkeypatch.setattr(LocalInferenceAdmission, "acquire", acquire)
+    socket = _Socket()
+    turn = asyncio.create_task(_relay()._infer({"requestId": "late"}, socket))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        turn.cancel()
+        complete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+        assert released.is_set()
+        assert socket.frames == []
+    finally:
+        complete.set()
+        if not turn.done():
+            turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await turn
 
 
 def _never_call_the_model(monkeypatch):

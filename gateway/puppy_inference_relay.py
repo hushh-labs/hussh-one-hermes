@@ -499,12 +499,24 @@ class PuppyInferenceRelay:
             # process-wide permit also accounts for Hermes chat/cron calls.
             # Never wait behind an interactive request long enough to make the
             # hub believe this device disappeared.
-            lease = await asyncio.to_thread(
+            acquire = asyncio.create_task(asyncio.to_thread(
                 LocalInferenceAdmission.acquire,
                 admission_key,
                 wait=min(0.25, max(0.0, self.model_timeout / 10.0)),
                 priority="interactive",
-            )
+            ))
+            try:
+                lease = await asyncio.shield(acquire)
+            except asyncio.CancelledError:
+                # Cancelling an asyncio.to_thread waiter does not stop its
+                # thread. Release a permit it may acquire after cancellation.
+                try:
+                    orphaned_lease = await acquire
+                except Exception:
+                    pass
+                else:
+                    orphaned_lease.release()
+                raise
         except LocalModelOverloaded:
             await websocket.send(
                 json.dumps({
@@ -625,6 +637,63 @@ class PuppyInferenceRelay:
             if lease is not None:
                 lease.release()
 
+    async def _receive_inference(self, websocket: Any) -> None:
+        """Read control frames while one local-model turn is in flight."""
+        active: asyncio.Task[None] | None = None
+        active_id = ""
+
+        async def infer(frame: dict[str, Any]) -> None:
+            try:
+                await self._infer(frame, websocket)
+            except Exception as exc:  # noqa: BLE001 - keep the private endpoint off the wire
+                logger.warning("puppy_inference.dispatch_failed reason=%s", type(exc).__name__)
+                await websocket.send(json.dumps({
+                    "type": "inference.error",
+                    "requestId": frame["requestId"],
+                    "code": "LOCAL_MODEL_UNAVAILABLE",
+                }))
+
+        try:
+            async for raw in websocket:
+                if isinstance(raw, bytes) or len(raw.encode("utf-8")) > _MAX_FRAME_BYTES:
+                    raise RuntimeError("Puppy relay frame too large")
+                frame = json.loads(raw)
+                if active is not None and active.done():
+                    await active
+                    active = None
+                    active_id = ""
+
+                kind = frame.get("type")
+                request_id = str(frame.get("requestId") or "")
+                if kind == "inference.request":
+                    if not request_id:
+                        continue
+                    if active is not None:
+                        await websocket.send(json.dumps({
+                            "type": "inference.error",
+                            "requestId": request_id,
+                            "code": "PUPPY_BUSY",
+                        }))
+                        continue
+                    active_id = request_id
+                    active = asyncio.create_task(infer(frame))
+                elif kind == "inference.cancel" and active is not None:
+                    # A stale or unrelated frame must not stop the current turn.
+                    if request_id != active_id:
+                        continue
+                    active.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await active
+                    active = None
+                    active_id = ""
+                    logger.info("puppy_inference.cancelled")
+        finally:
+            if active is not None:
+                if not active.done():
+                    active.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await active
+
     async def serve(self) -> None:
         """Keep the outbound socket alive while the profile is enabled."""
         headers = {
@@ -654,15 +723,7 @@ class PuppyInferenceRelay:
                         raise RuntimeError("Puppy relay admission refused")
                     heartbeat_task = asyncio.create_task(self._heartbeat(websocket))
                     try:
-                        async for raw in websocket:
-                            if (
-                                isinstance(raw, bytes)
-                                or len(raw.encode("utf-8")) > _MAX_FRAME_BYTES
-                            ):
-                                raise RuntimeError("Puppy relay frame too large")
-                            frame = json.loads(raw)
-                            if frame.get("type") == "inference.request":
-                                await self._infer(frame, websocket)
+                        await self._receive_inference(websocket)
                     finally:
                         heartbeat_task.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
