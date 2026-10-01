@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import logging
 import sys
 
 from gateway.puppy_inference_relay import run_puppy_inference_relay
@@ -27,6 +28,11 @@ if __name__ == "__main__":
     if args.wait_for_activation and not args.direct:
         parser.error("--wait-for-activation requires --direct")
     if args.direct:
+        # Only lifecycle codes and aggregate timings from these two modules.
+        # HTTP clients and identity helpers retain their normal warning level.
+        logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
+        logging.getLogger("gateway.puppy_direct_pod").setLevel(logging.INFO)
+        logging.getLogger("gateway.puppy_inference_relay").setLevel(logging.INFO)
         from hermes_constants import get_hermes_home
         from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
         from hermes_cli.hussh_one_pkm.presence import PresencePublisher, agent_version, build_snapshot

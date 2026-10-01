@@ -769,6 +769,7 @@ class PuppyDirectPodRelay:
                                 await inference
                         inference = None
                         request_id = ""
+                        logger.info("puppy_direct.inference_cancelled")
                     elif kind == "inference.request":
                         if inference is not None and not inference.done():
                             await sender.send(
@@ -781,6 +782,7 @@ class PuppyDirectPodRelay:
                             continue
                         request_id = str(frame.get("requestId") or "")
                         self._last_work = time.monotonic()
+                        logger.info("puppy_direct.inference_started")
                         inference = asyncio.create_task(model._infer(frame, sender))
                         inference.add_done_callback(lambda _task: setattr(self, "_last_work", time.monotonic()))
                 if socket.close_code == 1000 and socket.close_reason == "Puppy relay idle":
