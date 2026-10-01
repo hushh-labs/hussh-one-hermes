@@ -387,6 +387,8 @@ class PresencePublisher:
         self._lock = threading.Lock()
         self._last_sent: Optional[dict[str, Any]] = None
         self._last_sent_at: float = 0.0
+        self._last_attempt_at: float = 0.0
+        self._in_flight: Optional[dict[str, Any]] = None
         self._pending = False
 
     def on_event(self, reason: str, *, force: bool = False) -> bool:
@@ -410,11 +412,18 @@ class PresencePublisher:
         Safe to call as often as the caller likes: the window, not the caller's
         cadence, decides whether anything is sent.
         """
-        with self._lock:
-            due = (self._clock() - self._last_sent_at) >= self._keepalive
-        if not due:
+        if not self._keepalive_due():
             return False
         return self.on_event("keepalive", force=True)
+
+    def _keepalive_due(self) -> bool:
+        with self._lock:
+            now = self._clock()
+            return (
+                self._in_flight is None
+                and (now - self._last_sent_at) >= self._keepalive
+                and (now - self._last_attempt_at) >= self._min_interval
+            )
 
     def _maybe_send(self, snapshot: dict[str, Any], *, force: bool) -> bool:
         with self._lock:
@@ -425,28 +434,42 @@ class PresencePublisher:
                 if self._last_sent
                 else None
             )
+            if self._in_flight is not None:
+                if force or self._in_flight != comparable:
+                    self._pending = True
+                return False
             if not force:
                 if previous == comparable:
                     # Nothing changed. Sending would turn this back into a poll
                     # with extra steps.
                     self._pending = False
                     return False
-                if (now - self._last_sent_at) < self._min_interval:
+                if (now - self._last_attempt_at) < self._min_interval:
                     # A burst is one transition as far as the owner is
                     # concerned. Mark it and let the next call carry it.
                     self._pending = True
                     return False
-            self._last_sent = dict(snapshot)
-            self._last_sent_at = now
+            self._in_flight = comparable
+            self._last_attempt_at = now
             self._pending = False
 
         try:
-            return bool(self._publish(snapshot))
+            delivered = bool(self._publish(snapshot))
         except Exception:
             # Never propagate: this runs off a model load or a session start,
             # and neither should fail because a telemetry push did.
             logger.debug("presence push failed", exc_info=True)
-            return False
+            delivered = False
+        with self._lock:
+            if delivered:
+                self._last_sent = dict(snapshot)
+                self._last_sent_at = self._clock()
+            else:
+                # A rejected or lost heartbeat is still unsent. The next
+                # transition or bounded keepalive must be allowed to retry it.
+                self._pending = True
+            self._in_flight = None
+        return delivered
 
     def on_event_background(self, reason: str, *, force: bool = False) -> None:
         """Fire a push on a daemon thread and return immediately.
@@ -471,9 +494,7 @@ class PresencePublisher:
         The window check is cheap and happens on the calling thread, so a
         keepalive that is not due costs nothing and starts no thread.
         """
-        with self._lock:
-            due = (self._clock() - self._last_sent_at) >= self._keepalive
-        if not due:
+        if not self._keepalive_due():
             return
         self.on_event_background("keepalive", force=True)
 

@@ -187,6 +187,33 @@ class TestNeverBreaksItsCaller:
         assert presence.on_event("connect") is False
         assert len(publisher.sent) == 1
 
+    def test_failed_publish_is_retried_and_only_success_is_deduplicated(self):
+        clock, publisher = _Clock(), _Publisher(result=False)
+        presence = _make({"busy": False}, clock, publisher)
+
+        assert presence.on_event("connect") is False
+        clock.advance(6)
+        publisher.result = True
+        assert presence.on_event("retry") is True
+        assert len(publisher.sent) == 2
+
+        clock.advance(6)
+        assert presence.on_event("unchanged") is False
+        assert len(publisher.sent) == 2
+
+    def test_failed_keepalive_retries_before_another_full_window(self):
+        clock, publisher = _Clock(), _Publisher()
+        presence = _make({"busy": False}, clock, publisher, keepalive_seconds=600.0)
+        assert presence.on_event("connect") is True
+
+        clock.advance(601)
+        publisher.result = False
+        assert presence.keepalive() is False
+        clock.advance(6)
+        publisher.result = True
+        assert presence.keepalive() is True
+        assert len(publisher.sent) == 3
+
 
 class TestSnapshot:
     def test_it_carries_the_specs_the_owner_sees_on_connect(self):
