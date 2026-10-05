@@ -260,6 +260,11 @@ def _pin_endpoint(
     temporary.replace(path)
 
 
+#: Agents that run in the owner's own cloud account. Direct Puppy admission is an
+#: owner-cloud affordance on every provider; a hosted agent is never dialled directly.
+_OWNER_CLOUD_TARGETS = frozenset({"user_gcp", "user_azure"})
+
+
 def _validate_binding(
     binding: dict[str, Any],
     endpoint: dict[str, Any],
@@ -277,11 +282,12 @@ def _validate_binding(
         "pod_key_id": endpoint["podKeyId"],
         "url": str(endpoint["url"]).rstrip("/"),
         "environment": environment,
-        "deployment_target": "user_gcp",
         "role": "device",
         "subject_kind": "device",
     }
     if any(binding.get(key) != value for key, value in expected.items()):
+        raise DirectPodRefused("Puppy binding names another owner or pod")
+    if binding.get("deployment_target") not in _OWNER_CLOUD_TARGETS:
         raise DirectPodRefused("Puppy binding names another owner or pod")
     if (
         binding.get("scopes") != ["puppy.inference"]

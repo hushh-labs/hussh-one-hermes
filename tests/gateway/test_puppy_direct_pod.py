@@ -187,6 +187,9 @@ def test_pod_to_device_vector_and_replay_refusal():
         {"scopes": []},
         {"scopes": ["puppy.inference", "files.manage"]},
         {"scopes": "puppy.inference"},
+        {"deployment_target": "gcp"},
+        {"deployment_target": None},
+        {"deployment_target": "user_aws"},
     ],
 )
 def test_binding_refuses_wrong_owner_pod_or_scope(change):
@@ -199,6 +202,18 @@ def test_binding_refuses_wrong_owner_pod_or_scope(change):
             device_id="device-1",
             environment="dev",
         )
+
+
+@pytest.mark.parametrize("target", ["user_gcp", "user_azure"])
+def test_binding_admits_an_agent_in_either_owner_cloud(target):
+    """Founder's first Azure agent (2026-10-05): the hub signs ``user_azure``."""
+    _validate_binding(
+        {**_binding(), "deployment_target": target},
+        _endpoint(),
+        user_id="user-1",
+        device_id="device-1",
+        environment="dev",
+    )
 
 
 def test_binding_tolerates_clock_skew_without_accepting_future_grants():
