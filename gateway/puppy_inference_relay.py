@@ -35,6 +35,8 @@ from urllib.parse import urlparse
 import httpx
 from websockets.asyncio.client import connect
 
+from gateway.puppy_reasoning_relay import ReasoningForwarder, reasoning_delta
+
 logger = logging.getLogger(__name__)
 _MAX_FRAME_BYTES = 1_048_576
 _DEFAULT_MODEL_TIMEOUT = 60.0
@@ -486,6 +488,8 @@ class PuppyInferenceRelay:
         calls: dict[int, dict[str, Any]] = {}
         observed_model = ""
         lease = None
+        # Display-only reasoning, forwarded only when the model streams some.
+        reasoning = ReasoningForwarder(websocket.send, request_id)
         try:
             from hermes_cli.hussh_one_routing.local_runtime import (
                 LocalInferenceAdmission,
@@ -559,8 +563,10 @@ class PuppyInferenceRelay:
                             if choices and isinstance(choices[0], dict)
                             else {}
                         )
+                        await reasoning.add(reasoning_delta(delta))
                         text = delta.get("content") if isinstance(delta, dict) else None
                         if isinstance(text, str) and text:
+                            await reasoning.flush()
                             if first_content_at is None:
                                 first_content_at = time.monotonic()
                                 logger.info(
@@ -604,6 +610,7 @@ class PuppyInferenceRelay:
                         "name": call["name"],
                         "args": args,
                     })
+            await reasoning.flush()
             await websocket.send(
                 json.dumps({
                     "type": "inference.result",
@@ -618,8 +625,10 @@ class PuppyInferenceRelay:
                 json.dumps({"type": "inference.done", "requestId": request_id})
             )
             logger.info(
-                "puppy_inference.completed elapsed_ms=%s content_frames=%s",
+                "puppy_inference.completed elapsed_ms=%s content_frames=%s"
+                " reasoning_frames=%s",
                 round((time.monotonic() - started) * 1000), local_events,
+                reasoning.frames,
             )
         except Exception as exc:  # noqa: BLE001 - do not disclose local endpoint or credentials
             logger.warning(
