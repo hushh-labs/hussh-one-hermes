@@ -739,6 +739,10 @@ class PuppyDirectPodRelay:
             ):
                 raise DirectPodRefused("Puppy pod relay refused the bound session")
             self._idle_grace = 600 if ready.get("idleGraceSeconds") == 600 else None
+            logger.info(
+                "puppy_direct.connected sealed=true epoch=%s idle_grace_seconds=%s",
+                session["epoch"], self._idle_grace,
+            )
             envelope = DeviceEnvelope(
                 ephemeral,
                 str(binding["pod_public_key"]),
