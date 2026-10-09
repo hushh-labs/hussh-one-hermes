@@ -585,6 +585,42 @@ async def test_startup_wait_requires_activation_and_fresh_admission(approved):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["admission", "relay"])
+async def test_transient_reconnect_preserves_authority_and_redacts_transport_failure(stage, monkeypatch, caplog):
+    import asyncio
+    import logging
+    from unittest.mock import AsyncMock
+
+    relay = PuppyDirectPodRelay(SimpleNamespace(), wait_for_activation=True)
+    binding = _binding()
+    hint = {"id": "a" * 32, "podKeyId": binding["pod_key_id"], "hushhId": binding["hushh_id"]}
+    private_message = "Authorization: Bearer sensitive-test-token https://private-pod.example"
+    failure = httpx.ReadTimeout(private_message)
+    relay._wait_for_activation = AsyncMock(side_effect=[hint, asyncio.CancelledError()])
+    relay._session = AsyncMock(return_value=(binding, {"session": "admitted"}))
+    relay._connected = AsyncMock(side_effect=asyncio.CancelledError())
+    if stage == "admission":
+        relay._session.side_effect = [failure, asyncio.CancelledError()]
+    else:
+        relay._session.side_effect = [(binding, {"session": "admitted"}), asyncio.CancelledError()]
+        relay._connected.side_effect = failure
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    caplog.set_level(logging.INFO, logger="gateway.puppy_direct_pod")
+    with pytest.raises(asyncio.CancelledError):
+        await relay.serve()
+    assert f"reconnecting stage={stage} reason=timeout elapsed_ms=" in caplog.text
+    assert private_message not in caplog.text
+    assert "sensitive-test-token" not in caplog.text
+    assert "private-pod.example" not in caplog.text
+    if stage == "admission":
+        relay._session.assert_awaited_once()
+        relay._connected.assert_not_awaited()
+    else:
+        assert relay._session.await_count == 2
+        relay._connected.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_machine_presence_retries_after_login_then_uses_keepalive(monkeypatch):
     import asyncio
     from gateway.puppy_direct_pod import PuppyDirectPodRelay

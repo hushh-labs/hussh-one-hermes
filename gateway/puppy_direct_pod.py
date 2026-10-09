@@ -31,7 +31,9 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from httpx import TimeoutException, TransportError
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 from gateway.puppy_inference_relay import PuppyInferenceRelay, _MAX_FRAME_BYTES, _reportable_model, profile_model_options
 from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
@@ -703,6 +705,7 @@ class PuppyDirectPodRelay:
     async def _connected(
         self, binding: dict[str, Any], session: dict[str, Any]
     ) -> None:
+        started = time.monotonic()
         token = str(session["session"])
         device_id = str(binding["subject_id"])
         url = (
@@ -740,8 +743,9 @@ class PuppyDirectPodRelay:
                 raise DirectPodRefused("Puppy pod relay refused the bound session")
             self._idle_grace = 600 if ready.get("idleGraceSeconds") == 600 else None
             logger.info(
-                "puppy_direct.connected sealed=true epoch=%s idle_grace_seconds=%s",
+                "puppy_direct.connected sealed=true epoch=%s idle_grace_seconds=%s elapsed_ms=%s",
                 session["epoch"], self._idle_grace,
+                round((time.monotonic() - started) * 1000),
             )
             envelope = DeviceEnvelope(
                 ephemeral,
@@ -862,19 +866,29 @@ class PuppyDirectPodRelay:
         presence_task = asyncio.create_task(self._report_presence())
         try:
             while True:
+                stage = "activation"
+                started = time.monotonic()
                 try:
                     if self._idle_grace and time.monotonic() - self._last_work >= self._idle_grace:
                         self._waiting_activation = True
                     hint = await self._wait_for_activation() if self._waiting_activation else None
                     if hint and self._admitted and hint.get("podKeyId") != self._admitted[0]["pod_key_id"]:
                         self._admitted = None
+                    stage = "admission"
+                    started = time.monotonic()
                     binding, session = await self._session()
+                    logger.info(
+                        "puppy_direct.admitted elapsed_ms=%s",
+                        round((time.monotonic() - started) * 1000),
+                    )
                     if hint:
                         if hint.get("podKeyId") != binding["pod_key_id"] or hint.get("hushhId") != binding["hushh_id"]:
                             raise DirectPodRefused("Activation does not match the verified pod")
                         self._activation_id = hint["id"]
                         self._last_work = time.monotonic()
                     self._waiting_activation = False
+                    stage = "relay"
+                    started = time.monotonic()
                     await self._connected(binding, session)
                     delay = 2.0
                     await asyncio.sleep(delay)
@@ -892,8 +906,18 @@ class PuppyDirectPodRelay:
                     self._admitted = None
                     logger.warning("puppy_direct.refused")
                     raise
-                except Exception:
-                    logger.info("puppy_direct.reconnecting")
+                except Exception as exc:
+                    # Error messages and request objects can contain tokens or
+                    # private endpoints. Emit only bounded transport categories.
+                    reason = (
+                        "timeout" if isinstance(exc, (TimeoutError, TimeoutException))
+                        else "transport" if isinstance(exc, (TransportError, ConnectionClosed))
+                        else "unexpected"
+                    )
+                    logger.info(
+                        "puppy_direct.reconnecting stage=%s reason=%s elapsed_ms=%s",
+                        stage, reason, round((time.monotonic() - started) * 1000),
+                    )
                     await asyncio.sleep(delay + random.uniform(0.0, min(1.0, delay / 4)))
                     delay = min(delay * 2.0, 30.0)
         finally:
