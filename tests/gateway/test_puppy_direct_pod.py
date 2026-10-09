@@ -19,11 +19,13 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from gateway.puppy_direct_pod import (
     DeviceEnvelope,
     DirectPodRefused,
+    DirectPodUnavailable,
     PuppyDirectPodRelay,
     _admit,
     _pin_endpoint,
     _validate_binding,
     _verify_hub_signature,
+    _json_response,
 )
 
 
@@ -515,6 +517,39 @@ async def test_idle_device_refuses_revocation_without_contacting_pod():
                                device_control_status=lambda: {"status": "revoked"})
     with pytest.raises(DirectPodRefused, match="no longer active"):
         await PuppyDirectPodRelay(identity)._wait_for_activation()
+
+
+@pytest.mark.parametrize(("status", "code"), [(409, "POD_DIRECT_NOT_READY"), (403, "PUPPY_OWNER_APPROVAL_REQUIRED"), (401, "expired"), (403, "revoked"), (503, "unavailable")])
+def test_temporary_pod_refusal_requires_fresh_activation_not_identity_reset(status, code):
+    response = httpx.Response(status, json={"detail": {"code": code}})
+    with pytest.raises(DirectPodUnavailable):
+        _json_response(response)
+    # A security failure is terminal; it must not masquerade as a retryable wake.
+    with pytest.raises(DirectPodRefused) as refused:
+        _json_response(httpx.Response(403, json={"detail": {"code": "bad_signature"}}))
+    assert not isinstance(refused.value, DirectPodUnavailable)
+
+
+@pytest.mark.asyncio
+async def test_temporarily_unavailable_pod_returns_to_control_lane_without_reusing_session(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    relay = PuppyDirectPodRelay(SimpleNamespace(), wait_for_activation=True)
+    binding = _binding()
+    hint = {"id": "a" * 32, "podKeyId": binding["pod_key_id"], "hushhId": binding["hushh_id"]}
+    relay._admitted = (binding, {"session": "previous"})
+    relay._wait_for_activation = AsyncMock(side_effect=[hint, asyncio.CancelledError()])
+    relay._session = AsyncMock(side_effect=DirectPodUnavailable("pod waking"))
+    relay._connected = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    with pytest.raises(asyncio.CancelledError):
+        await relay.serve()
+    assert relay._admitted is None
+    assert relay._waiting_activation is True
+    assert relay._wait_for_activation.await_count == 2
+    relay._session.assert_awaited_once()
+    relay._connected.assert_not_awaited()
 
 
 @pytest.mark.asyncio

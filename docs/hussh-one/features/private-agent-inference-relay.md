@@ -24,7 +24,10 @@ To keep the client ready before owner approval, add `--wait-for-activation` to
 or waking the pod. Enable Puppy for this device in the owner app, then start an
 inference request; that request supplies the activation signal. Activation is
 only a wake signal: the client still obtains a fresh verified binding and pod
-admission. Revocation or refused admission stops the client. Start only one relay
+admission. Temporary readiness, expiry and owner-grant refusals discard the pod
+session and return to this hub control lane. A later owner-authorized request can
+activate the same trusted identity again, without polling the sleeping pod.
+Device revocation and signature/owner mismatches stop the client. Start only one relay
 process per profile; Ctrl-C stops an owned foreground process. Signing in to
 Hermes alone does not start this separate relay process.
 
@@ -65,3 +68,9 @@ The direct client reconnects when the device sleeps or the network changes. A
 request in flight is failed rather than replayed; cancellation stops local
 generation, and the pod rejects late or mismatched sealed frames. The old hub
 broker remains a compatibility path and is not evidence of a direct BYOC link.
+
+The endpoint comes from the owner's current registry assignment, not a fixed GCP
+project or an old Azure placement. A changed pod key requires fresh signed
+admission. Heartbeats and control reads go to the hub; they do not extend the
+ten-minute pod relay idle grace. Being online does not imply an open or billable
+pod socket.

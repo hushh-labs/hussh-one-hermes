@@ -61,6 +61,10 @@ class DirectPodRefused(RuntimeError):
     """The signed owner, deployment, or device boundary did not match."""
 
 
+class DirectPodUnavailable(DirectPodRefused):
+    """Wait on the hub control lane for a fresh owner-authorized activation."""
+
+
 def _object(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise DirectPodRefused("Pod response was not an object")
@@ -325,9 +329,20 @@ def _json_response(response: Any) -> dict[str, Any]:
         except (ValueError, TypeError):
             pass
         if response.status_code == 403 and code == "PUPPY_OWNER_APPROVAL_REQUIRED":
-            raise DirectPodRefused(
+            raise DirectPodUnavailable(
                 "Open Trusted Devices in the Hussh app and enable Puppy for this computer, then retry."
             )
+        if (
+            response.status_code in {429, 503}
+            or response.status_code == 409 and code in {
+                "POD_DIRECT_NOT_READY", "POD_IDENTITY_NOT_DURABLE", "POD_ENDPOINT_UNAVAILABLE",
+                "POD_BINDING_CHANGED", "POD_ENDPOINT_CHANGED", "PUPPY_REQUIRES_BYOC_POD",
+            }
+            or response.status_code in {401, 403} and code in {
+                "expired", "revoked", "stale_version", "foreign_incarnation", "foreign_deployment",
+            }
+        ):
+            raise DirectPodUnavailable("Waiting for fresh owner-authorized Puppy activation")
         if response.status_code == 401:
             raise DirectPodRefused(
                 "Log in and finish account setup in the Hussh app, then reconnect this Hermes profile."
@@ -861,6 +876,14 @@ class PuppyDirectPodRelay:
                     await asyncio.sleep(delay)
                 except asyncio.CancelledError:
                     raise
+                except DirectPodUnavailable:
+                    # Keep this trusted identity alive through upgrades, grant
+                    # withdrawal and temporarily unavailable placement. Never
+                    # repeatedly wake the old pod or reuse a refused session.
+                    self._admitted = None
+                    self._waiting_activation = True
+                    logger.info("puppy_direct.waiting_for_owner_activation")
+                    await asyncio.sleep(delay)
                 except (DirectPodRefused, HusshIdentityError):
                     self._admitted = None
                     logger.warning("puppy_direct.refused")
