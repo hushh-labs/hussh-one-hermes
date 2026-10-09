@@ -324,6 +324,13 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path, r
 
     def answer(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
+        timeouts = request.extensions["timeout"]
+        defaults = identity.http.timeout.as_dict()
+        assert {k: v for k, v in timeouts.items() if k != "read"} == {k: v for k, v in defaults.items() if k != "read"}
+        if request.url.path.endswith("/challenge"):
+            assert defaults["read"] < timeouts["read"] < 120
+        else:
+            assert timeouts["read"] == defaults["read"]
         if (refusal == "hub_timeout" and request.url.path.endswith("/endpoint")
                 or refusal == "pod_timeout" and request.url.path.endswith("/challenge")):
             raise httpx.ReadTimeout("Bearer sensitive-test-token https://private-pod.example", request=request)

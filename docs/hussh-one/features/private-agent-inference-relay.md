@@ -74,3 +74,10 @@ project or an old Azure placement. A changed pod key requires fresh signed
 admission. Heartbeats and control reads go to the hub; they do not extend the
 ten-minute pod relay idle grace. Being online does not imply an open or billable
 pod socket.
+
+Admission logs contain only a fixed request stage, outcome and elapsed milliseconds;
+they never include tokens, endpoints, frames or raw provider errors. Separate hub
+metadata and binding requests from the pod challenge when diagnosing a slow wake.
+The verified pod challenge has a finite 90-second read budget for minimum-zero
+startup; other request timeouts and all signature, expiry and owner checks are
+unchanged. This is a recovery allowance, not a cold-response performance claim.

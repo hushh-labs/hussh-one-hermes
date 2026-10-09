@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from httpx import TimeoutException, TransportError
+from httpx import Timeout, TimeoutException, TransportError
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
@@ -44,6 +44,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _KEY_INFO = b"hussh/puppy-envelope/aes256gcm/v1"
 _MAX_BINDING_CLOCK_SKEW_MS = 30_000
+# A verified, minimum-zero pod can take longer to start than a normal hub read.
+# Only its challenge gets this finite read budget; all other HTTP limits remain.
+_POD_STARTUP_READ_SECONDS = 90.0
 _DEVICE_TO_POD = "d2p"
 _POD_TO_DEVICE = "p2d"
 _CATALOG_VERSION = re.compile(r"^[0-9a-f]{64}$")
@@ -424,7 +427,8 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     pod = str(binding["url"]).rstrip("/")
     challenge = _admission_response(
         "challenge", lambda: identity.http.post(
-            f"{pod}/api/one/pod/session/challenge", json={"subjectId": state.device_id}
+            f"{pod}/api/one/pod/session/challenge", json={"subjectId": state.device_id},
+            timeout=Timeout(**{**identity.http.timeout.as_dict(), "read": _POD_STARTUP_READ_SECONDS}),
         )
     )
     expected_payload = json.dumps(
