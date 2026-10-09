@@ -18,7 +18,7 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -353,17 +353,42 @@ def _json_response(response: Any) -> dict[str, Any]:
     return _object(response.json())
 
 
+def _admission_response(
+    stage: Literal["endpoint", "verification_keys", "binding", "challenge", "session"],
+    request: Callable[[], Any],
+) -> dict[str, Any]:
+    """Measure the existing request without retaining endpoints or error details."""
+    started = time.monotonic()
+    outcome = "request_complete"
+    try:
+        return _json_response(request())
+    except Exception as exc:
+        outcome = (
+            "timeout" if isinstance(exc, (TimeoutError, TimeoutException))
+            else "transport" if isinstance(exc, TransportError)
+            else "unavailable" if isinstance(exc, DirectPodUnavailable)
+            else "refused" if isinstance(exc, DirectPodRefused)
+            else "unexpected"
+        )
+        raise
+    finally:
+        logger.info(
+            "puppy_direct.admission_request stage=%s outcome=%s elapsed_ms=%s",
+            stage, outcome, round((time.monotonic() - started) * 1000),
+        )
+
+
 def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any]]:
     state = identity.read_state()
     if state is None:
         raise DirectPodRefused("Connect this trusted device first")
     headers = identity.auth_headers()
-    endpoint = _json_response(
-        identity.http.get(
+    endpoint = _admission_response(
+        "endpoint", lambda: identity.http.get(
             f"{state.api_base}/api/one/personal-agent/endpoint", headers=headers
         )
     )
-    key_record = _json_response(identity.http.get(
+    key_record = _admission_response("verification_keys", lambda: identity.http.get(
         f"{state.api_base}/api/one/personal-agent/verification-keys", headers=headers
     ))
     if key_record.get("kind") != "pod_verification_keys_v1":
@@ -374,8 +399,8 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
         str(endpoint.get("signature") or ""), keys,
     )
     _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
-    issued = _json_response(
-        identity.http.post(
+    issued = _admission_response(
+        "binding", lambda: identity.http.post(
             f"{state.api_base}/api/account/trusted-devices/{state.device_id}/pod-binding",
             headers=headers,
             json={"puppyInference": True},
@@ -397,8 +422,8 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     # pod session token to it. Commit a new pin only after admission succeeds.
     _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
     pod = str(binding["url"]).rstrip("/")
-    challenge = _json_response(
-        identity.http.post(
+    challenge = _admission_response(
+        "challenge", lambda: identity.http.post(
             f"{pod}/api/one/pod/session/challenge", json={"subjectId": state.device_id}
         )
     )
@@ -427,8 +452,8 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
         or challenge["expiresAt"] <= time.time() * 1000
     ):
         raise DirectPodRefused("Puppy pod challenge changed owner or deployment")
-    session = _json_response(
-        identity.http.post(
+    session = _admission_response(
+        "session", lambda: identity.http.post(
             f"{pod}/api/one/pod/session/admit",
             json={
                 "binding": binding,

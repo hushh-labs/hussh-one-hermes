@@ -301,8 +301,11 @@ def test_endpoint_pin_refuses_same_version_repoint(tmp_path: Path):
         )
 
 
-@pytest.mark.parametrize("refusal", [None, "PUPPY_OWNER_APPROVAL_REQUIRED", "unknown"])
-def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path, refusal):
+@pytest.mark.parametrize("refusal", [None, "PUPPY_OWNER_APPROVAL_REQUIRED", "unknown", "hub_timeout", "pod_timeout"])
+def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path, refusal, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="gateway.puppy_direct_pod")
     binding = _binding()
     payload = json.dumps(
         {
@@ -321,12 +324,15 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path, r
 
     def answer(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
+        if (refusal == "hub_timeout" and request.url.path.endswith("/endpoint")
+                or refusal == "pod_timeout" and request.url.path.endswith("/challenge")):
+            raise httpx.ReadTimeout("Bearer sensitive-test-token https://private-pod.example", request=request)
         if request.url.path.endswith("/verification-keys"):
             return httpx.Response(200, json={"kind": "pod_verification_keys_v1", "keys": {"key": PUBLIC}})
         if request.url.path.endswith("/endpoint"):
             return httpx.Response(200, json=_endpoint())
         if request.url.path.endswith("/pod-binding"):
-            if refusal:
+            if refusal in {"PUPPY_OWNER_APPROVAL_REQUIRED", "unknown"}:
                 return httpx.Response(403, json={"detail": {
                     "code": refusal, "message": "synthetic-private-response-do-not-display",
                 }})
@@ -387,6 +393,17 @@ def test_admission_reuses_trusted_device_key_and_pod_challenge(tmp_path: Path, r
             return "device-signature"
 
     identity = Identity()
+    if refusal in {"hub_timeout", "pod_timeout"}:
+        with pytest.raises(httpx.ReadTimeout):
+            _admit(identity)
+        stage = "endpoint" if refusal == "hub_timeout" else "challenge"
+        assert f"admission_request stage={stage} outcome=timeout elapsed_ms=" in caplog.text
+        assert "sensitive-test-token" not in caplog.text
+        assert "private-pod.example" not in caplog.text
+        assert not identity.signed
+        assert not (tmp_path / "hussh-one/puppy-pod-pin.json").exists()
+        assert not any(path.endswith("/admit") for path in paths)
+        return
     if refusal:
         with pytest.raises(DirectPodRefused) as caught:
             _admit(identity)
