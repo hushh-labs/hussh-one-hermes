@@ -7,10 +7,25 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
+import ssl
 
 import pytest
 
 from gateway.puppy_inference_relay import PuppyInferenceRelay, _messages, _tools
+
+
+def test_relay_tls_verifies_peer_without_system_ca_and_refuses_invalid_custom_store(monkeypatch, tmp_path):
+    from gateway.puppy_inference_relay import _relay_tls
+
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    context = _relay_tls("wss://owner-pod.example/relay")
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    assert context.get_ca_certs()
+    assert _relay_tls("ws://127.0.0.1/relay") is None
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+    with pytest.raises(FileNotFoundError):
+        _relay_tls("wss://owner-pod.example/relay")
 
 
 def test_messages_preserve_tool_call_and_result_identity():

@@ -35,7 +35,7 @@ from httpx import Timeout, TimeoutException, TransportError
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from gateway.puppy_inference_relay import PuppyInferenceRelay, _MAX_FRAME_BYTES, _reportable_model, profile_model_options
+from gateway.puppy_inference_relay import PuppyInferenceRelay, _MAX_FRAME_BYTES, _relay_tls, _reportable_model, profile_model_options
 from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
 
 if TYPE_CHECKING:
@@ -748,6 +748,7 @@ class PuppyDirectPodRelay:
         public = ephemeral.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
         async with connect(
             url,
+            ssl=_relay_tls(url),
             additional_headers={"Authorization": f"Bearer {token}"},
             max_size=_MAX_FRAME_BYTES,
             ping_interval=20,

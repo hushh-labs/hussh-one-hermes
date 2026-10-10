@@ -28,10 +28,12 @@ import logging
 import os
 import random
 import re
+import ssl
 import time
 from typing import Any
 from urllib.parse import urlparse
 
+import certifi
 import httpx
 from websockets.asyncio.client import connect
 
@@ -79,6 +81,17 @@ def _reportable_model(value: Any) -> str:
     if "://" in text or text.startswith("/") or not _MODEL_ID.fullmatch(text):
         return ""
     return text
+
+
+def _relay_tls(url: str) -> ssl.SSLContext | None:
+    """Use a verified CA bundle even without Python's optional OS cert install."""
+    if not url.startswith("wss://"):
+        return None
+    # Respect an explicitly configured trust store. A missing/invalid custom
+    # store fails closed; it must never silently select different trust roots.
+    return ssl.create_default_context(
+        cafile=os.environ.get("SSL_CERT_FILE") or certifi.where()
+    )
 
 
 def profile_model_options(config: dict[str, Any]) -> dict[str, str]:
@@ -719,6 +732,7 @@ class PuppyInferenceRelay:
             try:
                 async with connect(
                     self.relay_url,
+                    ssl=_relay_tls(self.relay_url),
                     additional_headers=headers,
                     max_size=_MAX_FRAME_BYTES,
                     ping_interval=20,
