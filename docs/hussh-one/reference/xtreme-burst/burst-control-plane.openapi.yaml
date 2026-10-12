@@ -1,0 +1,201 @@
+openapi: 3.1.0
+info:
+  title: Hushh One — Xtreme Compute Burst (Control Plane)
+  version: 1.0.0
+  description: >
+    BYOC personal-supercomputing burst API. Decides whether a workload runs on the user's Mac
+    ("One Puppy") or bursts to the user's own GCP project, provisions/runs/tears down accelerator
+    instances, and reports results. The BYOC service-account key is used in-memory only and is
+    NEVER persisted. This contract is the source for the Cloud API Registry / ADK managed-tool import.
+  contact: { name: Hushh, url: https://hushh.ai }
+servers:
+  - url: https://one.hushh.ai
+    description: Production
+security:
+  # Logical AND: both an identity session and a BYOC cloud credential are required.
+  - hushhSession: []
+    byocGcp: []
+paths:
+  /.well-known/agent.json:
+    get:
+      operationId: getAgentCard
+      summary: A2A Agent Card (discovery)
+      security: []
+      responses:
+        "200":
+          description: The A2A AgentCard describing skills, endpoint, and auth.
+          content:
+            application/json:
+              schema: { type: object }
+  /api/one/burst:
+    post:
+      operationId: burstCompute
+      summary: Submit a workload — decide placement and (if cloud) provision/run/teardown.
+      description: >
+        Returns application/json for a Puppy placement (an on-device handshake), or a streaming
+        application/x-ndjson body for a cloud burst (frames: start, progress, done, error, pending).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BurstRequest" }
+      responses:
+        "200":
+          description: Puppy handshake (JSON) or NDJSON burst stream.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PuppyHandshake" }
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/BurstStreamFrame" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "503":
+          description: >
+            No resolvable BYOC credentials / no project configured, or a TPU burst was requested
+            without ONE_BURST_TPU_RESULT_BUCKET set (the GCS bucket the TPU node writes results to).
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+  /api/one/burst/{id}:
+    get:
+      operationId: getBurst
+      summary: Resume / recover a burst (owner-scoped).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current status; resumes the poll and finalizes/tears down on completion.
+          content: { application/json: { schema: { $ref: "#/components/schemas/BurstStatus" } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/one/burst/{id}/puppy-result:
+    post:
+      operationId: reportPuppyResult
+      summary: Report the outcome of an on-device (Puppy) run.
+      description: Owner-scoped, idempotent; only accepted for a job placed on the device.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PuppyResult" }
+      responses:
+        "200": { description: Recorded (or idempotent no-op). , content: { application/json: { schema: { $ref: "#/components/schemas/BurstStatus" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409":
+          description: Not a Puppy job — cloud bursts are finalized by the control plane.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+components:
+  securitySchemes:
+    hushhSession:
+      type: http
+      scheme: bearer
+      bearerFormat: Firebase ID token
+      description: Identifies who is asking (verifyOneRequest).
+    byocGcp:
+      type: apiKey
+      in: header
+      name: X-BYOC-Provider
+      description: >
+        Marks that the caller supplies their own GCP credentials in the request body (byoc).
+        Used in-memory only; never persisted.
+  responses:
+    Error:
+      description: Error.
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } } }
+  schemas:
+    WorkloadEstimate:
+      type: object
+      required: [vramGb, unifiedMemoryGb, vcpus, diskGb, estimatedMinutes]
+      properties:
+        vramGb: { type: number, description: Accelerator/unified memory needed (GB). }
+        unifiedMemoryGb: { type: number, description: Host RAM needed (GB); unified on Apple Silicon. }
+        vcpus: { type: number }
+        diskGb: { type: number }
+        estimatedMinutes: { type: number }
+    DeviceProfile:
+      type: object
+      description: Snapshot of the local Mac (One Puppy). Missing fields default to the reference profile.
+      properties:
+        id: { type: string }
+        label: { type: string }
+        cpuCores: { type: integer }
+        gpuCores: { type: integer }
+        unifiedMemoryGb: { type: number }
+        diskFreeGb: { type: number }
+        networkMbps: { type: number }
+        online: { type: boolean }
+    ByocGcp:
+      type: object
+      description: The caller's own GCP credentials. In-memory only; never persisted.
+      properties:
+        serviceAccountJson: { type: string, description: Raw service-account JSON (held in memory only). }
+        projectId: { type: string }
+        region: { type: string }
+    BurstRequest:
+      type: object
+      required: [image, acceleratorKind, acceleratorCount, estimate]
+      properties:
+        image: { type: string, description: Container image to run. }
+        command: { type: array, items: { type: string } }
+        env: { type: object, additionalProperties: { type: string } }
+        acceleratorKind: { type: string, enum: [gpu, tpu] }
+        acceleratorCount: { type: integer, minimum: 1, maximum: 8 }
+        machineType: { type: string }
+        region: { type: string }
+        zone: { type: string }
+        estimate: { $ref: "#/components/schemas/WorkloadEstimate" }
+        deviceProfile: { $ref: "#/components/schemas/DeviceProfile" }
+        byoc: { $ref: "#/components/schemas/ByocGcp" }
+    PuppyHandshake:
+      type: object
+      properties:
+        ok: { type: boolean }
+        placement: { type: string, enum: [puppy] }
+        reason: { type: string }
+        burstJobId: { type: string, format: uuid, nullable: true }
+        handshake:
+          type: object
+          properties:
+            target: { type: string, enum: [puppy] }
+            jobId: { type: string, nullable: true }
+            spec: { type: object }
+            reportResultEndpoint: { type: string, nullable: true }
+    BurstStreamFrame:
+      type: object
+      description: One NDJSON line. `type` discriminates the frame.
+      properties:
+        type: { type: string, enum: [start, progress, done, error, pending] }
+        burstJobId: { type: string, nullable: true }
+        placement: { type: string, enum: [gcp] }
+        provider: { type: string, enum: [gcp, mock] }
+        scanning: { type: string, description: Human-readable progress line. }
+        elapsedMs: { type: integer }
+        result: {}
+        exitCode: { type: integer, nullable: true }
+        reason: { type: string, description: Set on `pending` (e.g. "deadline"). }
+        error: { type: string }
+        ok: { type: boolean }
+    BurstStatus:
+      type: object
+      properties:
+        ok: { type: boolean }
+        status: { type: string, enum: [running, completed, failed, unknown] }
+        placement: { type: string, enum: [puppy, gcp] }
+        result: {}
+        error: { type: string, nullable: true }
+        idempotent: { type: boolean }
+    PuppyResult:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [completed, failed] }
+        result: { description: Arbitrary result blob on success. }
+        error: { type: string, description: Failure message. }
+        runMs: { type: integer, description: On-device run duration. }
+    ErrorBody:
+      type: object
+      properties:
+        ok: { type: boolean, enum: [false] }
+        error: { type: string }

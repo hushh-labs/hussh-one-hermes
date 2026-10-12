@@ -28,7 +28,7 @@ def _report_body(text: str, no_agent: bool) -> str:
 
 def collect(home: Path, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
-    data = json.loads((home / 'cron/jobs.json').read_text())
+    data = json.loads((home / 'cron/jobs.json').read_text(encoding='utf-8'))
     jobs = data.get('jobs', []) if isinstance(data, dict) else data
     by_id = {j['id']: j for j in jobs}
     result = {'as_of': now.astimezone().strftime('%b %-d, %Y · %-I:%M %p %Z'), 'sources': []}
