@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, it, vi } from 'vitest'
 
-import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
-
 import App from './components/App.js'
+import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 
 /**
  * A stray "l" typed into the prompt after switching tabs.
