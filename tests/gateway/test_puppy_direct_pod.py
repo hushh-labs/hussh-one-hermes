@@ -270,7 +270,9 @@ def test_remote_model_ack_signs_exact_owner_device_and_pod_statement(tmp_path: P
 
     calls = []
     http = SimpleNamespace(post=lambda url, **kwargs: calls.append((url, kwargs)) or SimpleNamespace(status_code=200))
-    client = HusshIdentityClient(profile_home=tmp_path, http=http)
+    client = HusshIdentityClient(
+        profile_home=tmp_path, http=http, keychain=SimpleNamespace(),
+    )
     monkeypatch.setattr(
         client, "read_state",
         lambda: SimpleNamespace(api_base="https://hub.example", device_id="device-1"),
