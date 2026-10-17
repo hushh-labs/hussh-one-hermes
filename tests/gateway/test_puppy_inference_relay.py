@@ -446,6 +446,8 @@ class _Client:
     [
         (relay_mod.httpx.ReadTimeout, "PUPPY_TIMEOUT"),
         (relay_mod.httpx.ConnectError, "LOCAL_MODEL_UNAVAILABLE"),
+        (TimeoutError, "LOCAL_MODEL_UNAVAILABLE"),
+        (None, "PUPPY_TIMEOUT"),
     ],
 )
 async def test_local_stream_failure_preserves_timeout_and_releases_resources(
@@ -455,6 +457,12 @@ async def test_local_stream_failure_preserves_timeout_and_releases_resources(
 
     closed = []
     releases = []
+    if failure_type is None:
+        real_timeout_at = asyncio.timeout_at
+        monkeypatch.setattr(
+            relay_mod.asyncio, "timeout_at",
+            lambda _when: real_timeout_at(asyncio.get_running_loop().time() - 1),
+        )
 
     class Lease:
         def release(self):
@@ -462,6 +470,8 @@ async def test_local_stream_failure_preserves_timeout_and_releases_resources(
 
     class FailingStream(_Stream):
         async def aiter_lines(self):
+            if failure_type is None:
+                await asyncio.Future()  # Only the owning deadline can finish this read.
             raise failure_type(f"{_ENDPOINT} credential={_LOCAL_KEY}")
             yield  # Keep the failing response an async iterator.
 
@@ -491,6 +501,50 @@ async def test_local_stream_failure_preserves_timeout_and_releases_resources(
     assert releases == [True]
     rendered = json_module.dumps(socket.frames) + caplog.text
     assert _ENDPOINT not in rendered and _LOCAL_KEY not in rendered
+
+
+@pytest.mark.asyncio
+async def test_prefill_deadline_changes_only_on_real_model_progress(monkeypatch):
+    deadlines = []
+    observations = []
+    real_timeout_at = asyncio.timeout_at
+
+    def observe_deadline(when):
+        deadline = real_timeout_at(when)
+        deadlines.append(deadline)
+        return deadline
+
+    class Stream(_Stream):
+        async def aiter_lines(self):
+            for line in [
+                ": heartbeat",
+                'data: {"model":"gemma","choices":[{"delta":{"role":"assistant"}}]}',
+                'data: {"choices":[{"delta":{"reasoning_content":"working"}}]}',
+                "data: {}",
+                'data: {"choices":[{"delta":{"content":"hello"}}]}',
+                "data: [DONE]",
+            ]:
+                observations.append((deadlines[-1].when(), asyncio.get_running_loop().time()))
+                yield line
+
+    class Client(_Client):
+        def __init__(self, *, timeout):
+            assert timeout.read == 90.0
+            assert timeout.connect == 60.0
+
+        def stream(self, *args, **kwargs):
+            return Stream([])
+
+    monkeypatch.setattr(relay_mod.asyncio, "timeout_at", observe_deadline)
+    monkeypatch.setattr(relay_mod.httpx, "AsyncClient", Client)
+    socket = _Socket()
+    await _relay()._infer({"requestId": "prefill"}, socket)
+    assert socket.frames[-1] == {"type": "inference.done", "requestId": "prefill"}
+    assert observations[0][0] - observations[0][1] == pytest.approx(90.0, abs=1.0)
+    assert observations[0][0] == observations[1][0] == observations[2][0]
+    assert observations[3][0] - observations[3][1] == pytest.approx(60.0, abs=1.0)
+    assert observations[3][0] == observations[4][0]
+    assert socket.frames[-3]["text"] == "hello"
 
 
 @pytest.mark.asyncio

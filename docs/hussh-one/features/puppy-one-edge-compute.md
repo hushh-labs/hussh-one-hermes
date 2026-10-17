@@ -105,6 +105,20 @@ First live run caught a real hallucination: asked *"I run the trust org now"*, t
 model wrote the title `"Head of Trust Org"`. The structural benchmark had scored
 that same output 100% valid.
 
+## Private relay deadlines
+
+The relay keeps the owner's selected local model; it never substitutes a cloud
+model after failure. Prompt prefill has a 90-second first-data budget measured
+from inference entry. Genuine text, reasoning or tool fragments then restore the
+60-second inactivity limit. Headers, heartbeats and empty deltas cannot prolong
+either budget. This requires a qualified owner-pod image with the matching
+95-second first-frame allowance; its total turn deadline remains 120 seconds.
+
+A local read or owned deadline expiry reports `PUPPY_TIMEOUT`. Other transport
+errors remain distinct. Every terminal path closes the HTTP stream and releases
+the local inference permit; HTTP closure alone does not prove immediate model
+engine termination. These bounds do not establish cold-model latency acceptance.
+
 ## Memory and eviction
 
 Reloading weights on an edge device is expensive, so eviction is conservative:

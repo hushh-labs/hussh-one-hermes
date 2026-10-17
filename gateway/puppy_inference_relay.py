@@ -42,6 +42,9 @@ from gateway.puppy_reasoning_relay import ReasoningForwarder, reasoning_delta
 logger = logging.getLogger(__name__)
 _MAX_FRAME_BYTES = 1_048_576
 _DEFAULT_MODEL_TIMEOUT = 60.0
+# Permit bounded prompt prefill before genuine model output. The owner pod
+# allows 95 seconds for the first frame and retains its 120-second deadline.
+_FIRST_MODEL_DATA_TIMEOUT_SECONDS = 90.0
 _DEFAULT_HEARTBEAT_SECONDS = 30.0
 _MAX_MODEL_ID_LENGTH = 120
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
@@ -453,6 +456,7 @@ class PuppyInferenceRelay:
         if not request_id:
             return
         started = time.monotonic()
+        first_data_started = asyncio.get_running_loop().time()
         first_content_at: float | None = None
         local_events = 0
         selected_model = self.model
@@ -501,6 +505,7 @@ class PuppyInferenceRelay:
         calls: dict[int, dict[str, Any]] = {}
         observed_model = ""
         lease = None
+        data_deadline: asyncio.Timeout | None = None
         # Display-only reasoning, forwarded only when the model streams some.
         reasoning = ReasoningForwarder(websocket.send, request_id)
         try:
@@ -544,13 +549,16 @@ class PuppyInferenceRelay:
             )
             return
         try:
-            async with httpx.AsyncClient(timeout=self.model_timeout) as client:
+            first_data_timeout = max(self.model_timeout, _FIRST_MODEL_DATA_TIMEOUT_SECONDS)
+            first_data_deadline = first_data_started + first_data_timeout
+            timeout = httpx.Timeout(self.model_timeout, read=first_data_timeout)
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream(
                     "POST",
                     f"{self.model_url}/chat/completions",
                     json=payload,
                     headers=headers,
-                ) as response:
+                ) as response, asyncio.timeout_at(first_data_deadline) as data_deadline:
                     response.raise_for_status()
                     logger.info(
                         "puppy_inference.model_headers elapsed_ms=%s status=%s",
@@ -576,8 +584,13 @@ class PuppyInferenceRelay:
                             if choices and isinstance(choices[0], dict)
                             else {}
                         )
-                        await reasoning.add(reasoning_delta(delta))
+                        thought = reasoning_delta(delta)
                         text = delta.get("content") if isinstance(delta, dict) else None
+                        if thought or (isinstance(text, str) and text):
+                            data_deadline.reschedule(
+                                asyncio.get_running_loop().time() + self.model_timeout
+                            )
+                        await reasoning.add(thought)
                         if isinstance(text, str) and text:
                             await reasoning.flush()
                             if first_content_at is None:
@@ -607,6 +620,10 @@ class PuppyInferenceRelay:
                             )
                             target["id"] = target["id"] or str(call.get("id") or "")
                             function = call.get("function") or {}
+                            if call.get("id") or function.get("name") or function.get("arguments"):
+                                data_deadline.reschedule(
+                                    asyncio.get_running_loop().time() + self.model_timeout
+                                )
                             target["name"] = target["name"] or str(
                                 function.get("name") or ""
                             )
@@ -654,7 +671,12 @@ class PuppyInferenceRelay:
                     "requestId": request_id,
                     "code": (
                         "PUPPY_TIMEOUT"
-                        if isinstance(exc, httpx.ReadTimeout)
+                        if (
+                            isinstance(exc, httpx.ReadTimeout)
+                            or isinstance(exc, TimeoutError)
+                            and data_deadline is not None
+                            and data_deadline.expired()
+                        )
                         else "LOCAL_MODEL_UNAVAILABLE"
                     ),
                 })
