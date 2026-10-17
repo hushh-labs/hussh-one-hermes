@@ -78,19 +78,17 @@ describe('escape sequence split across a remount', () => {
 
         // The App reading when the sequence starts arriving.
         const before = makeApp(stdin)
-        const [firstKeys, firstState] = parseMultipleKeypresses(
-          before.keyParseState,
-          sequence.slice(0, cut)
-        )
+
+        const [firstKeys, firstState] = parseMultipleKeypresses(before.keyParseState, sequence.slice(0, cut))
+
         before.keyParseState = firstState
         emitted.push(...(firstKeys as Array<Record<string, unknown>>))
 
         // The redraw remounts. A different App instance, the same terminal.
         const after = makeApp(stdin)
-        const [secondKeys, secondState] = parseMultipleKeypresses(
-          after.keyParseState,
-          sequence.slice(cut)
-        )
+
+        const [secondKeys, secondState] = parseMultipleKeypresses(after.keyParseState, sequence.slice(cut))
+
         after.keyParseState = secondState
         emitted.push(...(secondKeys as Array<Record<string, unknown>>))
 

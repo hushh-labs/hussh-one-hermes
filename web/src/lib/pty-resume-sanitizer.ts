@@ -30,7 +30,7 @@ const ERASE_LINE = /\x1b\[\d*K/g;
 // eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
 const ERASE_CHAR = /\x1b\[\d*X/g;
 
-// eslint-disable-next-line no-control-regex -- intentional ESC byte in ANSI sequence parser
+ 
 const CSI_PARTIAL_BODY = /^[0-9:;<=>?]*[\x20-\x2f]*$/;
 
 /**

@@ -214,6 +214,7 @@ export default class App extends PureComponent<Props, State> {
 
       return
     }
+
     App.keyParseStates.set(stream, next)
   }
 

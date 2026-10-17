@@ -31,7 +31,14 @@ const disconnected = {
   authorization: { status: 'idle' as const },
   identity: { account_email: null, connected: false, device_id: null, environment: 'uat', profile_id: 'default' },
   onboarding: { remote_vault: 'not_connected' as const },
-  vault: { connected: false, device_id: null, enrolled: false, profile_id: 'default', profile_locked: true, unlocked: false }
+  vault: {
+    connected: false,
+    device_id: null,
+    enrolled: false,
+    profile_id: 'default',
+    profile_locked: true,
+    unlocked: false
+  }
 }
 
 function renderSetup() {
@@ -49,8 +56,17 @@ describe('HusshOneSetup', () => {
     vi.clearAllMocks()
     $activeGatewayProfile.set('default')
     getHusshOneStatus.mockResolvedValue(disconnected)
-    connectHusshOne.mockResolvedValue({ authorization_url: 'https://example.test/connect', expires_in: 300, status: 'waiting' })
-    enrollHusshOneVault.mockResolvedValue({ contract_compatible: true, enrolled: true, native_connector_ready: true, unlocked: true })
+    connectHusshOne.mockResolvedValue({
+      authorization_url: 'https://example.test/connect',
+      expires_in: 300,
+      status: 'waiting'
+    })
+    enrollHusshOneVault.mockResolvedValue({
+      contract_compatible: true,
+      enrolled: true,
+      native_connector_ready: true,
+      unlocked: true
+    })
     lockHusshOneVault.mockResolvedValue({ locked: true })
     unlockHusshOneVault.mockResolvedValue({ unlocked: true })
     disconnectHusshOne.mockResolvedValue({ connected: false, revoked: true })
@@ -108,8 +124,8 @@ describe('HusshOneSetup', () => {
   it('does not call a dashboard-unlocked vault ready for chat PKM writes', () => {
     expect(
       husshOneStatusLabel({
-      ...disconnected,
-      identity: { ...disconnected.identity, account_email: 'owner@example.com', connected: true },
+        ...disconnected,
+        identity: { ...disconnected.identity, account_email: 'owner@example.com', connected: true },
         vault: { ...disconnected.vault, connected: true, enrolled: true, unlocked: true }
       })
     ).toBe('Vault unlocked locally')

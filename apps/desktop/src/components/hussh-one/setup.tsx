@@ -28,9 +28,7 @@ export function husshOneStatusLabel(status: Awaited<ReturnType<typeof getHusshOn
   }
 
   if (!status.vault.enrolled) {
-    return status.onboarding?.remote_vault === 'not_created'
-      ? 'Create your vault'
-      : 'Vault setup needed'
+    return status.onboarding?.remote_vault === 'not_created' ? 'Create your vault' : 'Vault setup needed'
   }
 
   return status.vault.unlocked ? 'Vault unlocked locally' : 'Vault locked'
@@ -97,7 +95,13 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
               Link this Hermes profile as a trusted device for consented PKM access and approved writes.
             </p>
           </div>
-          <Button aria-label="Refresh Hussh One status" onClick={() => void refresh()} size="icon" type="button" variant="ghost">
+          <Button
+            aria-label="Refresh Hussh One status"
+            onClick={() => void refresh()}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
             <RefreshCw className={status.isFetching ? 'size-4 animate-spin' : 'size-4'} />
           </Button>
         </div>
@@ -115,7 +119,8 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
             </p>
             {current?.vault.unlocked && (
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                This confirms the local setup process only. Chat PKM writes also require the active gateway process to be unlocked.
+                This confirms the local setup process only. Chat PKM writes also require the active gateway process to
+                be unlocked.
               </p>
             )}
           </div>
@@ -154,7 +159,13 @@ export function HusshOneSetup({ compact = false }: { compact?: boolean }) {
         {current?.identity.connected && (
           <div className="mt-4 flex flex-wrap gap-2">
             {current.vault.enrolled && !current.vault.unlocked ? (
-              <Button disabled={unlock.isPending} onClick={() => unlock.mutate()} size="sm" type="button" variant="outline">
+              <Button
+                disabled={unlock.isPending}
+                onClick={() => unlock.mutate()}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
                 {unlock.isPending ? 'Unlocking…' : 'Unlock'}
               </Button>
             ) : current.vault.enrolled ? (
