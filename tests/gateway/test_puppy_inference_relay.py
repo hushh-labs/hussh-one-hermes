@@ -448,6 +448,7 @@ class _Client:
         (relay_mod.httpx.ConnectError, "LOCAL_MODEL_UNAVAILABLE"),
         (TimeoutError, "LOCAL_MODEL_UNAVAILABLE"),
         (None, "PUPPY_TIMEOUT"),
+        ("headers", "PUPPY_TIMEOUT"),
     ],
 )
 async def test_local_stream_failure_preserves_timeout_and_releases_resources(
@@ -457,7 +458,7 @@ async def test_local_stream_failure_preserves_timeout_and_releases_resources(
 
     closed = []
     releases = []
-    if failure_type is None:
+    if failure_type is None or failure_type == "headers":
         real_timeout_at = asyncio.timeout_at
         monkeypatch.setattr(
             relay_mod.asyncio, "timeout_at",
@@ -469,6 +470,11 @@ async def test_local_stream_failure_preserves_timeout_and_releases_resources(
             releases.append(True)
 
     class FailingStream(_Stream):
+        async def __aenter__(self):
+            if failure_type == "headers":
+                await asyncio.Future()
+            return self
+
         async def aiter_lines(self):
             if failure_type is None:
                 await asyncio.Future()  # Only the owning deadline can finish this read.
@@ -490,14 +496,17 @@ async def test_local_stream_failure_preserves_timeout_and_releases_resources(
     monkeypatch.setattr(LocalInferenceAdmission, "acquire", lambda *a, **k: Lease())
     monkeypatch.setattr(relay_mod.httpx, "AsyncClient", Client)
     socket = _Socket()
-    await _relay()._infer(
-        {"requestId": "local-failure", "messages": [{"role": "user", "text": "hi"}]},
-        socket,
+    await asyncio.wait_for(
+        _relay()._infer(
+            {"requestId": "local-failure", "messages": [{"role": "user", "text": "hi"}]},
+            socket,
+        ),
+        timeout=2,
     )
     assert socket.frames == [{
         "type": "inference.error", "requestId": "local-failure", "code": expected_code,
     }]
-    assert closed == ["stream", "client"]
+    assert closed == (["client"] if failure_type == "headers" else ["stream", "client"])
     assert releases == [True]
     rendered = json_module.dumps(socket.frames) + caplog.text
     assert _ENDPOINT not in rendered and _LOCAL_KEY not in rendered

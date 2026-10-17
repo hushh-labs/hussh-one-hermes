@@ -553,12 +553,15 @@ class PuppyInferenceRelay:
             first_data_deadline = first_data_started + first_data_timeout
             timeout = httpx.Timeout(self.model_timeout, read=first_data_timeout)
             async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.model_url}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                ) as response, asyncio.timeout_at(first_data_deadline) as data_deadline:
+                async with (
+                    asyncio.timeout_at(first_data_deadline) as data_deadline,
+                    client.stream(
+                        "POST",
+                        f"{self.model_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    ) as response,
+                ):
                     response.raise_for_status()
                     logger.info(
                         "puppy_inference.model_headers elapsed_ms=%s status=%s",
@@ -566,6 +569,8 @@ class PuppyInferenceRelay:
                         getattr(response, "status_code", "unknown"),
                     )
                     async for line in response.aiter_lines():
+                        if asyncio.get_running_loop().time() >= data_deadline.when():
+                            raise httpx.ReadTimeout("Local inference exceeded its data deadline")
                         if not line.startswith("data:"):
                             continue
                         raw = line[5:].strip()
