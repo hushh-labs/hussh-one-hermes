@@ -30,8 +30,10 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import ntpath
 import re
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -156,7 +158,7 @@ CONTRACTS: tuple = (
     ),
     JobContract(
         name_contains="timesheet",
-        artifact_glob="~/Desktop/Timesheets_and_Reimbursements/*{prev_month_name}{prev_year}*.xlsx",
+        artifact_glob="{desktop}/Timesheets_and_Reimbursements/*{prev_month_name}{prev_year}*.xlsx",
         min_tool_calls=1,
         judge_hint=(
             "The previous month's reimbursement workbook must exist at the "
@@ -483,9 +485,30 @@ def _previous_month(now: Optional[datetime] = None) -> datetime:
     return today - timedelta(days=1)
 
 
+def _desktop_directory() -> Path:
+    """Respect the owner's redirected Windows Desktop, including OneDrive."""
+    if sys.platform != "win32":
+        return Path.home() / "Desktop"  # windows-footgun: ok — non-Windows branch
+    import winreg
+
+    with winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER,
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+    ) as key:
+        desktop, _ = winreg.QueryValueEx(key, "Desktop")
+    if not isinstance(desktop, str) or not ntpath.isabs(ntpath.expandvars(desktop)):
+        raise OSError("Desktop location is unavailable")
+    return Path(ntpath.expandvars(desktop))
+
+
 def _artifact_exists(pattern: str, now: Optional[datetime] = None) -> tuple:
     previous = _previous_month(now)
+    try:
+        desktop = _desktop_directory() if "{desktop}" in pattern else None
+    except OSError:
+        return False, "Desktop location is unavailable"
     expanded = pattern.format(
+        desktop=desktop,
         prev_month_name=previous.strftime("%B"),
         prev_month=previous.strftime("%m"),
         prev_year=previous.strftime("%Y"),

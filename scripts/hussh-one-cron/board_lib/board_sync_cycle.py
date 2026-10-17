@@ -156,13 +156,13 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
         # Try checking against the upstream tracking branch first (most accurate for unpushed commits)
         proc = subprocess.run(
             ["git", "-C", local_repo_path, "log", "@{u}..HEAD", "--oneline"],
-            capture_output=True, text=True, check=False, timeout=10
+            capture_output=True, text=True, encoding="utf-8", check=False, timeout=10
         )
         if proc.returncode != 0:
             # If no upstream is configured, fall back to checking against origin/main, but limit to operator's own commits
             proc = subprocess.run(
                 ["git", "-C", local_repo_path, "log", f"--author={OPERATOR_LOGIN}", "origin/main..HEAD", "--oneline"],
-                capture_output=True, text=True, check=True, timeout=10
+                capture_output=True, text=True, encoding="utf-8", check=True, timeout=10
             )
         lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     except Exception:
@@ -172,7 +172,7 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
     try:
         proc_status = subprocess.run(
             ["git", "-C", local_repo_path, "status", "--porcelain"],
-            capture_output=True, text=True, check=True, timeout=10
+            capture_output=True, text=True, encoding="utf-8", check=True, timeout=10
         )
         status_lines = [line.strip() for line in proc_status.stdout.splitlines() if line.strip()]
     except Exception:
@@ -257,7 +257,7 @@ def initiate_local_plans_if_needed(repo: str, dry_run: bool = False) -> list[dic
                     "--assignee", OPERATOR_LOGIN,
                     "--label", "enhancement"
                 ]
-                proc_issue = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+                proc_issue = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True, timeout=30)
                 url = proc_issue.stdout.strip()
                 new_num = int(url.rstrip("/").split("/")[-1])
 
@@ -395,7 +395,7 @@ def sync_taxonomy_fields(dry_run: bool = False) -> tuple[list[str], bool]:
         cat = json.loads(subprocess.run(
             ["gh", "project", "field-list", str(board_ops.PROJECT_NUMBER),
              "--owner", board_ops.OWNER, "--format", "json", "-L", "60"],
-            text=True, capture_output=True, timeout=60, check=True).stdout)
+            text=True, encoding="utf-8", capture_output=True, timeout=60, check=True).stdout)
         fields = {}
         for f in cat["fields"]:
             if f.get("name") in ("Sector", "Workstream"):

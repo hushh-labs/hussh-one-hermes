@@ -177,12 +177,12 @@ def get_budget_credits(monthly_estimate):
     try:
         tok = subprocess.run(
             ["gcloud", "auth", "print-access-token", "--account=kushal@hushh.ai"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         ).stdout.strip()
         if not tok:
             tok = subprocess.run(
                 ["gcloud", "auth", "application-default", "print-access-token"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
             ).stdout.strip()
         if not tok:
             result["error"] = "no gcloud token available"
@@ -190,7 +190,7 @@ def get_budget_credits(monthly_estimate):
         # Billing account attached to hushh-pda-uat (MS USBANK MASTERCARD).
         acct = "014D7F-FD970D-D2459E"
         hdr = "header = " + chr(34) + "Authorization: " + "Bea" + "rer " + tok + chr(34)
-        with tempfile.NamedTemporaryFile("w", suffix=".cfg", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".cfg", delete=False) as f:
             f.write(hdr + "\n")
             cfg = f.name
         try:
@@ -198,7 +198,7 @@ def get_budget_credits(monthly_estimate):
                 ["curl", "-sS", "-K", cfg,
                  "-H", "x-goog-user-project: hushh-pda-uat", "--max-time", "20",
                  f"https://billingbudgets.googleapis.com/v1/billingAccounts/{acct}/budgets"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
             ).stdout
         finally:
             os.unlink(cfg)

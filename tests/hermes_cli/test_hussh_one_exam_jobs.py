@@ -13,8 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -156,18 +159,46 @@ class TestContractChecks:
     def test_a_novel_full_length_message_fails_brevity(self):
         assert "mobile_brevity" in _fails(J.grade(_run(text=HEADER + "x" * 3000)))
 
-    def test_the_timesheet_artifact_is_checked_for_the_previous_month(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("use_desktop", [False, True])
+    def test_the_timesheet_artifact_is_checked_for_the_previous_month(self, tmp_path, monkeypatch, use_desktop):
         folder = tmp_path / "Timesheets_and_Reimbursements"
         folder.mkdir()
         (folder / "Reimbursement_Tracker_Kushal_August2026.xlsx").write_bytes(b"x")
+        monkeypatch.setattr(J, "_desktop_directory", lambda: tmp_path)
+        pattern = "{desktop}/Timesheets_and_Reimbursements/*{prev_month_name}{prev_year}*.xlsx" if use_desktop else str(folder / "*{prev_month_name}{prev_year}*.xlsx")
         monkeypatch.setattr(J, "CONTRACTS", (
             J.JobContract(name_contains="timesheet",
-                          artifact_glob=str(folder / "*{prev_month_name}{prev_year}*.xlsx"),
+                          artifact_glob=pattern,
                           min_tool_calls=1),
         ))
         run = _run(name="monthly-timesheet-generator", text="saved", tool_calls=[("terminal", {})])
         assert _fails(J.grade(run, now=datetime(2026, 9, 2))) == {}
         assert "artifact_exists" in _fails(J.grade(run, now=datetime(2026, 10, 2)))
+
+    @pytest.mark.windows_only
+    def test_windows_desktop_uses_the_registered_redirect(self, monkeypatch):
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\Owner")
+
+        def open_key(hive, path):
+            assert hive == "current-user"
+            assert path == r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+            return nullcontext("desktop-key")
+
+        def query_value(key, name):
+            assert (key, name) == ("desktop-key", "Desktop")
+            return r"%USERPROFILE%\OneDrive\Desktop", 2
+
+        monkeypatch.setitem(sys.modules, "winreg", SimpleNamespace(
+            HKEY_CURRENT_USER="current-user", OpenKey=open_key, QueryValueEx=query_value,
+        ))
+        assert str(J._desktop_directory()) == r"C:\Users\Owner\OneDrive\Desktop"
+
+    def test_unavailable_desktop_does_not_guess_an_artifact_location(self, monkeypatch):
+        def unavailable():
+            raise OSError("Desktop could not be read")
+
+        monkeypatch.setattr(J, "_desktop_directory", unavailable)
+        assert J._artifact_exists("{desktop}/*.xlsx") == (False, "Desktop location is unavailable")
 
     def test_the_rule_vocabulary_is_registered(self):
         assert "contradicts-evidence" in rules_for("cron_quality")

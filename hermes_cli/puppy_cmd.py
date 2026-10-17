@@ -987,7 +987,7 @@ def _cmd_quest(args) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps(
             {"context": context, "root": str(root), "quests": selected,
-             "summary": summary}, indent=2))
+             "summary": summary}, indent=2), encoding="utf-8")
     print(f"\nartifacts: {artifacts}")
     return EXIT_OK
 
