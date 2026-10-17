@@ -652,7 +652,11 @@ class PuppyInferenceRelay:
                 json.dumps({
                     "type": "inference.error",
                     "requestId": request_id,
-                    "code": "LOCAL_MODEL_UNAVAILABLE",
+                    "code": (
+                        "PUPPY_TIMEOUT"
+                        if isinstance(exc, httpx.ReadTimeout)
+                        else "LOCAL_MODEL_UNAVAILABLE"
+                    ),
                 })
             )
         finally:

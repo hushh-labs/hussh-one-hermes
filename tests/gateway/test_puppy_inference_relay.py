@@ -441,6 +441,59 @@ class _Client:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_type", "expected_code"),
+    [
+        (relay_mod.httpx.ReadTimeout, "PUPPY_TIMEOUT"),
+        (relay_mod.httpx.ConnectError, "LOCAL_MODEL_UNAVAILABLE"),
+    ],
+)
+async def test_local_stream_failure_preserves_timeout_and_releases_resources(
+    monkeypatch, caplog, failure_type, expected_code,
+):
+    from hermes_cli.hussh_one_routing.local_runtime import LocalInferenceAdmission
+
+    closed = []
+    releases = []
+
+    class Lease:
+        def release(self):
+            releases.append(True)
+
+    class FailingStream(_Stream):
+        async def aiter_lines(self):
+            raise failure_type(f"{_ENDPOINT} credential={_LOCAL_KEY}")
+            yield  # Keep the failing response an async iterator.
+
+        async def __aexit__(self, *exc):
+            closed.append("stream")
+            return False
+
+    class Client(_Client):
+        def stream(self, *args, **kwargs):
+            return FailingStream([])
+
+        async def __aexit__(self, *exc):
+            closed.append("client")
+            return False
+
+    monkeypatch.setattr(LocalInferenceAdmission, "acquire", lambda *a, **k: Lease())
+    monkeypatch.setattr(relay_mod.httpx, "AsyncClient", Client)
+    socket = _Socket()
+    await _relay()._infer(
+        {"requestId": "local-failure", "messages": [{"role": "user", "text": "hi"}]},
+        socket,
+    )
+    assert socket.frames == [{
+        "type": "inference.error", "requestId": "local-failure", "code": expected_code,
+    }]
+    assert closed == ["stream", "client"]
+    assert releases == [True]
+    rendered = json_module.dumps(socket.frames) + caplog.text
+    assert _ENDPOINT not in rendered and _LOCAL_KEY not in rendered
+
+
+@pytest.mark.asyncio
 async def test_remote_catalog_and_selected_turn_use_only_fresh_local_models(monkeypatch):
     class _CatalogClient(_Client):
         inventory = [
