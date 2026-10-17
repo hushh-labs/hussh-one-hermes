@@ -16,7 +16,8 @@ const onboarding = atom({ manual: false })
 vi.mock('@/hermes', () => ({
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
   getEnvVars: () => getEnvVars(),
-  listOAuthProviders: () => listOAuthProviders()
+  listOAuthProviders: () => listOAuthProviders(),
+  setApiRequestProfile: () => undefined
 }))
 
 vi.mock('@/store/onboarding', () => ({
