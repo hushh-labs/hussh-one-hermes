@@ -1362,6 +1362,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # field — fold it into the agent tab rather than spawning a one-field
     # orphan category.
     "runtime": "agent",
+    # Puppy relay startup belongs with the agent's lifecycle controls.
+    "hussh_one": "agent",
     # `session.terminal_continue` is the only schema-surfaced session field —
     # fold it into general rather than spawning a one-field orphan category.
     "session": "general",

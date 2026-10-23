@@ -690,6 +690,27 @@ async def test_machine_presence_retries_after_login_then_uses_keepalive(monkeypa
 def relay_service_profile(tmp_path, monkeypatch):
     import yaml
 
+    class MemoryKeychain:
+        def __init__(self):
+            self.values = {}
+
+        def get(self, account):
+            return self.values.get(account)
+
+        def set(self, account, secret):
+            self.values[account] = secret
+
+        def delete(self, account):
+            self.values.pop(account, None)
+
+    # Exercise the real client without opening the host's trusted-device store.
+    def refuse_native_keychain(*args, **kwargs):
+        raise AssertionError("Lifecycle fixtures must not open the native keychain")
+
+    monkeypatch.setattr(
+        "hermes_cli.hussh_one_pkm.keychain.MacOSKeychain.__init__", refuse_native_keychain,
+    )
+    monkeypatch.setattr("hermes_cli.hussh_one_pkm.client.MacOSKeychain", MemoryKeychain)
     home = tmp_path / "profile"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
