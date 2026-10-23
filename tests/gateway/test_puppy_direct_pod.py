@@ -15,6 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from hermes_cli.hussh_one_pkm.client import HusshIdentityError
 
 from gateway.puppy_direct_pod import (
     DeviceEnvelope,
@@ -683,3 +684,172 @@ async def test_machine_presence_retries_after_login_then_uses_keepalive(monkeypa
         ("relay_running", False),
     ]
     assert presence.keepalives == 1
+
+
+@pytest.fixture
+def relay_service_profile(tmp_path, monkeypatch):
+    import yaml
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    config = {
+        "model": {"default": "local/fixture", "base_url": "http://127.0.0.1:1234/v1"},
+        "hussh_one": {"puppy": {"auto_start": True}},
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+    return home, config
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["disabled", "cloud_model"])
+async def test_profile_relay_does_not_open_identity_without_local_opt_in(
+    relay_service_profile, monkeypatch, reason,
+):
+    import yaml
+    from gateway.puppy_direct_service import run_profile_direct_relay
+    from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
+
+    home, config = relay_service_profile
+    if reason == "disabled":
+        config["hussh_one"]["puppy"]["auto_start"] = False
+    else:
+        config["model"]["base_url"] = "https://provider.example/v1"
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+
+    def unexpected_identity(*args, **kwargs):
+        raise AssertionError("No identity or network client should be opened")
+
+    monkeypatch.setattr(HusshIdentityClient, "__init__", unexpected_identity)
+    await run_profile_direct_relay()
+
+
+@pytest.mark.asyncio
+async def test_profile_relay_is_single_instance_and_releases_transport_and_lock_on_stop(
+    relay_service_profile, monkeypatch,
+):
+    import asyncio
+    from gateway.puppy_direct_service import run_profile_direct_relay
+    from gateway.status import _get_scope_lock_path
+    from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
+
+    home, _ = relay_service_profile
+    monkeypatch.setattr(HusshIdentityClient, "read_state", lambda self: SimpleNamespace(environment="dev"))
+    entered = asyncio.Event()
+    relays = []
+
+    async def serve(relay):
+        relays.append(relay)
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(PuppyDirectPodRelay, "serve", serve)
+    lock = _get_scope_lock_path("puppy-direct-relay", str(home.resolve()))
+    for count in (1, 2):
+        entered.clear()
+        task = asyncio.create_task(run_profile_direct_relay())
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=3)
+            await run_profile_direct_relay()  # No second relay for this profile.
+            assert len(relays) == count
+            assert relays[-1].identity.profile_home == home.resolve()
+            assert relays[-1]._waiting_activation is True
+            assert relays[-1].model_options["model"] == "local/fixture"
+            assert lock.exists()
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert relays[-1].identity.http.is_closed
+        assert not lock.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", [DirectPodRefused, HusshIdentityError])
+async def test_profile_relay_self_disables_after_terminal_owner_refusal(
+    relay_service_profile, monkeypatch, refusal,
+):
+    from gateway.puppy_direct_service import run_profile_direct_relay
+    from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
+
+    monkeypatch.setattr(HusshIdentityClient, "read_state", lambda self: SimpleNamespace(environment="dev"))
+
+    async def serve(relay):
+        raise refusal("fixture refusal")
+
+    monkeypatch.setattr(PuppyDirectPodRelay, "serve", serve)
+    # Clean return is the existing gateway supervisor's self-disable contract.
+    await run_profile_direct_relay()
+    with pytest.raises(refusal):
+        await run_profile_direct_relay(supervised=False)
+
+
+@pytest.mark.asyncio
+async def test_profile_stop_retains_lock_until_blocked_admission_settles(
+    relay_service_profile, monkeypatch,
+):
+    import asyncio
+    import threading
+    from gateway.puppy_direct_service import run_profile_direct_relay
+    from gateway.status import _get_scope_lock_path
+    from hermes_cli.hussh_one_pkm.client import HusshIdentityClient
+
+    home, _ = relay_service_profile
+    entered, release = threading.Event(), threading.Event()
+    requests, transports = [], []
+    original_client = httpx.Client
+
+    def answer(request):
+        requests.append(request.url.path)
+        entered.set()
+        assert release.wait(5)
+        return httpx.Response(200, json={})
+
+    def client(**kwargs):
+        transport = original_client(transport=httpx.MockTransport(answer), **kwargs)
+        transports.append(transport)
+        return transport
+
+    async def wait_for_activation(self):
+        return None
+
+    async def report_presence(self):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(httpx, "Client", client)
+    monkeypatch.setattr(HusshIdentityClient, "read_state", lambda self: SimpleNamespace(
+        environment="dev", api_base="https://hub.example", user_id="fixture-owner", device_id="fixture-device",
+    ))
+    monkeypatch.setattr(HusshIdentityClient, "auth_headers", lambda self: {})
+    monkeypatch.setattr(PuppyDirectPodRelay, "_wait_for_activation", wait_for_activation)
+    monkeypatch.setattr(PuppyDirectPodRelay, "_report_presence", report_presence)
+    task = asyncio.create_task(run_profile_direct_relay())
+    lock = _get_scope_lock_path("puppy-direct-relay", str(home.resolve()))
+    try:
+        for _ in range(300):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set()
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0.01)
+            assert not task.done()
+            assert lock.exists()
+            assert not transports[0].is_closed
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3)
+        assert requests == ["/api/one/personal-agent/endpoint"]
+        assert not (home / "hussh-one" / "puppy-pod-pin.json").exists()
+        assert transports[0].is_closed
+        assert not lock.exists()
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

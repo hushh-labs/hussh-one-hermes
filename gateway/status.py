@@ -1493,11 +1493,16 @@ def remove_pid_file() -> None:
         pass
 
 
-def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
+def acquire_scoped_lock(
+    scope: str, identity: str, metadata: Optional[dict[str, Any]] = None,
+    *, require_gateway: bool = True,
+) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity.
 
     Used to prevent multiple local gateways from using the same external identity
     at once (e.g. the same Telegram bot token across different HERMES_HOME dirs).
+    Non-gateway services may opt out of gateway recognition; any live PID with
+    no proven start-time mismatch then retains ownership, even while paused.
     """
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1520,6 +1525,10 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
     existing = _read_json_file(lock_path)
     if existing is None and lock_path.exists():
+        if not require_gateway:
+            # A concurrent starter may have created the exclusive file but not
+            # finished writing its owner record. Never unlink its live inode.
+            return False, None
         # Lock file exists but is empty or contains invalid JSON — treat as
         # stale.  This happens when a previous process was killed between
         # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
@@ -1568,7 +1577,8 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 # signal on platforms without ps.  Both oracles must indicate
                 # "not a gateway" to mark stale.
                 if (
-                    not stale
+                    require_gateway
+                    and not stale
                     and (existing.get("start_time") is None or current_start is None)
                     and not _looks_like_gateway_process(existing_pid)
                 ):
@@ -1582,7 +1592,8 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 # match but the live process is not a gateway, and we can confirm
                 # that by reading its cmdline, the lock is stale.
                 if (
-                    not stale
+                    require_gateway
+                    and not stale
                     and existing.get("start_time") is not None
                     and current_start is not None
                     and not _looks_like_gateway_process(existing_pid)
@@ -1593,7 +1604,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still appear alive to _pid_exists but are not
                 # actually running. Treat them as stale so --replace works.
-                if not stale:
+                if require_gateway and not stale:
                     try:
                         _proc_status = Path(f"/proc/{existing_pid}/status")
                         if _proc_status.exists():

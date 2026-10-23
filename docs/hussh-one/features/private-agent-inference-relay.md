@@ -28,8 +28,32 @@ admission. Temporary readiness, expiry and owner-grant refusals discard the pod
 session and return to this hub control lane. A later owner-authorized request can
 activate the same trusted identity again, without polling the sleeping pod.
 Device revocation and signature/owner mismatches stop the client. Start only one relay
-process per profile; Ctrl-C stops an owned foreground process. Signing in to
-Hermes alone does not start this separate relay process.
+per profile; Ctrl-C stops an owned foreground process. Signing in alone does not
+start the relay.
+
+For an already enrolled profile, the existing Hermes gateway can own this lane.
+Opt in through that profile's `config.yaml`:
+
+```yaml
+hussh_one:
+  puppy:
+    auto_start: true
+```
+
+Start the normal gateway with the intended profile selected. Its existing
+supervisor starts the relay in activation-wait mode and cancels it on shutdown;
+no extra daemon, launch agent or cloud keepalive is required. This setting is
+off by default and grants no model access. Owner approval, current device
+identity and fresh pod admission remain required. An existing explicit relay
+holds the same profile lock, so gateway startup does not create a second
+connection. Stop that owned launcher before handing the lane to the gateway.
+Revoked identity or invalid local-model configuration stops automatic retries;
+repair the profile before restarting the gateway.
+
+The computer and local model server must be awake and reachable. A heartbeat
+shows that the device has checked in; it does not prove a connected inference
+lane or wake a sleeping computer. The app may request an authorized connection
+while visible and retain cached model choices without keeping the pod awake.
 
 The direct launcher reads the selected model and base URL from that profile's
 existing model settings. Its endpoint must be on loopback; a selected cloud

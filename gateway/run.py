@@ -13402,6 +13402,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
 
+        # Opt-in profile relay shares gateway supervision and idle accounting.
+        # Its hub-control wait never keeps a sleeping owner pod awake.
+        from gateway.puppy_direct_service import run_profile_direct_relay
+        self._spawn_supervised(
+            run_profile_direct_relay, "puppy_direct_relay",
+            on_spawn=lambda task: setattr(self, "_puppy_relay_task", task),
+        )
+
         # Stall watchdog: pending inbound + stale agent activity → warn user
         # to /new (does not kill the turn; see agent.session_stall_timeout).
         self._spawn_supervised(self._session_stall_watcher, "session_stall_watcher")
@@ -15211,8 +15219,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            # Join the owned relay before dropping task handles so its socket,
+            # HTTP client and profile lock finish their cancellation cleanup.
+            _puppy_task = getattr(self, "_puppy_relay_task", None)
+            if _puppy_task is not None and not _puppy_task.done():
+                _puppy_task.cancel()
+                _done, _pending = await asyncio.wait({_puppy_task}, timeout=5)
+                if _pending:
+                    logger.warning("Puppy relay shutdown is still pending")
+            if _puppy_task is None or _puppy_task.done():
+                self._puppy_relay_task = None
+
             for _task in list(self._background_tasks):
-                if _task is self._stop_task:
+                if _task is self._stop_task or _task is _puppy_task:
                     continue
                 if _task is self._restart_task:
                     # The restart orchestration task is awaiting _stop_task
@@ -15221,7 +15240,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _exit_code = 75 (#12875).  It self-terminates anyway.
                     continue
                 _task.cancel()
-            self._background_tasks.clear()
+            self._background_tasks.intersection_update(
+                {_puppy_task} if _puppy_task is not None and not _puppy_task.done() else set()
+            )
 
             self.adapters.clear()
             for _session_key in list(self._running_agents):
