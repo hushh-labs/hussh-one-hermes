@@ -1484,7 +1484,9 @@ export function ChatSidebar({
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts') ||
-                  (item.id === 'hussh-one' && pathname === SETTINGS_ROUTE && new URLSearchParams(search).get('tab') === 'hussh-one') ||
+                  (item.id === 'hussh-one' &&
+                    pathname === SETTINGS_ROUTE &&
+                    new URLSearchParams(search).get('tab') === 'hussh-one') ||
                   (item.id === 'cron' && currentView === 'cron') ||
                   // Contributed rows light up at their own route.
                   (Boolean(item.route) && pathname === item.route)
