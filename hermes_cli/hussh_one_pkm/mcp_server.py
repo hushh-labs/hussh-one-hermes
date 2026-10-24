@@ -24,7 +24,7 @@ from .bridge import HusshVaultBridge
 from .pkm import PkmClient, PkmProposal
 
 try:
-    from mcp.server.fastmcp import Context
+    from mcp.server.mcpserver import Context
 except ImportError:  # pragma: no cover - optional MCP extra
     Context = Any  # type: ignore[misc,assignment]
 
@@ -37,7 +37,7 @@ class WriteApproval(BaseModel):
     """Schema displayed by Hermes' existing MCP form-elicitation handler."""
 
     confirm: bool = Field(
-        default=True,
+        strict=True,
         description="Approve the displayed PKM mutation and sharing impact.",
     )
 
@@ -87,7 +87,7 @@ class ProposalStore:
 
 def _build_server():
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
     except ImportError as exc:  # pragma: no cover - installation boundary
         raise ImportError(
             "The Hussh One bridge requires the Hermes MCP extra."
@@ -96,7 +96,7 @@ def _build_server():
     bridge = HusshVaultBridge()
     pkm = PkmClient(bridge)
     proposals = ProposalStore()
-    mcp = FastMCP(
+    mcp = MCPServer(
         "hussh-one-pkm",
         instructions=(
             "Use this local trusted-device bridge for Hussh One PKM status and "
@@ -207,10 +207,11 @@ def _build_server():
             "their existing consent path."
         )
         decision = await ctx.elicit(message=message, schema=WriteApproval)
-        if decision.action != "accept":
-            return {"success": False, "status": "declined", "domain": proposal.domain}
-        content = getattr(decision, "data", None) or getattr(decision, "content", None)
-        if content is not None and getattr(content, "confirm", True) is False:
+        if (
+            decision.action != "accept"
+            or not isinstance(decision.data, WriteApproval)
+            or decision.data.confirm is not True
+        ):
             return {"success": False, "status": "declined", "domain": proposal.domain}
         return pkm.commit(proposal)
 

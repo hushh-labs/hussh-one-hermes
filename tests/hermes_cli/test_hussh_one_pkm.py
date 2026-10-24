@@ -1407,7 +1407,8 @@ def test_typescript_delete_mutation_plan_shape_parity() -> None:
     assert "target_scope_handle" not in plan
 
 
-def test_additive_mcp_surface_keeps_the_six_tool_contract(
+@pytest.mark.asyncio
+async def test_additive_mcp_surface_keeps_the_six_tool_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pytest.importorskip("mcp")
@@ -1417,7 +1418,10 @@ def test_additive_mcp_surface_keeps_the_six_tool_contract(
 
     monkeypatch.setattr(mcp_server, "HusshVaultBridge", FakeBridge)
     server = mcp_server._build_server()
-    names = {tool.name for tool in server._tool_manager.list_tools()}
+    tools = await server.list_tools()
+    names = {tool.name for tool in tools}
+    commit_tool = next(tool for tool in tools if tool.name == "hussh_pkm_commit_write")
+    assert "ctx" not in commit_tool.input_schema.get("properties", {})
     assert names == {
         "hussh_identity_status",
         "hussh_vault_status",
@@ -1426,6 +1430,95 @@ def test_additive_mcp_surface_keeps_the_six_tool_contract(
         "hussh_pkm_commit_write",
         "hussh_vault_lock",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "content", "expected_commit"),
+    [
+        ("accept", {"confirm": True}, True),
+        ("accept", {"confirm": False}, False),
+        ("accept", {}, False),
+        ("accept", None, False),
+        ("accept", {"confirm": "true"}, False),
+        ("decline", None, False),
+        ("cancel", None, False),
+    ],
+)
+async def test_mcp_commit_requires_explicit_confirmation(
+    monkeypatch, action, content, expected_commit,
+):
+    from mcp.server import ServerRequestContext
+    from mcp.server.mcpserver import Context
+    from mcp.types import ElicitResult
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    commits = []
+    proposal = SimpleNamespace(
+        proposal_id="reviewed-proposal", domain="professional", scope_path="role",
+        summary="Update approved role",
+        safe_view=lambda: {
+            "proposal_id": "reviewed-proposal",
+            "sharing_impact": {"summary": "No active exports", "active_recipient_count": 0},
+        },
+    )
+
+    class FakeBridge:
+        def require_vault_key(self):
+            return b"fixture-only"
+
+    class FakePkm:
+        def __init__(self, _bridge):
+            pass
+
+        def propose(self, **_kwargs):
+            return proposal
+
+        def commit(self, value):
+            commits.append(value)
+            return {"success": True, "status": "committed"}
+
+    class FakeSession:
+        async def elicit_form(self, *, message, requested_schema, related_request_id):
+            assert "Domain: professional" in message
+            assert "Path: role" in message
+            assert "Active recipients: 0" in message
+            assert related_request_id == "fixture-review"
+            return ElicitResult(action=action, content=content)
+
+    monkeypatch.setattr(mcp_server, "HusshVaultBridge", FakeBridge)
+    monkeypatch.setattr(mcp_server, "PkmClient", FakePkm)
+    server = mcp_server._build_server()
+    context = Context(
+        mcp_server=server,
+        request_context=ServerRequestContext(
+            session=FakeSession(), lifespan_context={},
+            protocol_version="2025-11-25", method="tools/call", request_id="fixture-review",
+        ),
+    )
+    await server.call_tool("hussh_pkm_propose_write", {
+        "domain": "professional", "scope_path": "role",
+        "merge_patch": {"role": "Engineer"}, "summary": "Update approved role",
+    })
+    invalid_acceptance = action == "accept" and (
+        content is None or type(content.get("confirm")) is not bool
+    )
+    if invalid_acceptance:
+        with pytest.raises(ToolError):
+            await server.call_tool(
+                "hussh_pkm_commit_write", {"proposal_id": "reviewed-proposal"}, context=context,
+            )
+    else:
+        result = await server.call_tool(
+            "hussh_pkm_commit_write", {"proposal_id": "reviewed-proposal"}, context=context,
+        )
+        assert not result.is_error
+    assert commits == ([proposal] if expected_commit else [])
+    with pytest.raises(ToolError, match="missing or expired"):
+        await server.call_tool(
+            "hussh_pkm_commit_write", {"proposal_id": "reviewed-proposal"}, context=context,
+        )
+    assert commits == ([proposal] if expected_commit else [])
 
 
 def test_encrypted_replica_persists_only_ciphertext_and_monotonic_cursor(
