@@ -47,7 +47,9 @@ def test_dashboard_ws_values_propagate_from_yaml(_temp_home):
     assert dash["ws_ping_timeout"] == 10
     assert dash["ws_orphan_reap_grace_s"] == 90
     # Deep-merge: sibling defaults survive a partial user section.
-    assert dash.get("theme") == "default"
+    from hermes_cli.brand import default_dashboard_theme
+
+    assert dash.get("theme") == default_dashboard_theme()
 
 
 def test_ws_orphan_reap_grace_reads_config(_temp_home):

@@ -72,7 +72,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp", "photon"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # Photon DM chat GUID (mirrors _DM_CHAT_GUID_RE in the photon adapter).
 _PHOTON_DM_GUID_RE = re.compile(r"^any;-;\+\d{6,}$")
@@ -625,6 +625,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         # them off the channel directory (mirrors the react handler).
         if _PHOTON_DM_GUID_RE.fullmatch(target_ref.strip()):
             return target_ref.strip(), None, True
+    if platform_name == "whatsapp" and _WHATSAPP_JID_RE.fullmatch(target_ref):
+        return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
@@ -2568,13 +2570,4 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
-
-registry.register(
-    name="send_message",
-    toolset="messaging",
-    schema=SEND_MESSAGE_SCHEMA,
-    handler=send_message_tool,
-    check_fn=_check_send_message,
-    emoji="📨",
-)
+from tools.registry import tool_error

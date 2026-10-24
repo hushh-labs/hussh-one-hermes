@@ -8116,12 +8116,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool")
                     if normalized_runtime.get(key) is not None
                 })
+                override_runtime["credential_pool"] = normalized_runtime["credential_pool"]
             except Exception:
                 logger.debug("Session Vertex runtime normalization skipped", exc_info=True)
             if override_runtime.get("api_key"):
-                if override_runtime.get("credential_pool") is None:
+                if (override_runtime.get("credential_pool") is None
+                        and override_runtime.get("api_key") != "gcp-sdk"):
                     override_runtime["credential_pool"] = _credential_pool_for_provider(
-                        override.get("provider")
+                        override_runtime.get("provider")
                     )
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
@@ -8210,6 +8212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool")
                 if normalized_runtime.get(key) is not None
             })
+            runtime_kwargs["credential_pool"] = normalized_runtime["credential_pool"]
         except Exception:
             logger.debug("Gateway Vertex runtime normalization skipped", exc_info=True)
 
@@ -13402,6 +13405,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Start background session expiry watcher to finalize expired sessions
         self._spawn_supervised(self._session_expiry_watcher, "session_expiry_watcher")
 
+        # Opt-in profile relay shares gateway supervision and idle accounting.
+        # Its hub-control wait never keeps a sleeping owner pod awake.
+        from gateway.puppy_direct_service import run_profile_direct_relay
+        self._spawn_supervised(
+            run_profile_direct_relay, "puppy_direct_relay",
+            on_spawn=lambda task: setattr(self, "_puppy_relay_task", task),
+        )
+
         # Stall watchdog: pending inbound + stale agent activity → warn user
         # to /new (does not kill the turn; see agent.session_stall_timeout).
         self._spawn_supervised(self._session_stall_watcher, "session_stall_watcher")
@@ -15211,8 +15222,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            # Join the owned relay before dropping task handles so its socket,
+            # HTTP client and profile lock finish their cancellation cleanup.
+            _puppy_task = getattr(self, "_puppy_relay_task", None)
+            if _puppy_task is not None and not _puppy_task.done():
+                _puppy_task.cancel()
+                _done, _pending = await asyncio.wait({_puppy_task}, timeout=5)
+                if _pending:
+                    logger.warning("Puppy relay shutdown is still pending")
+            if _puppy_task is None or _puppy_task.done():
+                self._puppy_relay_task = None
+
             for _task in list(self._background_tasks):
-                if _task is self._stop_task:
+                if _task is self._stop_task or _task is _puppy_task:
                     continue
                 if _task is self._restart_task:
                     # The restart orchestration task is awaiting _stop_task
@@ -15221,7 +15243,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _exit_code = 75 (#12875).  It self-terminates anyway.
                     continue
                 _task.cancel()
-            self._background_tasks.clear()
+            self._background_tasks.intersection_update(
+                {_puppy_task} if _puppy_task is not None and not _puppy_task.done() else set()
+            )
 
             self.adapters.clear()
             for _session_key in list(self._running_agents):
@@ -26865,6 +26889,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "provider": persisted.get("provider"),
             "base_url": persisted.get("base_url"),
         }
+        if persisted.get("selection_mode") == "select":
+            override["selection_mode"] = "select"
         provider = persisted.get("provider")
         if provider:
             # Re-resolve credentials for the persisted provider. On failure
@@ -29869,14 +29895,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             entry_session_id,
                         )
                     else:
-                        entry.session_id = agent_session_id
-                        self.session_store._save()
-                        self.session_store._record_gateway_session_peer(
-                            agent_session_id,
-                            session_key,
-                            source,
+                        advanced = await self.async_session_store.advance_compression_session(
+                            session_key, session_id, agent_session_id,
                         )
-                        _session_split_entry_persisted = True
+                        if advanced is not None and _run_still_current():
+                            await self.async_session_store._record_gateway_session_peer(
+                                agent_session_id,
+                                session_key,
+                                source,
+                            )
+                            _session_split_entry_persisted = True
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it

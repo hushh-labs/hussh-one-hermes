@@ -74,9 +74,14 @@ class TestInterruptedReplayFiltering:
 
         assert observed_context is None
         assert agent_history[:2] == history[:2]
-        assert agent_history[-1]["role"] == "tool"
-        assert agent_history[-1]["tool_call_id"] == "call_1"
-        assert agent_history[-1]["effect_disposition"] == "unknown"
+        receipts = [message for message in agent_history if message.get("role") == "tool"
+                    and message.get("tool_call_id") == "call_1"]
+        assert len(receipts) == 1
+        assert receipts[0]["effect_disposition"] == "unknown"
+        assert "UNKNOWN" in receipts[0]["content"]
+        assert agent_history[-1]["role"] == "assistant"
+        assert "UNKNOWN" in agent_history[-1]["content"]
+        assert "inspect" in agent_history[-1]["content"].lower()
 
 
     def test_dangling_unanswered_side_effect_is_replayed_as_unknown(self):
@@ -110,8 +115,13 @@ class TestInterruptedReplayFiltering:
         agent_history, _observed_context = _build_gateway_agent_history(history)
 
         assert agent_history[:2] == history
-        assert agent_history[-1]["role"] == "tool"
-        assert agent_history[-1]["tool_call_id"] == "call_1"
-        assert agent_history[-1]["effect_disposition"] == "unknown"
+        receipts = [message for message in agent_history if message.get("role") == "tool"
+                    and message.get("tool_call_id") == "call_1"]
+        assert len(receipts) == 1
+        assert receipts[0]["effect_disposition"] == "unknown"
+        assert "UNKNOWN" in receipts[0]["content"]
+        assert agent_history[-1]["role"] == "assistant"
+        assert "UNKNOWN" in agent_history[-1]["content"]
+        assert "inspect" in agent_history[-1]["content"].lower()
 
 

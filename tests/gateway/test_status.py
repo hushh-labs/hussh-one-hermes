@@ -1387,3 +1387,63 @@ class TestResolveGatewayLiveness:
         # profile's live gateway from being reported as this profile's.
         assert seen["expected_home"] == profile_dir
 
+
+
+@pytest.mark.parametrize("contents", ["", "not-json"])
+def test_non_gateway_scoped_lock_preserves_unfinished_owner_record(tmp_path, monkeypatch, contents):
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    lock = status._get_scope_lock_path("puppy-direct-relay", "fixture-profile")
+    lock.parent.mkdir(parents=True)
+    lock.write_text(contents)
+    before = lock.stat().st_ino
+    assert status.acquire_scoped_lock(
+        "puppy-direct-relay", "fixture-profile", require_gateway=False,
+    ) == (False, None)
+    assert lock.read_text() == contents and lock.stat().st_ino == before
+
+
+def test_non_gateway_scoped_lock_refuses_live_launcher_process(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    code = """
+import sys
+from gateway.status import acquire_scoped_lock, release_scoped_lock
+assert acquire_scoped_lock('puppy-direct-relay', sys.argv[1], require_gateway=False)[0]
+print('locked', flush=True)
+sys.stdin.readline()
+release_scoped_lock('puppy-direct-relay', sys.argv[1])
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, str(home)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        import threading
+        line, ready = [], threading.Event()
+        def read_ready():
+            line.append(process.stdout.readline().strip())
+            ready.set()
+        reader = threading.Thread(target=read_ready, daemon=True)
+        reader.start()
+        assert ready.wait(5)
+        reader.join(timeout=1)
+        assert not reader.is_alive() and line == ["locked"]
+        acquired, owner = status.acquire_scoped_lock(
+            "puppy-direct-relay", str(home), require_gateway=False,
+        )
+        assert not acquired and owner["pid"] == process.pid
+        # Unreadable start time must retain a live owner, not permit takeover.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        assert not status.acquire_scoped_lock(
+            "puppy-direct-relay", str(home), require_gateway=False,
+        )[0]
+    finally:
+        process.communicate("stop\n", timeout=5)
+    assert process.returncode == 0
+    assert status.acquire_scoped_lock("puppy-direct-relay", str(home), require_gateway=False)[0]
+    status.release_scoped_lock("puppy-direct-relay", str(home))

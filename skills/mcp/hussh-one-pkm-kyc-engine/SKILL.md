@@ -2,6 +2,11 @@
 name: hussh-one-pkm-kyc-engine
 description: "Execute cross-form KYC/KYB onboarding via Hussh One PKM."
 category: mcp
+version: "1.0.0"
+author: Hussh
+license: Apache-2.0
+platforms: [macos]
+tags: [pkm, consent, identity]
 ---
 
 # Hussh One PKM KYC Engine Skill

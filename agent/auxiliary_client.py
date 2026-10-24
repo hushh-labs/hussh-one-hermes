@@ -4070,7 +4070,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
-    real_client = OpenAI(
+    real_client = _create_openai_client(
         api_key=codex_token,
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
@@ -6764,7 +6764,7 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = _normalize_resolved_model(model, provider)
-            raw_client = OpenAI(
+            raw_client = _create_openai_client(
                 api_key=codex_token,
                 base_url=_CODEX_AUX_BASE_URL,
                 default_headers=_codex_cloudflare_headers(codex_token),

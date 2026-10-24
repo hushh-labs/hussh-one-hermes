@@ -188,18 +188,30 @@ def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):
 # call_llm-level: stream branch returns the raw SDK stream
 # --------------------------------------------------------------------------
 
-def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
-    """call_llm(stream=True) returns the client's raw stream object directly,
-    attaches stream/stream_options to the request, and does NOT run response
-    validation (which assumes a complete response)."""
+def test_call_llm_stream_preserves_chunks_releases_lease_and_skips_validation(monkeypatch):
+    """Streaming preserves chunks and releases its local provider lease."""
     from agent import auxiliary_client as ac
+    from unittest.mock import Mock
 
     captured = {}
+    chunk = object()
+    closed = Mock()
+    lease = SimpleNamespace(release=Mock())
+
+    class _Stream:
+        def __iter__(self):
+            return iter([chunk])
+
+        def close(self):
+            closed()
+
+    stream = _Stream()
+    monkeypatch.setattr(ac, "_local_auxiliary_lease", lambda *_args: lease)
 
     class _Completions:
         def create(self, **kwargs):
             captured.update(kwargs)
-            return "RAW_STREAM"
+            return stream
 
     fake_client = SimpleNamespace(
         chat=SimpleNamespace(completions=_Completions()),
@@ -225,7 +237,10 @@ def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
         stream_options={"include_usage": True},
     )
 
-    assert out == "RAW_STREAM"
+    lease.release.assert_not_called()
+    assert list(out) == [chunk]
+    closed.assert_called_once_with()
+    lease.release.assert_called_once_with()
     assert captured.get("stream") is True
     assert captured.get("stream_options") == {"include_usage": True}
 

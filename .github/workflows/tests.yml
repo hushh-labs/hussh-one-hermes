@@ -17,10 +17,14 @@ jobs:
     # Hussh's organization does not provide the upstream larger-runner label.
     # Keep complete per-file discovery on an available hosted runner.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Full discovery takes 27–30 minutes on standard runners, before setup.
+    timeout-minutes: 40
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The license audit verifies the retained upstream provenance base.
+          fetch-depth: 0
 
       - name: Install ripgrep (prebuilt binary)
         run: |

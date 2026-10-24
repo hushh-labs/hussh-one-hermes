@@ -91,6 +91,18 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _OrderRecorder.reset()
+    from gateway import puppy_direct_service
+    relay_started = asyncio.Event()
+    relay_stopped = asyncio.Event()
+
+    async def profile_relay():
+        relay_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            relay_stopped.set()
+
+    monkeypatch.setattr(puppy_direct_service, "run_profile_direct_relay", profile_relay)
 
     config = GatewayConfig(
         platforms={
@@ -110,6 +122,9 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_start_secondary_profile_adapters", lambda: 0)
 
     await runner.start()
+    await asyncio.wait_for(relay_started.wait(), timeout=3)
+    assert runner._puppy_relay_task in runner._background_tasks
+    assert runner._puppy_relay_task._hermes_supervised_watcher is True
 
     events = _OrderRecorder.events
     assert events, "no connect() event was recorded"
@@ -126,6 +141,9 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
     # Both platforms should be registered once startup settles.
     assert Platform.TELEGRAM in runner.adapters
     assert Platform.DISCORD in runner.adapters
+    await runner.stop()
+    assert relay_stopped.is_set()
+    assert runner._puppy_relay_task is None
 
 
 @pytest.mark.asyncio

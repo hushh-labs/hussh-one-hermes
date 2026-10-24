@@ -17,6 +17,7 @@ import os
 import random
 import re
 import time
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 from urllib.parse import urlsplit
@@ -381,17 +382,28 @@ def _admission_response(
         )
 
 
-def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any]]:
+def _admit(identity: HusshIdentityClient, *, stopping: Callable[[], bool] = lambda: False) -> tuple[dict[str, Any], dict[str, Any]]:
+    def check_running() -> None:
+        if stopping():
+            raise DirectPodRefused("Puppy relay is stopping")
+
+    def admission_response(stage, request):
+        check_running()
+        response = _admission_response(stage, request)
+        check_running()
+        return response
+
+    check_running()
     state = identity.read_state()
     if state is None:
         raise DirectPodRefused("Connect this trusted device first")
     headers = identity.auth_headers()
-    endpoint = _admission_response(
+    endpoint = admission_response(
         "endpoint", lambda: identity.http.get(
             f"{state.api_base}/api/one/personal-agent/endpoint", headers=headers
         )
     )
-    key_record = _admission_response("verification_keys", lambda: identity.http.get(
+    key_record = admission_response("verification_keys", lambda: identity.http.get(
         f"{state.api_base}/api/one/personal-agent/verification-keys", headers=headers
     ))
     if key_record.get("kind") != "pod_verification_keys_v1":
@@ -402,7 +414,7 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
         str(endpoint.get("signature") or ""), keys,
     )
     _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
-    issued = _admission_response(
+    issued = admission_response(
         "binding", lambda: identity.http.post(
             f"{state.api_base}/api/account/trusted-devices/{state.device_id}/pod-binding",
             headers=headers,
@@ -425,7 +437,7 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
     # pod session token to it. Commit a new pin only after admission succeeds.
     _pin_endpoint(identity.profile_home, endpoint, state.environment, persist=False)
     pod = str(binding["url"]).rstrip("/")
-    challenge = _admission_response(
+    challenge = admission_response(
         "challenge", lambda: identity.http.post(
             f"{pod}/api/one/pod/session/challenge", json={"subjectId": state.device_id},
             timeout=Timeout(**{**identity.http.timeout.as_dict(), "read": _POD_STARTUP_READ_SECONDS}),
@@ -456,7 +468,7 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
         or challenge["expiresAt"] <= time.time() * 1000
     ):
         raise DirectPodRefused("Puppy pod challenge changed owner or deployment")
-    session = _admission_response(
+    session = admission_response(
         "session", lambda: identity.http.post(
             f"{pod}/api/one/pod/session/admit",
             json={
@@ -481,6 +493,7 @@ def _admit(identity: HusshIdentityClient) -> tuple[dict[str, Any], dict[str, Any
         or not session.get("session")
     ):
         raise DirectPodRefused("Puppy pod session has the wrong scope")
+    check_running()
     _pin_endpoint(identity.profile_home, endpoint, state.environment)
     return binding, session
 
@@ -511,6 +524,30 @@ class PuppyDirectPodRelay:
         self._last_work = time.monotonic()
         self._presence = presence
         self._model_ack: dict[str, Any] | None = None
+        self._stopping = threading.Event()
+
+    async def _blocking(self, function, *args, _on_cancel=None, **kwargs):
+        """Retain ownership until a bounded blocking operation actually settles."""
+        if self._stopping.is_set():
+            raise asyncio.CancelledError
+        worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if _on_cancel is not None:
+                _on_cancel()
+            # Repeated gateway cancellation must not release the HTTP client or
+            # profile lock while a thread is still dispatching admission work.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                worker.result()
+            raise
 
     def _model_receipt_path(self) -> Path | None:
         home = getattr(self.identity, "profile_home", None)
@@ -629,7 +666,7 @@ class PuppyDirectPodRelay:
         )
         if statement is None or binding.get("expires_at_ms", 0) <= time.time() * 1000:
             return False
-        previous = self._model_ack or await asyncio.to_thread(self._read_model_ack)
+        previous = self._model_ack or await self._blocking(self._read_model_ack)
         if previous is not None and all(
             previous.get(key) == statement[key]
             for key in (
@@ -639,7 +676,7 @@ class PuppyDirectPodRelay:
         ) and previous.get("result") in {"applied", "refused"}:
             if previous["result"] != "applied" or relay.model == statement["model"]:
                 self._model_ack = previous
-                await asyncio.to_thread(self.identity.post_puppy_model_selection_ack, previous)
+                await self._blocking(self.identity.post_puppy_model_selection_ack, previous)
                 return False
         catalog = await relay.model_catalog()
         if busy:
@@ -648,17 +685,17 @@ class PuppyDirectPodRelay:
             statement["reason"] = "MODEL_UNAVAILABLE"
         elif catalog["catalogVersion"] != statement["catalogVersion"]:
             statement["reason"] = "STALE_MODEL_CATALOG"
-        elif await asyncio.to_thread(self._save_local_default, statement["model"], relay):
+        elif await self._blocking(self._save_local_default, statement["model"], relay):
             relay.model = statement["model"]
             relay.probe_mode = relay._probe_mode()
             self.model_options["model"] = statement["model"]
             statement["result"] = "applied"
             statement["reason"] = ""
         self._model_ack = statement
-        await asyncio.to_thread(self._write_model_ack, statement)
-        await asyncio.to_thread(self.identity.post_puppy_model_selection_ack, statement)
+        await self._blocking(self._write_model_ack, statement)
+        await self._blocking(self.identity.post_puppy_model_selection_ack, statement)
         if statement["result"] == "applied" and self._presence is not None:
-            await asyncio.to_thread(self._presence.on_event, "model_selected", force=True)
+            await self._blocking(self._presence.on_event, "model_selected", force=True)
         return statement["result"] == "applied"
 
     async def _report_presence(self) -> None:
@@ -668,13 +705,13 @@ class PuppyDirectPodRelay:
         reported = False
         while True:
             if reported:
-                await asyncio.to_thread(self._presence.on_event, "relay_running")
-                await asyncio.to_thread(self._presence.keepalive)
+                await self._blocking(self._presence.on_event, "relay_running")
+                await self._blocking(self._presence.keepalive)
             else:
                 # A new identity client has no token until the control lane
                 # authenticates. Retry a failed first push without asking the
                 # heartbeat itself to refresh credentials or seal the device.
-                reported = await asyncio.to_thread(
+                reported = await self._blocking(
                     self._presence.on_event, "relay_running", force=True
                 )
             await asyncio.sleep(60)
@@ -690,11 +727,16 @@ class PuppyDirectPodRelay:
                 # A valid session survives a pod process restart, but sealed frames
                 # must use the current epoch. Renew at the already admitted pod;
                 # this never contacts the hub or broadens the existing grant.
-                renewed = await asyncio.to_thread(self._renew, binding, session)
+                renewed = await self._blocking(self._renew, binding, session)
                 self._admitted = (binding, renewed)
                 return self._admitted
         self._admitted = None
-        self._admitted = await asyncio.to_thread(_admit, self.identity)
+        cancelled = threading.Event()
+        self._admitted = await self._blocking(
+            _admit, self.identity,
+            stopping=lambda: self._stopping.is_set() or cancelled.is_set(),
+            _on_cancel=cancelled.set,
+        )
         return self._admitted
 
     def _renew(self, binding: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
@@ -793,7 +835,7 @@ class PuppyDirectPodRelay:
             async def poll_model_commands() -> None:
                 while True:
                     try:
-                        status = await asyncio.to_thread(self.identity.device_control_status)
+                        status = await self._blocking(self.identity.device_control_status)
                         changed = await self._process_model_command(
                             status, binding, model,
                             busy=inference is not None and not inference.done(),
@@ -868,7 +910,7 @@ class PuppyDirectPodRelay:
             state = self.identity.read_state()
             if state is None:
                 raise DirectPodRefused("Connect this trusted device first")
-            status = await asyncio.to_thread(self.identity.device_control_status)
+            status = await self._blocking(self.identity.device_control_status)
             if status.get("status") in {"revoked", "unknown_device"}:
                 raise DirectPodRefused("Trusted device is no longer active")
             if self._admitted is not None and status.get("puppyModelSelection"):
@@ -951,6 +993,7 @@ class PuppyDirectPodRelay:
                     await asyncio.sleep(delay + random.uniform(0.0, min(1.0, delay / 4)))
                     delay = min(delay * 2.0, 30.0)
         finally:
+            self._stopping.set()
             presence_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await presence_task

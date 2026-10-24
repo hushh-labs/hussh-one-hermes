@@ -292,7 +292,7 @@ class TestARepairStaysWhereTheIdentityLives:
     def _bridge(self, tmp_path: Path, *, state: IdentityState | None):
         from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
 
-        bridge = HusshVaultBridge(profile_home=tmp_path)
+        bridge = HusshVaultBridge(profile_home=tmp_path, keychain=FakeKeychain())
         calls: list[dict] = []
 
         class _Identity:

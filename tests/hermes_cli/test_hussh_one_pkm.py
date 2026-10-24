@@ -568,8 +568,11 @@ def test_loopback_callback_waits_for_persisted_connection_outcome(
 
 
 def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This fixture proves cross-process lock-file policy without a device
+    # refresh grant. Background sync is a separate authenticated boundary.
+    monkeypatch.setattr(HusshVaultBridge, "_monitor_shared_lock_state", lambda self: None)
     class FakeKeychain:
         def __init__(self) -> None:
             self.values: dict[str, bytes] = {}
@@ -632,6 +635,10 @@ def test_a_locked_console_keeps_the_personal_agents_vault_unless_configured(
     # Founder rule, 2026-09-02: the always-on personal agent keeps its vault
     # while the screen is locked, because that is exactly when its scheduled
     # work runs. Coupling to the workstation lock is opt-in.
+    # This fixture exercises workstation-lock policy. Its synthetic identity
+    # has no device refresh grant; a real background sync can otherwise lock
+    # the vault for that unrelated authentication failure before the assertion.
+    monkeypatch.setattr(HusshVaultBridge, "_monitor_shared_lock_state", lambda self: None)
     class FakeKeychain:
         def __init__(self) -> None:
             self.values: dict[str, bytes] = {}
@@ -1156,8 +1163,22 @@ def test_first_vault_creation_reuses_one_wrapper_contract_and_requires_recovery_
     assert bridge.vault_preflight() == {"vault_exists": True}
 
 
-def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Path) -> None:
-    bridge = HusshVaultBridge(profile_home=tmp_path / "profile")
+@pytest.fixture
+def memory_keychain():
+    class Keychain:
+        def __init__(self):
+            self.values = {}
+        def get(self, account):
+            return self.values.get(account)
+        def set(self, account, secret):
+            self.values[account] = secret
+        def delete(self, account):
+            self.values.pop(account, None)
+    return Keychain()
+
+
+def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Path, memory_keychain) -> None:
+    bridge = HusshVaultBridge(profile_home=tmp_path / "profile", keychain=memory_keychain)
     bridge.identity.identity_path.parent.mkdir(parents=True)
     bridge.identity.identity_path.write_text(
         json.dumps(
@@ -1179,7 +1200,7 @@ def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Pat
 
 
 def test_first_vault_creation_reports_recoverable_failure_after_remote_persist(
-    tmp_path: Path,
+    tmp_path: Path, memory_keychain,
 ) -> None:
     class Response:
         content = b""
@@ -1204,7 +1225,7 @@ def test_first_vault_creation_reports_recoverable_failure_after_remote_persist(
                 return Response({"vaultKeyHash": kwargs.get("expected_hash", "")})
             raise AssertionError(f"Unexpected POST {url}")
 
-    bridge = HusshVaultBridge(profile_home=tmp_path / "profile")
+    bridge = HusshVaultBridge(profile_home=tmp_path / "profile", keychain=memory_keychain)
     bridge.identity.identity_path.parent.mkdir(parents=True)
     bridge.identity.identity_path.write_text(
         json.dumps(
@@ -1407,7 +1428,8 @@ def test_typescript_delete_mutation_plan_shape_parity() -> None:
     assert "target_scope_handle" not in plan
 
 
-def test_additive_mcp_surface_keeps_the_six_tool_contract(
+@pytest.mark.asyncio
+async def test_additive_mcp_surface_keeps_the_six_tool_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pytest.importorskip("mcp")
@@ -1417,7 +1439,10 @@ def test_additive_mcp_surface_keeps_the_six_tool_contract(
 
     monkeypatch.setattr(mcp_server, "HusshVaultBridge", FakeBridge)
     server = mcp_server._build_server()
-    names = {tool.name for tool in server._tool_manager.list_tools()}
+    tools = await server.list_tools()
+    names = {tool.name for tool in tools}
+    commit_tool = next(tool for tool in tools if tool.name == "hussh_pkm_commit_write")
+    assert "ctx" not in commit_tool.input_schema.get("properties", {})
     assert names == {
         "hussh_identity_status",
         "hussh_vault_status",
@@ -1426,6 +1451,95 @@ def test_additive_mcp_surface_keeps_the_six_tool_contract(
         "hussh_pkm_commit_write",
         "hussh_vault_lock",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "content", "expected_commit"),
+    [
+        ("accept", {"confirm": True}, True),
+        ("accept", {"confirm": False}, False),
+        ("accept", {}, False),
+        ("accept", None, False),
+        ("accept", {"confirm": "true"}, False),
+        ("decline", None, False),
+        ("cancel", None, False),
+    ],
+)
+async def test_mcp_commit_requires_explicit_confirmation(
+    monkeypatch, action, content, expected_commit,
+):
+    from mcp.server import ServerRequestContext
+    from mcp.server.mcpserver import Context
+    from mcp.types import ElicitResult
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    commits = []
+    proposal = SimpleNamespace(
+        proposal_id="reviewed-proposal", domain="professional", scope_path="role",
+        summary="Update approved role",
+        safe_view=lambda: {
+            "proposal_id": "reviewed-proposal",
+            "sharing_impact": {"summary": "No active exports", "active_recipient_count": 0},
+        },
+    )
+
+    class FakeBridge:
+        def require_vault_key(self):
+            return b"fixture-only"
+
+    class FakePkm:
+        def __init__(self, _bridge):
+            pass
+
+        def propose(self, **_kwargs):
+            return proposal
+
+        def commit(self, value):
+            commits.append(value)
+            return {"success": True, "status": "committed"}
+
+    class FakeSession:
+        async def elicit_form(self, *, message, requested_schema, related_request_id):
+            assert "Domain: professional" in message
+            assert "Path: role" in message
+            assert "Active recipients: 0" in message
+            assert related_request_id == "fixture-review"
+            return ElicitResult(action=action, content=content)
+
+    monkeypatch.setattr(mcp_server, "HusshVaultBridge", FakeBridge)
+    monkeypatch.setattr(mcp_server, "PkmClient", FakePkm)
+    server = mcp_server._build_server()
+    context = Context(
+        mcp_server=server,
+        request_context=ServerRequestContext(
+            session=FakeSession(), lifespan_context={},
+            protocol_version="2025-11-25", method="tools/call", request_id="fixture-review",
+        ),
+    )
+    await server.call_tool("hussh_pkm_propose_write", {
+        "domain": "professional", "scope_path": "role",
+        "merge_patch": {"role": "Engineer"}, "summary": "Update approved role",
+    })
+    invalid_acceptance = action == "accept" and (
+        content is None or type(content.get("confirm")) is not bool
+    )
+    if invalid_acceptance:
+        with pytest.raises(ToolError):
+            await server.call_tool(
+                "hussh_pkm_commit_write", {"proposal_id": "reviewed-proposal"}, context=context,
+            )
+    else:
+        result = await server.call_tool(
+            "hussh_pkm_commit_write", {"proposal_id": "reviewed-proposal"}, context=context,
+        )
+        assert not result.is_error
+    assert commits == ([proposal] if expected_commit else [])
+    with pytest.raises(ToolError, match="missing or expired"):
+        await server.call_tool(
+            "hussh_pkm_commit_write", {"proposal_id": "reviewed-proposal"}, context=context,
+        )
+    assert commits == ([proposal] if expected_commit else [])
 
 
 def test_encrypted_replica_persists_only_ciphertext_and_monotonic_cursor(

@@ -79,7 +79,7 @@ def local_front(tmp_path, monkeypatch):
 def _agent(url, db, *, budget=30):
     from run_agent import AIAgent
     return AIAgent(
-        provider="lmstudio", base_url=url, api_key="fixture", model="fixture-local",
+        provider="lmstudio", api_mode="chat_completions", base_url=url, api_key="fixture", model="fixture-local",
         enabled_toolsets=["no_mcp"], quiet_mode=True, max_iterations=2,
         max_tokens=256, skip_context_files=True, skip_memory=True,
         skip_background_review=True, session_id="http-rehearsal", session_db=db,

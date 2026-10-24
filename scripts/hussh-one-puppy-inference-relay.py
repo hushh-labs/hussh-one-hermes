@@ -33,52 +33,15 @@ if __name__ == "__main__":
         logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
         logging.getLogger("gateway.puppy_direct_pod").setLevel(logging.INFO)
         logging.getLogger("gateway.puppy_inference_relay").setLevel(logging.INFO)
-        from hermes_constants import get_hermes_home
-        from hermes_cli.hussh_one_pkm.client import HusshIdentityClient, HusshIdentityError
-        from hermes_cli.hussh_one_pkm.presence import PresencePublisher, agent_version, build_snapshot
-        from gateway.puppy_direct_pod import PuppyDirectPodRelay, DirectPodRefused
-        from gateway.puppy_inference_relay import profile_model_options
-        from hermes_cli.config import load_config_readonly
+        logging.getLogger("gateway.puppy_direct_service").setLevel(logging.INFO)
+        from gateway.puppy_direct_service import run_profile_direct_relay
+        from gateway.puppy_direct_pod import DirectPodRefused
+        from hermes_cli.hussh_one_pkm.client import HusshIdentityError
 
         try:
-            model_options = profile_model_options(load_config_readonly())
-            profile_home = get_hermes_home()
-            identity = HusshIdentityClient(profile_home=profile_home)
-            state = identity.read_state()
-            if state is not None:
-                print(
-                    f"Puppy direct relay selected the {state.environment} Hussh profile.",
-                    file=sys.stderr, flush=True,
-                )
-            def current_model() -> str:
-                try:
-                    return profile_model_options(load_config_readonly())["model"]
-                except ValueError:
-                    return model_options["model"]
-
-            presence = PresencePublisher(
-                publish=identity.post_heartbeat,
-                snapshot=lambda: build_snapshot(
-                    current_model=current_model(),
-                    agent_version=agent_version(),
-                    home=profile_home,
-                ),
-            )
-            if args.wait_for_activation:
-                print(
-                    "Waiting for Puppy activation. Enable Puppy for this device in "
-                    "the Hussh app, then start an inference request. Owner approval "
-                    "is still required before connecting to your pod.",
-                    file=sys.stderr, flush=True,
-                )
-            asyncio.run(
-                PuppyDirectPodRelay(
-                    identity,
-                    wait_for_activation=args.wait_for_activation,
-                    presence=presence,
-                    **model_options,
-                ).serve()
-            )
+            asyncio.run(run_profile_direct_relay(
+                wait_for_activation=args.wait_for_activation, supervised=False,
+            ))
         except KeyboardInterrupt:
             sys.exit(0)
         except ValueError:

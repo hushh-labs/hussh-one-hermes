@@ -2175,6 +2175,36 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
+    from hermes_cli.fallback_config import get_fallback_chain
+    from agent.model_metadata import is_local_endpoint
+
+    if config.get("fallback_providers") and fb:
+        issues.append(ConfigIssue(
+            "warning",
+            "Both fallback_providers and legacy fallback_model are configured",
+            "Move legacy entries into fallback_providers to make ordering explicit",
+        ))
+    chain = get_fallback_chain(config)
+    if chain:
+        first = chain[0]
+        providers_cfg = config.get("providers")
+        provider_cfg = providers_cfg.get(first["provider"], {}) if isinstance(providers_cfg, dict) else {}
+        if not isinstance(provider_cfg, dict):
+            provider_cfg = {}
+        base_url = str(first.get("base_url") or provider_cfg.get("base_url")
+                       or provider_cfg.get("api") or provider_cfg.get("url") or "").strip()
+        context = first.get("context_length")
+        if context is None:
+            context = provider_cfg.get("context_length")
+        if (provider_cfg.get("is_local") is True or is_local_endpoint(base_url)) and not (
+            type(context) is int and context > 0
+        ):
+            issues.append(ConfigIssue(
+                "warning",
+                "First fallback provider appears to be local but has no verified context_length",
+                "Set the verified local context_length or put a usable cloud fallback first",
+            ))
+
     # ── Check for fallback_model accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
@@ -2195,6 +2225,21 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    default: your-model-name\n"
             "    base_url: https://...",
         ))
+
+    if isinstance(model_cfg, dict):
+        name = str(model_cfg.get("default") or model_cfg.get("model") or "").strip().lower()
+        provider = str(model_cfg.get("provider") or "").strip().lower()
+        api_mode = str(model_cfg.get("api_mode") or "").strip().lower()
+        if name.startswith("claude-") and provider in {"google", "gemini", "google-vertex"}:
+            issues.append(ConfigIssue(
+                "warning", "Claude model is configured with a Gemini/Google API runtime",
+                "Use provider: google-vertex-claude with api_mode: anthropic_messages",
+            ))
+        if name.startswith("gemini-") and (provider == "google-vertex-claude" or api_mode == "anthropic_messages"):
+            issues.append(ConfigIssue(
+                "warning", "Gemini model is configured with a Vertex Claude/Anthropic runtime",
+                "Use the Gemini provider and its supported transport",
+            ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
     # Only provider-like fields (base_url, api_key, …) are flagged. Arbitrary

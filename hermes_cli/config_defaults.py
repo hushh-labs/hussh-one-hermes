@@ -5,6 +5,12 @@ verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
 """
 
 DEFAULT_CONFIG = {
+    "hussh_one": {
+        "puppy": {
+            # Opt-in profile service; owner grant and fresh pod admission remain mandatory.
+            "auto_start": False,
+        },
+    },
     "model": "",
     "providers": {},
     "fallback_providers": [],

@@ -770,6 +770,10 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
         for k, v in override.items()
         if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
     }
+    from hermes_cli.hussh_one_identity import normalize_selection_mode
+
+    if cleaned and normalize_selection_mode(override.get("selection_mode")) == "select":
+        cleaned["selection_mode"] = "select"
     return cleaned or None
 
 

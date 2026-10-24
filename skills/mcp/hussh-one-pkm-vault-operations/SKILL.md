@@ -2,6 +2,11 @@
 name: hussh-one-pkm-vault-operations
 description: "Inspect, unlock, and operate the Hussh One local PKM vault."
 category: mcp
+version: "1.0.0"
+author: Hussh
+license: Apache-2.0
+platforms: [macos]
+tags: [pkm, vault, privacy]
 ---
 
 # Hussh One PKM Vault Operations

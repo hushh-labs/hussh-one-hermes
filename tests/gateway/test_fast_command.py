@@ -142,7 +142,7 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
-def test_turn_route_normalizes_stale_claude_google_runtime():
+def test_turn_route_normalizes_stale_claude_google_runtime(monkeypatch):
     runner = _make_runner()
     runtime_kwargs = {
         "api_key": "gemini-key",
@@ -154,11 +154,14 @@ def test_turn_route_normalizes_stale_claude_google_runtime():
         "credential_pool": object(),
     }
 
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda _config: "claude-opus-4-8")
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: dict(runtime_kwargs))
+    model, resolved_runtime = runner._resolve_session_agent_runtime(user_config={})
     route = gateway_run.GatewayRunner._resolve_turn_agent_config(
         runner,
         "route this Claude turn",
-        "claude-opus-4-8",
-        runtime_kwargs,
+        model,
+        resolved_runtime,
     )
 
     assert route["model"] == "claude-opus-4-8"

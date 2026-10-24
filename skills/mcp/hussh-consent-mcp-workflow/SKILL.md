@@ -1,7 +1,12 @@
 ---
 name: hussh-consent-mcp-workflow
-description: "Use Hussh Consent MCP for portfolio, financial, profile, and other consent-backed user-data requests with least privilege and connector-only encrypted export handling."
+description: "Request and consume consented information through Hussh MCP."
 category: mcp
+version: "1.0.0"
+author: Hussh
+license: Apache-2.0
+platforms: [macos, linux, windows]
+tags: [consent, mcp, privacy]
 ---
 
 # Hussh Consent MCP Workflow

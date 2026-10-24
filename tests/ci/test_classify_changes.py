@@ -300,3 +300,50 @@ def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
         ".github/workflows/ci.yml",
         "apps/desktop/eslint.config.mjs",
     ]
+
+
+@pytest.mark.parametrize("fault", [None, "full_pr", "push", "cancelled", "detector_cancelled", "enabled_skip", "unconditional_skip", "missing_detector", "missing_lane", "critical_review", "missing_scan_proof"])
+def test_real_ci_aggregate_refuses_incomplete_required_work(tmp_path, fault):
+    import json
+    import os
+    import subprocess
+    import yaml
+
+    workflow = yaml.safe_load((_PATH.parents[2] / ".github/workflows/ci.yaml").read_text())
+    gate = next(step for step in workflow["jobs"]["all-checks-pass"]["steps"] if step.get("id") == "evaluate")
+    outputs = {key: "false" for key in ("python", "frontend", "installer", "rust", "site", "uv_lock", "npm_lock", "docker_meta", "scan", "deps", "ci_review", "mcp_catalog")}
+    outputs["event_name"] = "pull_request"
+    needs = {name: {"result": "skipped"} for name in workflow["jobs"]["all-checks-pass"]["needs"]}
+    for name in ("detect", "infographic-check", "osv-scanner", "history-check"):
+        needs[name]["result"] = "success"
+    needs["detect"]["outputs"] = outputs
+    if fault in ("full_pr", "push"):
+        outputs.update({key: "true" for key in outputs if key != "event_name"})
+        for name in needs:
+            needs[name]["result"] = "success"
+        needs["e2e-desktop"]["result"] = "skipped"
+        needs["supply-chain"]["outputs"] = {"critical_findings": "false"}
+        if fault == "push":
+            outputs["event_name"] = "push"
+            for name in ("history-check", "lockfile-diff", "supply-chain", "review-labels"):
+                needs[name]["result"] = "skipped"
+    elif fault == "detector_cancelled":
+        needs["detect"]["result"] = "cancelled"
+    elif fault == "cancelled":
+        needs["tests"]["result"] = "cancelled"
+    elif fault == "enabled_skip":
+        outputs["frontend"] = "true"
+    elif fault == "unconditional_skip":
+        needs["infographic-check"]["result"] = "skipped"
+    elif fault == "missing_detector":
+        outputs.pop("python")
+    elif fault == "missing_lane":
+        needs.pop("osv-scanner")
+    elif fault in ("critical_review", "missing_scan_proof"):
+        outputs["scan"] = "true"
+        needs["supply-chain"] = {"result": "success", "outputs": {}}
+        if fault == "critical_review":
+            needs["supply-chain"]["outputs"]["critical_findings"] = "true"
+    result = subprocess.run(["bash", "-e", "-c", gate["run"]], capture_output=True, text=True,
+        env={**os.environ, "NEEDS": json.dumps(needs), "GITHUB_OUTPUT": str(tmp_path / "output")})
+    assert (result.returncode == 0) is (fault in (None, "full_pr", "push")), result.stdout + result.stderr

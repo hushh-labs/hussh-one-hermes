@@ -238,7 +238,7 @@ class TestBeginOnboardingRepairPath:
     def _bridge(self, tmp_path: Path, *, email: str):
         from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
 
-        bridge = HusshVaultBridge(profile_home=tmp_path)
+        bridge = HusshVaultBridge(profile_home=tmp_path, keychain=FakeKeychain())
         calls: list[dict] = []
 
         class _Identity:
@@ -454,7 +454,7 @@ class TestReconnectKeepsTheVaultOpenable:
             write_envelope,
         )
 
-        bridge = HusshVaultBridge(profile_home=tmp_path)
+        bridge = HusshVaultBridge(profile_home=tmp_path, keychain=FakeKeychain())
         vault_key = os.urandom(32)
         wrapping_key = os.urandom(32)
         bridge.keychain.set(bridge._account("device-wrapping-key"), wrapping_key)
@@ -552,7 +552,7 @@ class TestSessionHealth:
     ) -> None:
         from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
 
-        bridge = HusshVaultBridge(profile_home=tmp_path)
+        bridge = HusshVaultBridge(profile_home=tmp_path, keychain=FakeKeychain())
         monkeypatch.setattr(bridge.identity, "session_state", lambda: "expired")
 
         health = bridge.session_health()
@@ -568,7 +568,7 @@ class TestSessionHealth:
     ) -> None:
         from hermes_cli.hussh_one_pkm.bridge import HusshVaultBridge
 
-        bridge = HusshVaultBridge(profile_home=tmp_path)
+        bridge = HusshVaultBridge(profile_home=tmp_path, keychain=FakeKeychain())
         monkeypatch.setattr(bridge.identity, "session_state", lambda: "ok")
 
         health = bridge.session_health()
