@@ -8116,12 +8116,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool")
                     if normalized_runtime.get(key) is not None
                 })
+                override_runtime["credential_pool"] = normalized_runtime["credential_pool"]
             except Exception:
                 logger.debug("Session Vertex runtime normalization skipped", exc_info=True)
             if override_runtime.get("api_key"):
-                if override_runtime.get("credential_pool") is None:
+                if (override_runtime.get("credential_pool") is None
+                        and override_runtime.get("api_key") != "gcp-sdk"):
                     override_runtime["credential_pool"] = _credential_pool_for_provider(
-                        override.get("provider")
+                        override_runtime.get("provider")
                     )
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
@@ -8210,6 +8212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool")
                 if normalized_runtime.get(key) is not None
             })
+            runtime_kwargs["credential_pool"] = normalized_runtime["credential_pool"]
         except Exception:
             logger.debug("Gateway Vertex runtime normalization skipped", exc_info=True)
 
@@ -26886,6 +26889,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "provider": persisted.get("provider"),
             "base_url": persisted.get("base_url"),
         }
+        if persisted.get("selection_mode") == "select":
+            override["selection_mode"] = "select"
         provider = persisted.get("provider")
         if provider:
             # Re-resolve credentials for the persisted provider. On failure
@@ -29890,14 +29895,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             entry_session_id,
                         )
                     else:
-                        entry.session_id = agent_session_id
-                        self.session_store._save()
-                        self.session_store._record_gateway_session_peer(
-                            agent_session_id,
-                            session_key,
-                            source,
+                        advanced = await self.async_session_store.advance_compression_session(
+                            session_key, session_id, agent_session_id,
                         )
-                        _session_split_entry_persisted = True
+                        if advanced is not None and _run_still_current():
+                            await self.async_session_store._record_gateway_session_peer(
+                                agent_session_id,
+                                session_key,
+                                source,
+                            )
+                            _session_split_entry_persisted = True
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it

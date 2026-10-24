@@ -6,6 +6,7 @@ subprocess calls are added without stdin=subprocess.DEVNULL.
 """
 
 import importlib.util
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -43,14 +44,16 @@ def test_oauth_setup_token_keeps_inherited_stdin():
     subprocess calls must leave this one inheriting stdin. Regression guard for
     the over-application caught while salvaging the stdin-EOF fix.
     """
-    src = (REPO_ROOT / "agent" / "anthropic_adapter.py").read_text()
-    assert 'subprocess.run([claude_path, "setup-token"])' in src, (
-        "interactive setup-token call changed shape; re-verify it still "
-        "inherits stdin (no stdin=subprocess.DEVNULL)"
-    )
-    assert 'subprocess.run([claude_path, "setup-token"], stdin' not in src, (
-        "setup-token must inherit stdin so the user can complete the OAuth "
-        "login prompt; do not add stdin=subprocess.DEVNULL"
+    tree = ast.parse((REPO_ROOT / "agent" / "anthropic_adapter.py").read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == "run"
+             and node.args and isinstance(node.args[0], ast.List)
+             and any(isinstance(arg, ast.Constant) and arg.value == "setup-token"
+                     for arg in node.args[0].elts)]
+    assert len(calls) == 1, "interactive setup-token login must remain present"
+    stdin = next((kw.value for kw in calls[0].keywords if kw.arg == "stdin"), None)
+    assert stdin is None or isinstance(stdin, ast.Constant) and stdin.value is None, (
+        "setup-token must inherit stdin so the owner can complete OAuth login"
     )
 
 

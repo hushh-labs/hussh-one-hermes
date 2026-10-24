@@ -203,6 +203,7 @@ class TestRestartAppIsDarwinOnly:
             raise AssertionError("expected a RuntimeError on non-darwin")
 
 
+@pytest.mark.macos_only
 class TestRestartAppClearsTheStaleLock:
     """The real defect, not a stand-in for it.
 

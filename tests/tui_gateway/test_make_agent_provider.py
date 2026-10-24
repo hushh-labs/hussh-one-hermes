@@ -142,12 +142,13 @@ def test_apply_model_switch_does_not_leak_process_env():
     assert sess_a["agent"].model == "minimax/m3"
 
 
-def test_make_agent_falls_back_on_invalid_override_provider():
-    """Verify that if AIAgent initialization fails with model_override (e.g. because
-    the stored model's provider is not configured), it falls back to the default/startup
-    runtime, updates the session model in state.db, and builds successfully.
-    """
+def test_make_agent_uses_configured_fallback_after_override_auth_failure():
+    """An unavailable credential uses only the owner's configured fallback."""
     def echo_runtime(requested=None, target_model=None):
+        from hermes_cli.auth import AuthError
+
+        if requested == "broken":
+            raise AuthError("Synthetic missing credential", provider="broken")
         return {
             "provider": requested or "GLOBAL_DEFAULT",
             "base_url": "global-url",
@@ -168,15 +169,7 @@ def test_make_agent_falls_back_on_invalid_override_provider():
         "provider": "broken",
     }
 
-    call_count = 0
     mock_agent_instance = MagicMock()
-
-    def mock_agent_init(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise RuntimeError("No LLM provider configured")
-        return mock_agent_instance
 
     mock_db = MagicMock()
 
@@ -186,12 +179,14 @@ def test_make_agent_falls_back_on_invalid_override_provider():
         patch("tui_gateway.server._load_reasoning_config", return_value=None),
         patch("tui_gateway.server._load_service_tier", return_value=None),
         patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch("tui_gateway.server._load_fallback_model",
+              return_value=[{"provider": "globalprov", "model": "global/model"}]),
         patch("tui_gateway.server._resolve_startup_runtime", return_value=("global/model", "globalprov")),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             side_effect=echo_runtime,
         ),
-        patch("run_agent.AIAgent", side_effect=mock_agent_init),
+        patch("run_agent.AIAgent", return_value=mock_agent_instance) as create_agent,
     ):
         from tui_gateway.server import _make_agent
 
@@ -199,8 +194,12 @@ def test_make_agent_falls_back_on_invalid_override_provider():
             "sid-override", "key-override", session_id="key-override", session_db=mock_db, model_override=override
         )
 
-        assert call_count == 2
-        assert agent == mock_agent_instance
-        # The database should be updated to fallback model
-        mock_db.update_session_model.assert_called_once_with("key-override", "global/model")
+        create_agent.assert_called_once()
+        assert agent is mock_agent_instance
+        kwargs = create_agent.call_args.kwargs
+        assert kwargs["model"] == "global/model"
+        assert kwargs["provider"] == "globalprov"
+        assert kwargs["base_url"] == "global-url"
+        assert kwargs["api_key"] == "global-key"
+        mock_db.update_session_model.assert_not_called()
 

@@ -1156,8 +1156,22 @@ def test_first_vault_creation_reuses_one_wrapper_contract_and_requires_recovery_
     assert bridge.vault_preflight() == {"vault_exists": True}
 
 
-def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Path) -> None:
-    bridge = HusshVaultBridge(profile_home=tmp_path / "profile")
+@pytest.fixture
+def memory_keychain():
+    class Keychain:
+        def __init__(self):
+            self.values = {}
+        def get(self, account):
+            return self.values.get(account)
+        def set(self, account, secret):
+            self.values[account] = secret
+        def delete(self, account):
+            self.values.pop(account, None)
+    return Keychain()
+
+
+def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Path, memory_keychain) -> None:
+    bridge = HusshVaultBridge(profile_home=tmp_path / "profile", keychain=memory_keychain)
     bridge.identity.identity_path.parent.mkdir(parents=True)
     bridge.identity.identity_path.write_text(
         json.dumps(
@@ -1179,7 +1193,7 @@ def test_first_vault_creation_does_not_persist_before_recovery_ack(tmp_path: Pat
 
 
 def test_first_vault_creation_reports_recoverable_failure_after_remote_persist(
-    tmp_path: Path,
+    tmp_path: Path, memory_keychain,
 ) -> None:
     class Response:
         content = b""
@@ -1204,7 +1218,7 @@ def test_first_vault_creation_reports_recoverable_failure_after_remote_persist(
                 return Response({"vaultKeyHash": kwargs.get("expected_hash", "")})
             raise AssertionError(f"Unexpected POST {url}")
 
-    bridge = HusshVaultBridge(profile_home=tmp_path / "profile")
+    bridge = HusshVaultBridge(profile_home=tmp_path / "profile", keychain=memory_keychain)
     bridge.identity.identity_path.parent.mkdir(parents=True)
     bridge.identity.identity_path.write_text(
         json.dumps(

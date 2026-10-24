@@ -3034,6 +3034,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # endpoints (e.g. Ollama Cloud) resolve correctly instead of
         # falling through to OpenRouter defaults.
         from hermes_cli.fallback_config import resolve_entry_api_key
+        from agent.vertex_claude_runtime import normalize_google_model_runtime
+
+        normalized = normalize_google_model_runtime(
+            provider=fb_provider, model=fb_model, base_url=fb.get("base_url"),
+            api_key=resolve_entry_api_key(fb), api_mode=fb.get("api_mode"),
+        )
+        fb = {**fb, **{key: normalized[key] for key in
+              ("provider", "model", "base_url", "api_key", "api_mode")}}
+        fb_provider = normalized["provider"]
+        fb_model = normalized["model"]
 
         fb_base_url_hint = (fb.get("base_url") or "").strip() or None
         fb_api_key_hint = resolve_entry_api_key(fb)
@@ -3138,6 +3148,21 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 and base_url_host_matches(fb_base_url, "amazonaws.com")
             ):
                 fb_api_mode = "bedrock_converse"
+
+        if is_local_endpoint(fb_base_url):
+            from agent.model_metadata import get_model_context_length
+
+            request_tokens = getattr(agent, "_last_request_approx_tokens", 0)
+            context_length = get_model_context_length(
+                fb_model, base_url=fb_base_url, api_key=str(getattr(fb_client, "api_key", "") or ""),
+                config_context_length=fb.get("context_length"), provider=fb_provider,
+            )
+            if type(request_tokens) is int and request_tokens > context_length:
+                logger.warning(
+                    "Fallback skip: %s/%s request exceeds local context (%s > %s)",
+                    fb_provider, fb_model, request_tokens, context_length,
+                )
+                return agent._try_activate_fallback(reason)
 
         old_model = agent.model
         old_provider = agent.provider

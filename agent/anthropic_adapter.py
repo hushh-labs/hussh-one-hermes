@@ -1617,7 +1617,7 @@ def run_oauth_setup_token() -> Optional[str]:
 
     # Run interactively — stdin/stdout/stderr inherited so user can interact
     try:
-        subprocess.run([claude_path, "setup-token"])
+        subprocess.run([claude_path, "setup-token"], stdin=None)
     except (KeyboardInterrupt, EOFError):
         return None
 

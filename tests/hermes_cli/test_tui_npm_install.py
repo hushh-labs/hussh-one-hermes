@@ -382,16 +382,17 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
     main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
     install_cmd = calls[0][0][0]
-    assert install_cmd[:7] == [
+    assert install_cmd[:8] == [
         "/bin/npm",
-        "install",
+        "ci",
+        "--include=dev",
         "--workspace",
         "ui-tui",
         "--workspace",
         "ui-tui/packages/hermes-ink",
         "--include-workspace-root=false",
     ]
-    assert calls[0][1]["cwd"] == str(tmp_path)
+    assert Path(calls[0][1]["cwd"]) == tmp_path
     _assert_utf8_replace_capture(calls[0][1])
     _assert_utf8_replace_capture(calls[1][1])
 
@@ -420,16 +421,16 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
 
     assert calls[0][0][0] == [
         "/bin/npm",
-        "install",
+        "ci",
+        "--include=dev",
         "--workspace",
         "ui-tui",
-        "--include=dev",
         "--silent",
         "--no-fund",
         "--no-audit",
         "--progress=false",
     ]
-    assert calls[0][1]["cwd"] == str(tmp_path)
+    assert Path(calls[0][1]["cwd"]) == tmp_path
     _assert_utf8_replace_capture(calls[0][1])
     _assert_utf8_replace_capture(calls[1][1])
 
@@ -463,7 +464,7 @@ def test_make_tui_argv_npm_install_forces_include_dev(
     main_mod._make_tui_argv(tui_dir, tui_dev=False)
 
     install_cmd = calls[0][0][0]
-    assert install_cmd[:2] == ["/bin/npm", "install"]
+    assert install_cmd[:2] == ["/bin/npm", "ci"]
     assert "--include=dev" in install_cmd
 
 

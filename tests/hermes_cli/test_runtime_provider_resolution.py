@@ -219,7 +219,7 @@ def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
 
     assert resolved["provider"] == "lmstudio"
     assert resolved["api_key"] == "lm-token"
-    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
 
 
@@ -257,7 +257,7 @@ def test_resolve_runtime_provider_lmstudio_honors_saved_base_url(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="lmstudio")
 
     assert resolved["provider"] == "lmstudio"
-    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_mode"] == "codex_responses"
     # The saved base_url must NOT be shadowed by the 127.0.0.1 default.
     assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
     # No-auth LM Studio: missing LM_API_KEY substitutes the placeholder.
@@ -293,7 +293,7 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     resolved = rp.resolve_runtime_provider(requested="lmstudio")
 
     assert resolved["provider"] == "lmstudio"
-    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_mode"] == "codex_responses"
     # Saved config base_url wins over env var (standard contract).
     assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
     assert resolved["api_key"] == "dummy-lm-api-key"

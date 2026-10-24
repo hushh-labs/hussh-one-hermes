@@ -84,7 +84,10 @@ class TestSkinManagement:
         assert "warm-lightmode" in names
         for s in skins:
             assert "source" in s
-            assert s["source"] == "builtin"
+        by_name = {skin["name"]: skin for skin in skins}
+        for name in ("default", "ares", "mono", "slate", "daylight", "warm-lightmode"):
+            assert by_name[name]["source"] == "builtin"
+        assert by_name["hussh-one"]["source"] == "repo"
 
 
 

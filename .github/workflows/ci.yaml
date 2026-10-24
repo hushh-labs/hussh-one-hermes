@@ -205,8 +205,8 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
-  # status even when some deps were skipped. Only actual ``failure``
-  # results cause it to fail; ``skipped`` is treated as success.
+  # status even when a dependency was cancelled. Skips require detector proof;
+  # every selected or unconditional lane must finish successfully.
   #
   # Branch protection should require ONLY this check.
   #
@@ -217,6 +217,7 @@ jobs:
     name: All required checks pass
     needs:
       - detect
+      - infographic-check
       - tests
       - tests-os
       - lint
@@ -248,24 +249,49 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$NEEDS" | python3 -c "
-          import json, sys
-          needs = json.load(sys.stdin)
-          # Emit compact {job_name: result} for the comment assembler.
-          compact = {name: info['result'] for name, info in needs.items()}
-          print(f'needs-json={json.dumps(compact)}')
-          with open('$GITHUB_OUTPUT', 'a') as f:
-              f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
-          for name, info in sorted(needs.items()):
-              result = info['result']
-              icon = '✅' if result in ('success', 'skipped') else '❌'
-              print(f'{icon} {name}: {result}')
+          python3 - <<'PY_GATE'
+          import json, os, sys
+          needs = json.loads(os.environ['NEEDS'])
+          outputs = needs.get('detect', {}).get('outputs', {})
+          keys = ('python', 'frontend', 'installer', 'rust', 'site', 'uv_lock',
+                  'npm_lock', 'docker_meta', 'scan', 'deps', 'ci_review', 'mcp_catalog')
+          if any(outputs.get(key) not in ('true', 'false') for key in keys):
+              sys.exit('Missing or invalid change-detection evidence')
+          event = outputs.get('event_name')
+          if event not in ('pull_request', 'push'):
+              sys.exit('Unknown change-detection event')
+          pr = event == 'pull_request'
+          flag = lambda key: outputs[key] == 'true'
+          expected = dict.fromkeys(('detect', 'infographic-check', 'osv-scanner'), True)
+          expected.update(dict.fromkeys(('tests', 'tests-os', 'lint', 'contributor-check'), flag('python')))
+          for job, key in (('js-tests','frontend'), ('installer-tests','installer'),
+                           ('rust-tests','rust'), ('docs-site','site'),
+                           ('uv-lockfile','uv_lock'), ('docker-lint','docker_meta')):
+              expected[job] = flag(key)
+          expected['history-check'] = pr
+          expected['lockfile-diff'] = pr and flag('npm_lock')
+          expected['supply-chain'] = pr and (flag('scan') or flag('deps'))
+          critical = needs.get('supply-chain', {}).get('outputs', {}).get('critical_findings')
+          if expected['supply-chain'] and critical not in ('true', 'false'):
+              sys.exit('Missing supply-chain review evidence')
+          expected['review-labels'] = pr and (flag('ci_review') or flag('mcp_catalog') or critical == 'true')
+          # Existing upstream hold; this gate does not enable the desktop suite.
+          expected['e2e-desktop'] = False
+          compact = {name: info.get('result') for name, info in needs.items()}
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'needs-json={json.dumps(compact)}\n')
+          failed = []
+          for name, required in expected.items():
+              result = compact.get(name)
+              if result != 'success' and not (result == 'skipped' and not required):
+                  failed.append(name)
+              print(f'{name}: {result}; selected={required}')
+          if set(needs) != set(expected):
+              failed.append('aggregate lane inventory')
           if failed:
-              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
-              sys.exit(1)
-          print('All checks passed (or were skipped)')
-          "
+              sys.exit('Required CI work did not succeed: ' + ', '.join(failed))
+          print('All selected checks passed; unselected lanes have explicit skip evidence')
+          PY_GATE
 
   # ─────────────────────────────────────────────────────────────────────
   # CI timing report: collect per-job/step durations from the GitHub API,

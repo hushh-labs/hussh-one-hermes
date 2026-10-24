@@ -220,7 +220,10 @@ class TestFallbackChainAdvancement:
             {"provider": "openai", "model": "gpt-4o"},
         ]
         agent = _make_agent(fallback_model=fbs)
-        agent._last_request_approx_tokens = 35_051
+        # Exercise the real producer: a guard fed only by a test-assigned
+        # estimate cannot protect actual requests from an undersized fallback.
+        agent._build_api_kwargs([{"role": "user", "content": "word " * 35_051}], tools_for_api=[])
+        assert agent._last_request_approx_tokens > 32_768
 
         lmstudio_client = _mock_client(
             base_url="http://localhost:1234/v1",
