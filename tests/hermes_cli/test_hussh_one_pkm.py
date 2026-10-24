@@ -632,6 +632,10 @@ def test_a_locked_console_keeps_the_personal_agents_vault_unless_configured(
     # Founder rule, 2026-09-02: the always-on personal agent keeps its vault
     # while the screen is locked, because that is exactly when its scheduled
     # work runs. Coupling to the workstation lock is opt-in.
+    # This fixture exercises workstation-lock policy. Its synthetic identity
+    # has no device refresh grant; a real background sync can otherwise lock
+    # the vault for that unrelated authentication failure before the assertion.
+    monkeypatch.setattr(HusshVaultBridge, "_monitor_shared_lock_state", lambda self: None)
     class FakeKeychain:
         def __init__(self) -> None:
             self.values: dict[str, bytes] = {}
