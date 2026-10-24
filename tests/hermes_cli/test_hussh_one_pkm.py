@@ -568,8 +568,11 @@ def test_loopback_callback_waits_for_persisted_connection_outcome(
 
 
 def test_profile_lock_state_restores_keychain_bound_session_until_explicit_lock(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This fixture proves cross-process lock-file policy without a device
+    # refresh grant. Background sync is a separate authenticated boundary.
+    monkeypatch.setattr(HusshVaultBridge, "_monitor_shared_lock_state", lambda self: None)
     class FakeKeychain:
         def __init__(self) -> None:
             self.values: dict[str, bytes] = {}
