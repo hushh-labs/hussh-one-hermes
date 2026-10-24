@@ -104,6 +104,15 @@ def wire(profile, monkeypatch):
         },
     )
     monkeypatch.setattr(AIAgent, "_build_keepalive_http_client", staticmethod(http_client))
+
+    def refuse_network(*_args, **_kwargs):
+        raise AssertionError("Attribution checks must use the injected HTTP transport")
+
+    async def refuse_async_network(*_args, **_kwargs):
+        refuse_network()
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", refuse_network)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse_async_network)
     return requests
 
 
