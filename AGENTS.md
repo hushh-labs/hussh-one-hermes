@@ -31,6 +31,16 @@ The historical two-trunk layout already split Hussh features across branches.
 The full recovery rationale and upgrade procedure are in
 `docs/hussh-one-upstream-maintenance.md`.
 
+## Local Worktree & Dependency Hygiene (HARD GUARDRAIL)
+
+Full reference: [Local Worktree & Dependency Hygiene](docs/WORKTREE_AND_DEPENDENCY_HYGIENE.md) · Canonical standard: [hussh Wiki Hygiene Standard](https://wiki.hussh.si/wiki/reference/local-worktree-and-dependency-hygiene)
+
+- **Preflight Before Worktrees or Installs:** Run `python3 scripts/worktree-hygiene.py --check` before creating any worktree, installing dependencies, or running heavy builds. Warn below **30 GB free**; **hard-stop below 15 GB free**.
+- **Containment & Remove-After-Use:** Keep temporary worktrees in a dedicated user-local task pool (never ad-hoc sibling directories alongside the primary clone) and reuse matching checkouts first. Parallel worktrees are fine while actively in use (no artificial numeric cap), **but every temporary worktree MUST be permanently removed immediately after its task finishes or merges**.
+- **No Silent `node_modules` Duplication:** Reuse the shared Python venv and avoid duplicating multi-GB `node_modules` trees in temporary worktrees when lockfiles match `main`; strip build outputs before parking.
+- **Verified Zero-Stub Teardown:** A task is not complete until session-created worktrees are either permanently removed (commits pushed/merged, symlinks unlinked safely, ignored caches stripped, `git worktree remove` + `git worktree prune`, directory verified gone) or explicitly handed off with size and delta counts.
+- **Never Destroy Unique Work Silently:** Never delete dirty or unpushed worktrees without preserving commits/diffs (safety branch or verified bundle/patch) or receiving explicit owner approval.
+
 ## Hussh Consent Connector Contract
 
 - The only Hussh One consent lifecycle endpoint is the streamable HTTP MCP at
